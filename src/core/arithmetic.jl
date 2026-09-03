@@ -52,13 +52,17 @@ using LinearAlgebra
 """
     convert_operand(arg, bases)
 
-Convert an operand to the specified output bases.  This is a forward reference
-to `operators.convert`; the real implementation is loaded from operators.jl.
-The default stub simply returns the argument unchanged.
+Convert an operand to the specified output bases.  The real implementation
+is loaded from operators.jl, which calls Convert iteratively for each basis.
+This stub provides a forward declaration; the method in operators.jl overrides it.
 """
 function convert_operand end
 
-# Default stub: no conversion
+# Fallback: Numbers pass through unchanged
+convert_operand(arg::Number, bases) = arg
+
+# Default stub for operands: returns arg unchanged until operators.jl is loaded.
+# operators.jl redefines convert_operand(arg, bases) with the full Convert logic.
 convert_operand(arg, bases) = arg
 
 # Alphabet used for einsum string construction

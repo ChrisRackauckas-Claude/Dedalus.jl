@@ -521,6 +521,9 @@ Concrete subtypes must have fields:
 """
 abstract type IntervalBasis <: Basis end
 
+"""Alias for IntervalBasis, matching the naming convention for abstract types."""
+const AbstractIntervalBasis = IntervalBasis
+
 # -- Common interface --
 
 basis_dim(::IntervalBasis) = 1
