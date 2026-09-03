@@ -1300,3 +1300,9 @@ end
 const add_system_handler! = add_system_handler
 const evaluate_group! = evaluate_group
 
+
+
+
+# Evaluator-specific dispatches for require_coeff/grid_space!
+require_coeff_space!(ev::Evaluator, fields) = require_coeff_space(ev, fields)
+require_grid_space!(ev::Evaluator, fields) = require_grid_space(ev, fields)

@@ -1085,9 +1085,7 @@ end
 
 """Stub: build_system! for handler."""
 
-"""Stub: require_grid_space! for evaluator."""
 
-"""Stub: require_coeff_space! for evaluator."""
 
 """Stub: change_scales! for fields."""
 

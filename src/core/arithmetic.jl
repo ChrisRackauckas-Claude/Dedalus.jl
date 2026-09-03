@@ -158,7 +158,7 @@ the bases from all arguments.
 function add_build_bases(args...)
     dist = unify_attributes(args, :dist)
     bases = []
-    bases_by_coord_first = args[1].domain.bases_by_coord
+    bases_by_coord_first = bases_by_coord(args[1].domain)
     for coord in keys(bases_by_coord_first)
         ax_bases = [get(bases_by_coord(arg.domain), coord, nothing) for arg in args]
         # All constant bases yields constant basis
@@ -457,8 +457,8 @@ Build output bases for a product operation.
 """
 function product_build_bases(arg0, arg1; ncc::Bool=false, ncc_vars=nothing, kw...)
     bases = []
-    arg0_bases = arg0.domain.bases_by_coord
-    arg1_bases = arg1.domain.bases_by_coord
+    arg0_bases = bases_by_coord(arg0.domain)
+    arg1_bases = bases_by_coord(arg1.domain)
     for coord in keys(arg0_bases)
         b0 = arg0_bases[coord]
         b1 = arg1_bases[coord]
@@ -840,7 +840,7 @@ function matrix_coupling(op::Product, vars...)
     operand = op.operand
     operand_coupling = matrix_coupling(operand, vars...)
     ncc = op.ncc
-    ncc_coupling = ncc.domain_nonconstant(domain)
+    ncc_coupling = domain_nonconstant(ncc.domain)
     return ncc_coupling .| operand_coupling
 end
 
