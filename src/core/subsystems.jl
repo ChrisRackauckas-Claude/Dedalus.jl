@@ -1008,24 +1008,8 @@ function _expand_pattern(source, target)
     return copy(source)
 end
 
-# ============================================================================
-# Forward-reference stubs
-# ============================================================================
-
-"""Stub: gather_ncc_coeffs for expressions."""
-function gather_ncc_coeffs end
-
-"""Stub: expression_matrices for building subproblem matrices."""
-function expression_matrices end
-
-"""Stub: local_groupsets from layout."""
-function local_groupsets end
-
-"""Stub: local_groupset_slices from layout."""
-function local_groupset_slices end
-
-# Import from problems.jl (forward reference)
-# EigenvalueProblem, problem_dtype are expected to be available
+# gather_ncc_coeffs, expression_matrices, local_groupsets, local_groupset_slices
+# are defined in earlier-included files (future.jl, field.jl, operators.jl, distributor.jl)
 
 # ============================================================================
 # Exports

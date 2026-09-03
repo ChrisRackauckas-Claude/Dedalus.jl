@@ -1229,46 +1229,9 @@ function decrement_single(transpose_obj::Transpose, field)
     preset_layout!(field, transpose_obj.layout0)
 end
 
-# ============================================================================
-# Forward-reference stubs for Field interface
-# ============================================================================
-
-# These functions define the interface that Field types must implement.
-# They will be properly defined when the Field module is translated.
-
-# preset_layout!(field, layout) is defined in field.jl (loaded before this file)
-
-"""
-    backward_transform(basis, field, axis, cdata, gdata)
-
-Perform a backward (coeff -> grid) transform.
-Must be implemented by basis types.
-"""
-function backward_transform end
-
-"""
-    forward_transform(basis, field, axis, gdata, cdata)
-
-Perform a forward (grid -> coeff) transform.
-Must be implemented by basis types.
-"""
-function forward_transform end
-
-"""
-    elements_to_groups(basis, grid_space, elements)
-
-Convert element indices to group indices.
-Must be implemented by basis types.
-"""
-function elements_to_groups end
-
-"""
-    domain_bases(domain)
-
-Return the bases of a domain. Alias for the function defined in domain.jl.
-This stub is provided so that distributor.jl can be loaded independently.
-"""
-function domain_bases end
+# backward_transform, forward_transform, elements_to_groups are defined in basis.jl
+# domain_bases is defined in domain.jl
+# preset_layout! is defined in field.jl
 
 # ============================================================================
 # Exports

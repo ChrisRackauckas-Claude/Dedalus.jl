@@ -235,10 +235,7 @@ function solver_matrices end
 # Stub types for forward references
 # ============================================================================
 
-"""Stub: Evaluator constructor."""
-
-"""Stub: basis_matrix_dependence."""
-function basis_matrix_dependence end
+# basis_matrix_dependence is defined in operators.jl
 
 # ============================================================================
 # EigenvalueSolver
