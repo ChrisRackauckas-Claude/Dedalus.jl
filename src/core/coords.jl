@@ -146,15 +146,13 @@ Base.show(io::IO, c::Coordinate) = print(io, c.name)
 Base.string(c::Coordinate) = c.name
 
 # --- equality / hashing -------------------------------------------------------
-# Python Coordinate.__eq__ compares type and name.
-# Python Coordinate.__hash__ uses id (object identity) — we mirror that.
 
 function Base.:(==)(a::Coordinate, b::Coordinate)
     typeof(a) === typeof(b) || return false
     return a.name == b.name
 end
 
-Base.hash(c::Coordinate, h::UInt) = hash(objectid(c), h)
+Base.hash(c::Coordinate, h::UInt) = hash(c.name, hash(typeof(c), h))
 
 # --- properties ---------------------------------------------------------------
 
@@ -211,7 +209,7 @@ function Base.:(==)(a::AzimuthalCoordinate, b::AzimuthalCoordinate)
     return a.name == b.name
 end
 
-Base.hash(c::AzimuthalCoordinate, h::UInt) = hash(objectid(c), h)
+Base.hash(c::AzimuthalCoordinate, h::UInt) = hash(c.name, hash(typeof(c), h))
 
 get_dim(::AzimuthalCoordinate) = 1
 get_coords(c::AzimuthalCoordinate) = (c,)
@@ -313,7 +311,7 @@ end
 
 Base.:(==)(::AbstractCoordinateSystem, ::AbstractCoordinateSystem) = false
 
-Base.hash(cs::AbstractCoordinateSystem, h::UInt) = hash(objectid(cs), h)
+Base.hash(cs::AbstractCoordinateSystem, h::UInt) = hash(get_coords(cs), h)
 
 # ============================================================================
 # CartesianCoordinates

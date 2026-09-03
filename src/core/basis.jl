@@ -398,7 +398,7 @@ const _cardinal_basis_cache = Dict{Tuple,WeakRef}()
 Construct (or retrieve cached) a CardinalBasis.
 """
 function CardinalBasis(coord::CoordinateOrAzimuthal, size::Integer)
-    key = (objectid(coord), Int(size))
+    key = (coord, Int(size))
     wr = get(_cardinal_basis_cache, key, nothing)
     if wr !== nothing
         inst = wr.value
@@ -760,7 +760,7 @@ function Jacobi(coord::CoordinateOrAzimuthal, size::Integer, bounds, a, b;
     coord_p, size_p, bounds_p, a_p, b_p, a0_p, b0_p, dealias_p, library_p = args
 
     # Cache lookup
-    cache_key = (objectid(coord_p), size_p, bounds_p, a_p, b_p, a0_p, b0_p, dealias_p, library_p)
+    cache_key = (coord_p, size_p, bounds_p, a_p, b_p, a0_p, b0_p, dealias_p, library_p)
     wr = get(_jacobi_cache, cache_key, nothing)
     if wr !== nothing
         inst = wr.value
@@ -772,7 +772,7 @@ function Jacobi(coord::CoordinateOrAzimuthal, size::Integer, bounds, a, b;
     # Construct
     check_bounds(coord_p, bounds_p)
     cov = AffineCOV(JACOBI_NATIVE_BOUNDS, bounds_p)
-    grid_params = (objectid(coord_p), bounds_p, a0_p, b0_p, dealias_p, library_p)
+    grid_params = (coord_p, bounds_p, a0_p, b0_p, dealias_p, library_p)
     cmv = 1.0 / sqrt(mass(a_p, b_p))
 
     inst = JacobiBasis(
@@ -1234,7 +1234,7 @@ function ComplexFourier(coord::CoordinateOrAzimuthal, size::Integer, bounds;
     coord_p, size_p, bounds_p, dealias_p, library_p = _preprocess_fourier_args(
         coord, size, bounds, dealias, library)
 
-    cache_key = (objectid(coord_p), size_p, bounds_p, dealias_p, library_p)
+    cache_key = (coord_p, size_p, bounds_p, dealias_p, library_p)
     wr = get(_complex_fourier_cache, cache_key, nothing)
     if wr !== nothing
         inst = wr.value
@@ -1356,7 +1356,7 @@ function RealFourier(coord::CoordinateOrAzimuthal, size::Integer, bounds;
     coord_p, size_p, bounds_p, dealias_p, library_p = _preprocess_fourier_args(
         coord, size, bounds, dealias, library)
 
-    cache_key = (objectid(coord_p), size_p, bounds_p, dealias_p, library_p)
+    cache_key = (coord_p, size_p, bounds_p, dealias_p, library_p)
     wr = get(_real_fourier_cache, cache_key, nothing)
     if wr !== nothing
         inst = wr.value
