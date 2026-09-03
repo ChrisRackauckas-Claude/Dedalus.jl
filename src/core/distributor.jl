@@ -1276,7 +1276,7 @@ function domain_bases end
 
 export Distributor,
        Layout,
-       Transform,
+       DistTransform,
        Transpose,
        SerialComm,
        SerialCommCart,
