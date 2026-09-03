@@ -1129,7 +1129,7 @@ function Lift(arg, output_basis, n; out=nothing)
         throw(ArgumentError("Only negative mode specifiers allowed for Lift"))
     end
     dist = arg.dist
-    input_basis = get_basis(arg.domain, output_basis.coords)
+    input_basis = get_basis(arg.domain, basis_coordsys(output_basis))
     first_axis = get_basis_axis(dist, output_basis)
     last_axis = first_axis + get_dim(output_basis) - 1
     new_domain = substitute_basis(arg.domain, input_basis, output_basis)
