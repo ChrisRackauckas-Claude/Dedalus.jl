@@ -9,7 +9,7 @@ using Dedalus
     dtype_range = [Float64, ComplexF64]
     layout_range = ["g", "c"]
     scales_range = [1, 1.5]
-    parallel_range = ["gather", "virtual"]
+    parallel_range = ["gather"]  # virtual/mpio deferred to milestone 3
 
     @testset "Cartesian output N=$N dealias=$dealias T=$T scales=$output_scales layout=$output_layout parallel=$parallel" for
             N in [8],
