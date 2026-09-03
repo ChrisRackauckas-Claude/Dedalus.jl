@@ -1705,21 +1705,7 @@ end
 # the arithmetic module's Add, Multiply, etc.
 # ============================================================================
 
-"""
-    operand_cast(arg, dist, tensorsig, dtype)
-
-Cast a value to an AbstractOperand. If already an Operand, return as-is.
-If a Number, create a constant field. This is a forward reference to
-`Operand.cast` from field.jl.
-"""
-function operand_cast(arg, dist, tensorsig, dtype)
-    if arg isa AbstractOperand
-        return arg
-    end
-    # For numbers, the actual cast to constant field depends on Field infrastructure
-    # For now, return the number (factory functions handle Number arguments)
-    return arg
-end
+# operand_cast is defined in field.jl (loaded before this file)
 
 # ============================================================================
 # Exports
