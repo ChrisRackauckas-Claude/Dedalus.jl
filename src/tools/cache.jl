@@ -109,7 +109,7 @@ macro cached_attribute(name, T, expr)
     compute_body = esc(expr)
     return quote
         function $(func_name)(instance)::$(result_type)
-            cache = get!(IdDict, instance._cache)
+            cache = instance._cache
             key = $(cache_key)
             if !haskey(cache, key)
                 cache[key] = $(compute_body)
