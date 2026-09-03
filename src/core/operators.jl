@@ -1538,9 +1538,10 @@ function operate(op::CartesianTrace, out)
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     # Perform trace: sum over diagonal of first two tensor indices
-    dim = op.get_dim(coordsys)
+    cs = op.coordsys
+    d = cs_dim(cs)
     out.data .= 0
-    for i in 1:dim
+    for i in 1:d
         spatial_idx = ntuple(_ -> Colon(), ndims(arg.data) - 2)
         out.data .+= arg.data[i, i, spatial_idx...]
     end
@@ -1551,8 +1552,8 @@ function new_operand(op::CartesianTrace, operand; kw...)
 end
 
 function subproblem_matrix(op::CartesianTrace, subproblem)
-    dim = op.get_dim(coordsys)
-    trace_vec = vec(Matrix{Float64}(I, dim, dim))
+    d = cs_dim(op.coordsys)
+    trace_vec = vec(Matrix{Float64}(I, d, d))
     # Kronecker with remaining tensor components and coefficient size
     n_eye = prod(cs_dim(cs) for cs in op.tensorsig; init=1)
     n_eye *= subproblem.coeff_size(op.domain)
@@ -2211,3 +2212,27 @@ export AbstractOperator, AbstractLinearOperator, SpectralOperator, SpectralOpera
        subproblem_matrix, expression_matrices,
        subspace_matrix,
        dt, lap
+
+# ============================================================================
+# Convenience functions (re-added after duplicate removal)
+# ============================================================================
+
+differentiate(arg, coord) = Differentiate(arg, coord)
+interpolate(arg, coord, position) = Interpolate(arg, coord, position)
+integrate(arg, coord) = Integrate(arg, coord)
+integrate(arg) = Integrate(arg)
+average(arg, coord) = Average(arg, coord)
+average(arg) = Average(arg)
+lift(arg, basis, n) = Lift(arg, basis, n)
+
+# ============================================================================
+# Stubs for subsystem/solver wiring
+# ============================================================================
+
+function local_groupset_slices(layout, domain, subsystem)
+    return (Colon(),)
+end
+
+function basis_matrix_dependence(basis, axis)
+    return false
+end
