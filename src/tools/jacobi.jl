@@ -96,13 +96,22 @@ function build_weights(N::Integer, a, b)
     if N == 0
         return Vector{OUTPUT_DTYPE}()
     end
-    J = jacobi_matrix(N, a, b)
-    F = eigen(Symmetric(J))
-    # Sort by eigenvalues to match build_grid ordering
-    idx = sortperm(F.values)
-    # Weights = mass(a, b) * (first component of each eigenvector)^2
+    # Get the grid points
+    grid = build_grid(N, a, b)
+    # Evaluate normalized polynomials at grid points
+    P = build_polynomials(N, a, b, grid)  # M x N matrix
+    # Weights via Christoffel-Darboux: w_j = mass(a,b) / sum_n P_n(x_j)^2
+    # Since polynomials are orthonormal w.r.t. the weight, the inverse of
+    # sum of squares gives the quadrature weights up to mass normalization.
     m = mass(a, b)
-    w = OUTPUT_DTYPE[m * F.vectors[1, i]^2 for i in idx]
+    w = zeros(OUTPUT_DTYPE, N)
+    for j in 1:N
+        s = zero(OUTPUT_DTYPE)
+        for n in 1:N
+            s += P[n, j]^2
+        end
+        w[j] = m / s
+    end
     return w
 end
 
