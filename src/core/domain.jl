@@ -701,7 +701,9 @@ function group_shape_val end
 
 Return the first axis index (1-based) of this basis in the distributor.
 """
-function axis end
+function axis(basis)
+    return get_basis_axis(basis.dist, basis)
+end
 
 # --- AbstractDistributor interface stubs ---
 

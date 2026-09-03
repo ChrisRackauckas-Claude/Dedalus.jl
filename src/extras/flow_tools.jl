@@ -168,10 +168,6 @@ end
 Placeholder that delegates to the evaluator's `add_dictionary_handler` method.
 This will call the real implementation once the evaluator module is translated.
 """
-function add_dictionary_handler(evaluator; iter=1)
-    # Delegates to the evaluator module's implementation
-    return evaluator
-end
 
 """
     add_property!(flow::GlobalFlowProperty, property, name::AbstractString;
@@ -197,10 +193,6 @@ end
 Placeholder that delegates to the handler's `add_task` method. This will call
 the real implementation once the evaluator/handler modules are translated.
 """
-function add_task!(handler, task; kwargs...)
-    # Placeholder — real implementation in evaluator.jl
-    return nothing
-end
 
 """
     flow_min(flow::GlobalFlowProperty, name::AbstractString) -> scalar
