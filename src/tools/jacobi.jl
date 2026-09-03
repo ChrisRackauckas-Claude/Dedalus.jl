@@ -26,15 +26,15 @@ const OUTPUT_DTYPE = Float64
 
 Compute the mass (L2 norm squared) of the Jacobi weight function:
 
-    mass(a, b) = ∫₋₁¹ (1-x)^a (1+x)^b dx
-               = 2^(a+b+1) * Γ(a+1) * Γ(b+1) / Γ(a+b+2)
+    mass(a, b) = integral from -1 to 1 of (1-x)^a (1+x)^b dx
+               = 2^(a+b+1) * Gamma(a+1) * Gamma(b+1) / Gamma(a+b+2)
 
 Uses the log-gamma function for numerical stability.
 
 # Examples
 ```julia
 mass(0, 0)    # 2.0
-mass(0.5, 0.5)  # ≈ π/2
+mass(0.5, 0.5)  # approximately pi/2
 ```
 """
 function mass(a, b)
@@ -42,24 +42,116 @@ function mass(a, b)
 end
 
 # ---------------------------------------------------------------------------
-# build_grid (stub)
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+"""
+    _jacobi_norm_sq(n, a, b) -> Float64
+
+Squared norm of the classical Jacobi polynomial P_n^{(a,b)} under the weight
+(1-x)^a * (1+x)^b on [-1,1]:
+    h_n = 2^{a+b+1}/(2n+a+b+1) * Gamma(n+a+1)*Gamma(n+b+1)/(n!*Gamma(n+a+b+1))
+"""
+function _jacobi_norm_sq(n::Integer, a, b)
+    if n == 0
+        return mass(a, b)
+    end
+    return exp(
+        (a + b + 1) * log(2.0) - log(2.0 * n + a + b + 1) +
+        loggamma(n + a + 1) + loggamma(n + b + 1) -
+        loggamma(Float64(n + 1)) - loggamma(n + a + b + 1)
+    )
+end
+
+"""
+    _norm_ratio(dn, da, db, n, a, b) -> Float64
+
+Compute sqrt(h_{n+dn}^{(a+da,b+db)} / h_n^{(a,b)}) where h_n is the classical
+Jacobi polynomial squared norm. Used for normalizing operators.
+"""
+function _norm_ratio(dn::Integer, da::Integer, db::Integer, n::Integer, a, b)
+    return sqrt(_jacobi_norm_sq(n + dn, a + da, b + db) / _jacobi_norm_sq(n, a, b))
+end
+
+# ---------------------------------------------------------------------------
+# jacobi_matrix
+# ---------------------------------------------------------------------------
+
+"""
+    jacobi_matrix(N, a, b) -> Matrix{Float64}
+
+Build the tridiagonal Jacobi matrix (three-term recurrence matrix) for
+unit-normalized Jacobi polynomials P^{(a,b)}. This is the N x N symmetric
+tridiagonal matrix whose eigenvalues are the Gauss-Jacobi quadrature nodes.
+
+The recurrence is: x * p_n = e_{n-1} * p_{n-1} + d_n * p_n + e_n * p_{n+1}
+where d_n = (b^2-a^2)/((2n+a+b)(2n+a+b+2)) is the diagonal entry and
+e_n = sqrt(4(n+1)(n+a+1)(n+b+1)(n+a+b+1)/((2n+a+b+2)^2*((2n+a+b+2)^2-1)))
+is the off-diagonal entry.
+
+# Arguments
+- `N::Integer` -- number of modes (matrix will be `N x N`).
+- `a` -- first Jacobi parameter.
+- `b` -- second Jacobi parameter.
+
+# Returns
+- `Matrix{Float64}` of size `(N, N)`.
+"""
+function jacobi_matrix(N::Integer, a, b)
+    if N == 0
+        return Matrix{OUTPUT_DTYPE}(undef, 0, 0)
+    end
+    d = zeros(OUTPUT_DTYPE, N)
+    e = zeros(OUTPUT_DTYPE, max(N - 1, 0))
+
+    # Diagonal entries
+    for n in 0:(N - 1)
+        s = 2.0 * n + a + b
+        if abs(s) < 1e-15
+            # When 2n+a+b = 0, use L'Hopital: (b^2-a^2)/(s*(s+2)) -> (b-a)/(s+2)
+            d[n + 1] = (b - a) / (s + 2)
+        else
+            d[n + 1] = (b^2 - a^2) / (s * (s + 2))
+        end
+    end
+
+    # Off-diagonal entries
+    for n in 0:(N - 2)
+        s = 2.0 * n + a + b + 2.0
+        num = 4.0 * (n + 1) * (n + a + 1) * (n + b + 1) * (n + a + b + 1)
+        den = s^2 * (s^2 - 1)
+        if n == 0 && abs(a + b + 1) < 1e-15
+            # Special case: a+b=-1, n=0. Both num and den -> 0.
+            # Limit: 2*(a+1)*(b+1)
+            e[n + 1] = sqrt(abs(2.0 * (a + 1) * (b + 1)))
+        elseif abs(den) < 1e-30
+            e[n + 1] = 0.0
+        else
+            e[n + 1] = sqrt(abs(num / den))
+        end
+    end
+
+    return Matrix{OUTPUT_DTYPE}(SymTridiagonal(d, e))
+end
+
+# ---------------------------------------------------------------------------
+# build_grid
 # ---------------------------------------------------------------------------
 
 """
     build_grid(N, a, b) -> Vector{Float64}
 
 Build the Gauss-Jacobi quadrature grid of `N` points for parameters `(a, b)`.
-Returns only the grid points (not the weights).
-
-Delegates to `jacobi.quadrature(N, a, b)` from the `dedalus_sphere` library.
+Returns only the grid points (not the weights). Computed via eigendecomposition
+of the Jacobi matrix (Golub-Welsch algorithm).
 
 # Arguments
 - `N::Integer` -- number of quadrature points.
-- `a` -- first Jacobi parameter (α).
-- `b` -- second Jacobi parameter (β).
+- `a` -- first Jacobi parameter.
+- `b` -- second Jacobi parameter.
 
 # Returns
-- `Vector{Float64}` of length `N` containing the quadrature nodes.
+- `Vector{Float64}` of length `N` containing the quadrature nodes sorted ascending.
 """
 function build_grid(N::Integer, a, b)
     if N == 0
@@ -67,27 +159,26 @@ function build_grid(N::Integer, a, b)
     end
     J = jacobi_matrix(N, a, b)
     F = eigen(Symmetric(J))
-    # Eigenvalues are the quadrature nodes, sorted ascending
     idx = sortperm(F.values)
     return OUTPUT_DTYPE.(F.values[idx])
 end
 
 # ---------------------------------------------------------------------------
-# build_weights (stub)
+# build_weights
 # ---------------------------------------------------------------------------
 
 """
     build_weights(N, a, b) -> Vector{Float64}
 
 Build the Gauss-Jacobi quadrature weights for `N` points with parameters `(a, b)`.
-Returns only the weights (not the grid points).
-
-Delegates to `jacobi.quadrature(N, a, b)` from the `dedalus_sphere` library.
+Returns only the weights (not the grid points). Computed via the eigenvectors
+of the Jacobi matrix: weights = mass(a,b) * v[1,:]^2 where v are the
+normalized eigenvectors.
 
 # Arguments
 - `N::Integer` -- number of quadrature points.
-- `a` -- first Jacobi parameter (α).
-- `b` -- second Jacobi parameter (β).
+- `a` -- first Jacobi parameter.
+- `b` -- second Jacobi parameter.
 
 # Returns
 - `Vector{Float64}` of length `N` containing the quadrature weights.
@@ -96,42 +187,30 @@ function build_weights(N::Integer, a, b)
     if N == 0
         return Vector{OUTPUT_DTYPE}()
     end
-    # Get the grid points
-    grid = build_grid(N, a, b)
-    # Evaluate normalized polynomials at grid points
-    P = build_polynomials(N, a, b, grid)  # M x N matrix
-    # Weights via Christoffel-Darboux: w_j = mass(a,b) / sum_n P_n(x_j)^2
-    # Since polynomials are orthonormal w.r.t. the weight, the inverse of
-    # sum of squares gives the quadrature weights up to mass normalization.
+    J = jacobi_matrix(N, a, b)
+    F = eigen(Symmetric(J))
+    idx = sortperm(F.values)
     m = mass(a, b)
-    w = zeros(OUTPUT_DTYPE, N)
-    for j in 1:N
-        s = zero(OUTPUT_DTYPE)
-        for n in 1:N
-            s += P[n, j]^2
-        end
-        w[j] = m / s
-    end
-    return w
+    return OUTPUT_DTYPE[m * F.vectors[1, i]^2 for i in idx]
 end
 
 # ---------------------------------------------------------------------------
-# build_polynomials (stub)
+# build_polynomials
 # ---------------------------------------------------------------------------
 
 """
     build_polynomials(M, a, b, grid) -> Matrix{Float64}
 
-Evaluate the first `M` Jacobi polynomials P_n^{(a,b)} on the given `grid`.
-Returns an `M × length(grid)` matrix where row `n` contains P_{n-1}^{(a,b)}
-evaluated at each grid point.
+Evaluate the first `M` unit-normalized Jacobi polynomials P_n^{(a,b)} on the
+given `grid`. Returns an `M x length(grid)` matrix where row `n` contains
+P_{n-1}^{(a,b)} evaluated at each grid point.
 
-Delegates to `jacobi.polynomials(M, a, b, grid)` from the `dedalus_sphere` library.
+Uses the three-term recurrence derived from the Jacobi matrix entries.
 
 # Arguments
 - `M::Integer` -- number of polynomials to evaluate (modes 0 through M-1).
-- `a` -- first Jacobi parameter (α).
-- `b` -- second Jacobi parameter (β).
+- `a` -- first Jacobi parameter.
+- `b` -- second Jacobi parameter.
 - `grid` -- vector of points at which to evaluate the polynomials.
 
 # Returns
@@ -143,23 +222,24 @@ function build_polynomials(M::Integer, a, b, grid)
     if M == 0
         return P
     end
-    # Normalized initial value: P_0 = 1 / sqrt(mass(a,b))
+    # Normalized P_0 = 1 / sqrt(mass(a,b))
     P[1, :] .= 1.0 / sqrt(mass(a, b))
     if M == 1
         return P
     end
-    # Use the Jacobi matrix for the three-term recurrence
+    # Use the Jacobi matrix for the three-term recurrence:
+    # x * P_n = e_{n-1} * P_{n-1} + d_n * P_n + e_n * P_{n+1}
+    # => P_{n+1} = ((x - d_n) * P_n - e_{n-1} * P_{n-1}) / e_n
     J = jacobi_matrix(M, a, b)
-    d = diag(J)          # diagonal entries, length M
-    e = diag(J, 1)       # superdiagonal entries, length M-1
-    # Recurrence: e[n] * P_{n+1}(x) = (x - d[n]) * P_n(x) - e[n-1] * P_{n-1}(x)
-    # (with e[0] = 0 for the first step)
+    d = diag(J)         # diagonal entries, length M
+    e = diag(J, 1)      # superdiagonal entries, length M-1
     for n in 1:(M - 1)
         for j in 1:Ng
             x = grid[j]
-            P[n + 1, j] = (x - d[n]) * P[n, j] / e[n]
-            if n > 1
-                P[n + 1, j] -= e[n - 1] * P[n - 1, j] / e[n]
+            if n == 1
+                P[n + 1, j] = (x - d[n]) * P[n, j] / e[n]
+            else
+                P[n + 1, j] = ((x - d[n]) * P[n, j] - e[n - 1] * P[n - 1, j]) / e[n]
             end
         end
     end
@@ -167,40 +247,36 @@ function build_polynomials(M::Integer, a, b, grid)
 end
 
 # ---------------------------------------------------------------------------
-# conversion_matrix (stub)
+# conversion_matrix
 # ---------------------------------------------------------------------------
 
 """
     conversion_matrix(N, a0, b0, a1, b1) -> Matrix{Float64}
 
-Build the conversion matrix that maps coefficients of Jacobi polynomials
-P^{(a0, b0)} to coefficients of P^{(a1, b1)}.
+Build the conversion matrix that maps coefficients of unit-normalized Jacobi
+polynomials P^{(a0, b0)} to coefficients of P^{(a1, b1)}.
 
 The parameters must satisfy:
 - `a1 - a0` must be a non-negative integer (number of 'A' raising steps).
 - `b1 - b0` must be a non-negative integer (number of 'B' raising steps).
 
 The conversion is built by composing the elementary raising operators
-`jacobi.operator('A')(+1)` and `jacobi.operator('B')(+1)` from the
-`dedalus_sphere` library.
-
-Delegates to `jacobi.operator` from the `dedalus_sphere` library.
+A(+1) and B(+1), matching the Python dedalus_sphere jacobi.operator convention.
 
 # Arguments
-- `N::Integer` -- number of modes (matrix will be `N × N`).
-- `a0` -- source α parameter.
-- `b0` -- source β parameter.
-- `a1` -- target α parameter.
-- `b1` -- target β parameter.
+- `N::Integer` -- number of modes (matrix will be `N x N`).
+- `a0` -- source alpha parameter.
+- `b0` -- source beta parameter.
+- `a1` -- target alpha parameter.
+- `b1` -- target beta parameter.
 
 # Returns
 - `Matrix{Float64}` of size `(N, N)`.
 
 # Throws
-- `ValueError` if `a1 - a0` or `b1 - b0` is not a non-negative integer.
+- `ArgumentError` if `a1 - a0` or `b1 - b0` is not a non-negative integer.
 """
 function conversion_matrix(N::Integer, a0, b0, a1, b1)
-    # Validate integer separation of parameters
     da = a1 - a0
     db = b1 - b0
     if da != round(Int, da) || da < 0
@@ -214,203 +290,127 @@ function conversion_matrix(N::Integer, a0, b0, a1, b1)
 
     result = Matrix{OUTPUT_DTYPE}(eye_I, N, N)
 
-    # Apply A-raising operator da times: P^{(a,b)} -> P^{(a+1,b)}
-    ac = Float64(a0)
-    bc = Float64(b0)
-    for _ in 1:da_int
-        result = _raising_A(N, ac, bc) * result
-        ac += 1
-    end
-
-    # Apply B-raising operator db times: P^{(a,b)} -> P^{(a,b+1)}
+    # Apply B-raising operator db times first: P^{(a0,b0)} -> P^{(a0,b0+db)}
+    # Then apply A-raising operator da times: P^{(a0,b0+db)} -> P^{(a0+da,b0+db)}
+    # This matches the Python: conv = A**da @ B**db, which first applies B, then A.
+    cur_a = Float64(a0)
+    cur_b = Float64(b0)
     for _ in 1:db_int
-        result = _raising_B(N, ac, bc) * result
-        bc += 1
+        result = _raising_B_normalized(N, cur_a, cur_b) * result
+        cur_b += 1
+    end
+    for _ in 1:da_int
+        result = _raising_A_normalized(N, cur_a, cur_b) * result
+        cur_a += 1
     end
 
     return result
 end
 
 """
-    _raising_A(N, a, b) -> Matrix{Float64}
+    _raising_A_normalized(N, a, b) -> Matrix{Float64}
 
-Elementary raising operator A(+1): maps P^{(a,b)} coefficients to P^{(a+1,b)} coefficients.
-Matrix layout follows the Python dedalus_sphere convention: diagonal + subdiagonal.
+Build the A(+1) operator for unit-normalized Jacobi polynomials.
+Maps P^{(a,b)} coefficients to P^{(a+1,b)} coefficients.
+
+For unit-normalized polynomials tilde{P}_n = P_n / sqrt(h_n), the relation
+P_n^{(a,b)} = c_{diag} P_n^{(a+1,b)} + c_{sup} P_{n-1}^{(a+1,b)} becomes:
+tilde{P}_n^{(a,b)} = (c_{diag} * r_diag) tilde{P}_n^{(a+1,b)}
+                    + (c_{sup} * r_sup) tilde{P}_{n-1}^{(a+1,b)}
+where r_diag = sqrt(h_n^{(a+1,b)}/h_n^{(a,b)}) and r_sup = sqrt(h_{n-1}^{(a+1,b)}/h_n^{(a,b)}).
 """
-function _raising_A(N::Integer, a, b)
+function _raising_A_normalized(N::Integer, a, b)
     M = zeros(OUTPUT_DTYPE, N, N)
     for n in 0:(N - 1)
         s = 2.0 * n + a + b
-        # Diagonal: (n + a + b + 1) / (s + 2)
-        denom = s + 2
-        if abs(denom) > 1e-30
-            M[n + 1, n + 1] = (n + a + b + 1) / denom
+        # Classical diagonal coefficient
+        if n == 0 && abs(a + b + 1) < 1e-15
+            c_diag = 1.0
+        elseif n == 0
+            c_diag = (n + a + b + 1) / (a + b + 1)
+        else
+            c_diag = (n + a + b + 1) / (s + 1)
         end
-        # Subdiagonal: M[n+1, n] = (n + b) / s  for n >= 1 (0-indexed)
+        # Normalized diagonal: A[n+1, n+1]
+        M[n + 1, n + 1] = c_diag * _norm_ratio(0, 1, 0, n, a, b)
+        # Superdiagonal: A[n, n+1] for n >= 1 (0-indexed)
         if n >= 1
-            if abs(s) > 1e-30
-                M[n + 1, n] = (n + b) / s
-            else
-                M[n + 1, n] = 0.5
-            end
+            c_sup = -(n + b) / (s + 1)
+            M[n, n + 1] = c_sup * _norm_ratio(-1, 1, 0, n, a, b)
         end
     end
     return M
 end
 
 """
-    _raising_B(N, a, b) -> Matrix{Float64}
+    _raising_B_normalized(N, a, b) -> Matrix{Float64}
 
-Elementary raising operator B(+1): maps P^{(a,b)} coefficients to P^{(a,b+1)} coefficients.
-Matrix layout follows the Python dedalus_sphere convention: diagonal + subdiagonal.
+Build the B(+1) operator for unit-normalized Jacobi polynomials.
+Maps P^{(a,b)} coefficients to P^{(a,b+1)} coefficients.
+Computed via: B(+1) = Pi * A(+1)(b,a) * Pi, where Pi = diag((-1)^n).
 """
-function _raising_B(N::Integer, a, b)
-    M = zeros(OUTPUT_DTYPE, N, N)
-    for n in 0:(N - 1)
-        s = 2.0 * n + a + b
-        # Diagonal: (n + a + b + 1) / (s + 2)
-        denom = s + 2
-        if abs(denom) > 1e-30
-            M[n + 1, n + 1] = (n + a + b + 1) / denom
-        end
-        # Subdiagonal: M[n+1, n] = -(n + a) / s  for n >= 1 (0-indexed)
-        if n >= 1
-            if abs(s) > 1e-30
-                M[n + 1, n] = -(n + a) / s
-            else
-                M[n + 1, n] = -0.5
-            end
-        end
-    end
-    return M
+function _raising_B_normalized(N::Integer, a, b)
+    Pi = diagm([(-1.0)^n for n in 0:(N - 1)])
+    Ap = _raising_A_normalized(N, b, a)
+    return Pi * Ap * Pi
 end
 
 # ---------------------------------------------------------------------------
-# differentiation_matrix (stub)
+# differentiation_matrix
 # ---------------------------------------------------------------------------
 
 """
     differentiation_matrix(N, a, b) -> Matrix{Float64}
 
-Build the spectral differentiation matrix for Jacobi polynomials P^{(a,b)}.
-The derivative raises both parameters by 1, so this maps N coefficients of
-P^{(a,b)} to N coefficients of P^{(a+1,b+1)}.
+Build the spectral differentiation matrix for unit-normalized Jacobi
+polynomials P^{(a,b)}. The derivative of P_n^{(a,b)} lies in the P^{(a+1,b+1)}
+basis, so this maps N coefficients of P^{(a,b)} to N coefficients of
+P^{(a+1,b+1)}.
 
-Delegates to `jacobi.operator('D')(+1)` from the `dedalus_sphere` library.
+For classical polynomials: d/dx P_n^{(a,b)} = (n+a+b+1)/2 * P_{n-1}^{(a+1,b+1)}.
+For unit-normalized polynomials, each entry is scaled by the appropriate norm ratio.
 
 # Arguments
-- `N::Integer` -- number of modes (matrix will be `N × N`).
-- `a` -- first Jacobi parameter (α).
-- `b` -- second Jacobi parameter (β).
+- `N::Integer` -- number of modes (matrix will be `N x N`).
+- `a` -- first Jacobi parameter.
+- `b` -- second Jacobi parameter.
 
 # Returns
 - `Matrix{Float64}` of size `(N, N)`.
 """
 function differentiation_matrix(N::Integer, a, b)
-    M = zeros(OUTPUT_DTYPE, N, N)
-    # Superdiagonal: M[i, i+1] = (n + a + b + 1) / 2 where n = i-1 (0-indexed)
-    # Python: coeffs[n] = (n + a + b + 1) / 2, placed on superdiagonal k=1
-    # In 1-indexed Julia: M[i, i+1] = ((i-1) + a + b + 1) / 2 = (i + a + b) / 2
-    for i in 1:(N - 1)
-        M[i, i + 1] = (i - 1 + a + b + 1) / 2.0
+    D = zeros(OUTPUT_DTYPE, N, N)
+    # Superdiagonal: D[n, n+1] for n = 0..N-2 (0-indexed n maps to 1-indexed n+1)
+    # Classical: d/dx P_n^{(a,b)} = (n+a+b+1)/2 * P_{n-1}^{(a+1,b+1)}
+    # For unit-normalized polynomials, entry at position (n-1, n) in 0-indexed,
+    # i.e., (n, n+1) in 1-indexed, is:
+    # (n+a+b+1)/2 * sqrt(h_{n-1}^{(a+1,b+1)} / h_n^{(a,b)})
+    for n in 1:(N - 1)
+        c = (n + a + b + 1) / 2.0
+        D[n, n + 1] = c * _norm_ratio(-1, 1, 1, n, a, b)
     end
-    return M
+    return D
 end
 
 # ---------------------------------------------------------------------------
-# jacobi_matrix (stub)
-# ---------------------------------------------------------------------------
-
-"""
-    jacobi_matrix(N, a, b) -> Matrix{Float64}
-
-Build the tridiagonal Jacobi matrix (three-term recurrence matrix) for
-Jacobi polynomials P^{(a,b)}. This is the `N × N` symmetric tridiagonal
-matrix whose eigenvalues are the Gauss-Jacobi quadrature nodes.
-
-Delegates to `jacobi.operator('Z')` from the `dedalus_sphere` library.
-
-# Arguments
-- `N::Integer` -- number of modes (matrix will be `N × N`).
-- `a` -- first Jacobi parameter (α).
-- `b` -- second Jacobi parameter (β).
-
-# Returns
-- `Matrix{Float64}` of size `(N, N)`.
-"""
-function jacobi_matrix(N::Integer, a, b)
-    if N == 0
-        return Matrix{OUTPUT_DTYPE}(undef, 0, 0)
-    end
-    if N == 1
-        # For n=0, diagonal is (b^2-a^2)/((a+b)(a+b+2)), but handle a+b=0 or a+b=-1 specially
-        if a + b == 0
-            d0 = (b - a) / 2.0
-        elseif a + b == -1
-            d0 = 0.0  # (b^2-a^2) / ((2*0+a+b)*(2*0+a+b+2)) = (b-a)(b+a)/(-1*1) but a+b=-1 so numerator is (b-a)*(-1)
-            # Actually for a+b=-1: 2n+a+b = -1 for n=0, formula has 0/0 issue.
-            # From the Python code: the Z operator for N=1 is just 0 when a=b, and (b-a)/(a+b+2) otherwise?
-            # Let me use the standard formula: diagonal[n] = (b^2-a^2)/((2n+a+b)(2n+a+b+2))
-            # For n=0, a+b=-1: (b^2-a^2)/((-1)(1)) = -(b^2-a^2) = a^2-b^2
-            d0 = (a^2 - b^2) / 1.0  # (b^2-a^2)/((a+b)*(a+b+2)) = (b^2-a^2)/((-1)*(1))
-        else
-            d0 = (b^2 - a^2) / ((a + b) * (a + b + 2))
-        end
-        return OUTPUT_DTYPE[d0;;]
-    end
-    # Build N×N symmetric tridiagonal Jacobi matrix for unit-normalized Jacobi polynomials
-    # The recurrence: x * p_n = off_{n-1} * p_{n-1} + diag_n * p_n + off_n * p_{n+1}
-    # diag_n = (b^2 - a^2) / ((2n+a+b)(2n+a+b+2))
-    # off_n = 2/(2n+a+b+2) * sqrt((n+1)(n+a+1)(n+b+1)(n+a+b+1)/((2n+a+b+1)(2n+a+b+3)))
-    diag = zeros(OUTPUT_DTYPE, N)
-    offdiag = zeros(OUTPUT_DTYPE, N - 1)
-    for n in 0:(N-1)
-        s = 2 * n + a + b
-        if s == 0 && n == 0
-            # Special case: a+b=0, n=0
-            # diag[0] = (b-a)/2 from L'Hopital or direct computation
-            diag[n+1] = (b - a) / 2.0
-        elseif abs(s) < 1e-15 && abs(s + 2) < 1e-15
-            diag[n+1] = 0.0
-        else
-            diag[n+1] = (b^2 - a^2) / (s * (s + 2))
-        end
-    end
-    for n in 0:(N-2)
-        s = 2 * n + a + b + 2
-        num = (n + 1) * (n + a + 1) * (n + b + 1) * (n + a + b + 1)
-        den = (s - 1) * (s + 1)
-        if abs(den) < 1e-30
-            offdiag[n+1] = 0.0
-        else
-            offdiag[n+1] = 2.0 / s * sqrt(abs(num / den))
-        end
-    end
-    J = Matrix{OUTPUT_DTYPE}(SymTridiagonal(diag, offdiag))
-    return J
-end
-
-# ---------------------------------------------------------------------------
-# integration_vector (stub)
+# integration_vector
 # ---------------------------------------------------------------------------
 
 """
     integration_vector(N, a, b) -> Vector{Float64}
 
-Build the spectral integration vector for Jacobi polynomials P^{(a,b)}.
-The vector `v` satisfies `v ⋅ c ≈ ∫₋₁¹ f(x) dx` where `c` are the Jacobi
-expansion coefficients of `f`.
+Build the spectral integration vector for unit-normalized Jacobi polynomials
+P^{(a,b)}. The vector `v` satisfies `v . c = integral from -1 to 1 of f(x) dx`
+where `c` are the Jacobi expansion coefficients of `f`.
 
 The implementation uses Gauss-Legendre quadrature on the interpolated
 polynomial, normalized by `2 / mass(0, 0)`. Values below machine resolution
 are zeroed out.
 
-Delegates to `jacobi.quadrature` and `build_polynomials` from this module.
-
 # Arguments
 - `N::Integer` -- number of modes.
-- `a` -- first Jacobi parameter (α).
-- `b` -- second Jacobi parameter (β).
+- `a` -- first Jacobi parameter.
+- `b` -- second Jacobi parameter.
 
 # Returns
 - `Vector{Float64}` of length `N`.
@@ -420,16 +420,22 @@ function integration_vector(N::Integer, a, b)
         return Vector{OUTPUT_DTYPE}()
     end
     # Build Gauss-Legendre quadrature (a=0, b=0)
-    x = build_grid(N, 0, 0)
-    w = build_weights(N, 0, 0)
-    # Evaluate Jacobi polynomials P^{(a,b)}_n at Legendre grid points
-    P = build_polynomials(N, a, b, x)  # M x Ng matrix
-    # Integration vector: v[n] = sum_j w[j] * P[n, j]
-    v = P * w
-    # Zero out values below machine epsilon threshold
-    threshold = eps(OUTPUT_DTYPE) * N
-    v[abs.(v) .< threshold] .= 0.0
-    return v
+    leg_grid = build_grid(N, 0, 0)
+    leg_weights = build_weights(N, 0, 0)
+    # Evaluate Jacobi polynomials P^{(a,b)} at Legendre grid points
+    interp = build_polynomials(N, a, b, leg_grid)  # N x Ng matrix
+    # Compute integration vector: v_n = sum_j w_j * P_n(x_j) * (2 / mass(0,0))
+    # interp is N x Ng, leg_weights is Ng-vector
+    # interp * leg_weights gives N-vector
+    integ = interp * leg_weights * (2.0 / mass(0.0, 0.0))
+    # Zero out entries below machine resolution (matches Python: eps * N threshold)
+    cutoff = eps(OUTPUT_DTYPE) * N
+    for i in 1:N
+        if abs(integ[i]) < cutoff
+            integ[i] = 0.0
+        end
+    end
+    return integ
 end
 
 # ---------------------------------------------------------------------------
