@@ -1,6 +1,7 @@
 # Julia artifacts
 Manifest.toml
 *.jl.cov
+*.cov
 *.jl.mem
 deps/build.log
 
