@@ -159,7 +159,7 @@ Dummy solver that returns zeros for testing purposes.
 """
 struct DummySolver <: AbstractMatSolver end
 
-DummySolver(matrix; solver=nothing) = DummySolver()
+DummySolver(matrix, solver=nothing) = DummySolver()
 
 function solve(s::DummySolver, vector::AbstractVecOrMat)
     return zero(vector)
@@ -181,7 +181,7 @@ struct UmfpackSpsolve{Tv, Ti} <: AbstractSparseSolver
     matrix::SparseMatrixCSC{Tv, Ti}
 end
 
-function UmfpackSpsolve(matrix::AbstractSparseMatrix; solver=nothing)
+function UmfpackSpsolve(matrix::AbstractSparseMatrix, solver=nothing)
     UmfpackSpsolve(convert(SparseMatrixCSC, copy(matrix)))
 end
 
@@ -205,7 +205,7 @@ struct SuperluNaturalSpsolve{Tv, Ti} <: AbstractSparseSolver
     matrix::SparseMatrixCSC{Tv, Ti}
 end
 
-function SuperluNaturalSpsolve(matrix::AbstractSparseMatrix; solver=nothing)
+function SuperluNaturalSpsolve(matrix::AbstractSparseMatrix, solver=nothing)
     SuperluNaturalSpsolve(convert(SparseMatrixCSC, copy(matrix)))
 end
 
@@ -229,7 +229,7 @@ struct SuperluColamdSpsolve{Tv, Ti} <: AbstractSparseSolver
     matrix::SparseMatrixCSC{Tv, Ti}
 end
 
-function SuperluColamdSpsolve(matrix::AbstractSparseMatrix; solver=nothing)
+function SuperluColamdSpsolve(matrix::AbstractSparseMatrix, solver=nothing)
     SuperluColamdSpsolve(convert(SparseMatrixCSC, copy(matrix)))
 end
 
@@ -253,7 +253,7 @@ struct UmfpackFactorized{F} <: AbstractSparseSolver
     LU::F
 end
 
-function UmfpackFactorized(matrix::AbstractSparseMatrix; solver=nothing)
+function UmfpackFactorized(matrix::AbstractSparseMatrix, solver=nothing)
     F = lu(convert(SparseMatrixCSC, matrix))
     UmfpackFactorized(F)
 end
@@ -338,7 +338,7 @@ struct SuperluNaturalFactorized{F} <: AbstractSparseSolver
     inner::FactorizedTransposeSolver{F}
 end
 
-function SuperluNaturalFactorized(matrix::AbstractSparseMatrix; solver=nothing)
+function SuperluNaturalFactorized(matrix::AbstractSparseMatrix, solver=nothing)
     inner = FactorizedTransposeSolver(matrix; trans=:N, solver=solver)
     SuperluNaturalFactorized(inner)
 end
@@ -367,7 +367,7 @@ struct SuperluNaturalFactorizedTranspose{F} <: AbstractSparseSolver
     inner::FactorizedTransposeSolver{F}
 end
 
-function SuperluNaturalFactorizedTranspose(matrix::AbstractSparseMatrix; solver=nothing)
+function SuperluNaturalFactorizedTranspose(matrix::AbstractSparseMatrix, solver=nothing)
     inner = FactorizedTransposeSolver(matrix; trans=:T, solver=solver)
     SuperluNaturalFactorizedTranspose(inner)
 end
@@ -396,7 +396,7 @@ struct SuperluColamdFactorized{F} <: AbstractSparseSolver
     inner::FactorizedTransposeSolver{F}
 end
 
-function SuperluColamdFactorized(matrix::AbstractSparseMatrix; solver=nothing)
+function SuperluColamdFactorized(matrix::AbstractSparseMatrix, solver=nothing)
     inner = FactorizedTransposeSolver(matrix; trans=:N, solver=solver)
     SuperluColamdFactorized(inner)
 end
@@ -425,7 +425,7 @@ struct SuperluColamdFactorizedTranspose{F} <: AbstractSparseSolver
     inner::FactorizedTransposeSolver{F}
 end
 
-function SuperluColamdFactorizedTranspose(matrix::AbstractSparseMatrix; solver=nothing)
+function SuperluColamdFactorizedTranspose(matrix::AbstractSparseMatrix, solver=nothing)
     inner = FactorizedTransposeSolver(matrix; trans=:T, solver=solver)
     SuperluColamdFactorizedTranspose(inner)
 end
@@ -454,7 +454,7 @@ struct UmfpackFactorizedTranspose{F} <: AbstractSparseSolver
     inner::FactorizedTransposeSolver{F}
 end
 
-function UmfpackFactorizedTranspose(matrix::AbstractSparseMatrix; solver=nothing)
+function UmfpackFactorizedTranspose(matrix::AbstractSparseMatrix, solver=nothing)
     inner = FactorizedTransposeSolver(matrix; trans=:T, solver=solver)
     UmfpackFactorizedTranspose(inner)
 end
@@ -489,7 +489,7 @@ mutable struct BandedLAPACK{T} <: AbstractBandedSolver
     ipiv::Vector{Int}        # pivot indices from gbtrf!
 end
 
-function BandedLAPACK(matrix::AbstractSparseMatrix; solver=nothing)
+function BandedLAPACK(matrix::AbstractSparseMatrix, solver=nothing)
     (kl, ku), ab_narrow = sparse_to_banded(matrix)
     n = size(ab_narrow, 2)
     T = eltype(ab_narrow)
@@ -527,7 +527,7 @@ struct SPQRSolve{F} <: AbstractSparseSolver
     QR::F
 end
 
-function SPQRSolve(matrix::AbstractSparseMatrix; solver=nothing)
+function SPQRSolve(matrix::AbstractSparseMatrix, solver=nothing)
     F = qr(convert(SparseMatrixCSC, copy(matrix)))
     SPQRSolve(F)
 end
@@ -561,7 +561,7 @@ struct SparseInverse{Tv, Ti} <: AbstractSparseSolver
     end
 end
 
-function SparseInverse(matrix::AbstractSparseMatrix; solver=nothing)
+function SparseInverse(matrix::AbstractSparseMatrix, solver=nothing)
     M = convert(SparseMatrixCSC, matrix)
     # Compute inverse via LU factorisation and identity solves
     n = size(M, 1)
@@ -590,7 +590,7 @@ struct DenseInverse{T} <: AbstractDenseSolver
     matrix_inverse::Matrix{T}
 end
 
-function DenseInverse(matrix::AbstractSparseMatrix; solver=nothing)
+function DenseInverse(matrix::AbstractSparseMatrix, solver=nothing)
     M = Matrix(matrix)
     DenseInverse(inv(M))
 end
@@ -680,7 +680,7 @@ struct DenseLU{F} <: AbstractDenseSolver
     LU::F
 end
 
-function DenseLU(matrix::AbstractSparseMatrix; solver=nothing)
+function DenseLU(matrix::AbstractSparseMatrix, solver=nothing)
     DenseLU(lu(Matrix(matrix)))
 end
 
