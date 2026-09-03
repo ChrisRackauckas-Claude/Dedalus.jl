@@ -499,8 +499,7 @@ function BandedLAPACK(matrix::AbstractSparseMatrix; solver=nothing)
     AB = zeros(T, 2*kl + ku + 1, n)
     AB[kl+1:end, :] .= ab_narrow   # place the band data after the fill-in rows
 
-    ipiv = Vector{LinearAlgebra.BlasInt}(undef, n)
-    LinearAlgebra.LAPACK.gbtrf!(kl, ku, n, AB, ipiv)
+    AB, ipiv = LinearAlgebra.LAPACK.gbtrf!(kl, ku, n, AB)
     BandedLAPACK{T}(kl, ku, AB, ipiv)
 end
 
@@ -556,6 +555,10 @@ recommended for large systems.
 """
 struct SparseInverse{Tv, Ti} <: AbstractSparseSolver
     matrix_inverse::SparseMatrixCSC{Tv, Ti}
+    # Private inner constructor to avoid ambiguity with the outer constructor
+    function SparseInverse{Tv, Ti}(mi::SparseMatrixCSC{Tv, Ti}) where {Tv, Ti}
+        new{Tv, Ti}(mi)
+    end
 end
 
 function SparseInverse(matrix::AbstractSparseMatrix; solver=nothing)
@@ -563,8 +566,8 @@ function SparseInverse(matrix::AbstractSparseMatrix; solver=nothing)
     # Compute inverse via LU factorisation and identity solves
     n = size(M, 1)
     F = lu(M)
-    Minv = F \ Matrix{eltype(M)}(I, n, n)
-    SparseInverse(sparse(Minv))
+    Minv = sparse(F \ Matrix{eltype(M)}(I, n, n))
+    SparseInverse{eltype(Minv), eltype(rowvals(Minv))}(Minv)
 end
 
 function solve(s::SparseInverse, vector::AbstractVecOrMat)
