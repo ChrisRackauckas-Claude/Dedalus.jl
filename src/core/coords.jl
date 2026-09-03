@@ -1,0 +1,1014 @@
+"""
+    Coordinate systems for Dedalus.jl
+
+Julia translation of `dedalus/core/coords.py`. Provides coordinate and
+coordinate-system types used throughout the Dedalus spectral PDE framework.
+
+## Type hierarchy
+
+    AbstractCoordinateSystem
+    ├── CartesianCoordinates
+    ├── CurvilinearCoordinateSystem (abstract)
+    │   ├── S2Coordinates
+    │   ├── PolarCoordinates
+    │   └── SphericalCoordinates
+    └── DirectProduct
+
+    Coordinate
+    └── AzimuthalCoordinate
+
+Both `Coordinate` and `AbstractCoordinateSystem` participate in the
+`SeparableIntertwiners` interface via multiple dispatch.
+
+## Key translation choices
+
+- Python's `CachedClass` metaclass → Julia's `CachedClass` wrapper + factory
+  functions (from `tools/cache.jl`).
+- Python `MultiClass` → Julia abstract-type hierarchy + multiple dispatch.
+- Python `@property` / `CachedAttribute` → Julia accessor functions.
+- Python `@classmethod` → Julia functions dispatched on type.
+- `numpy` → Julia `LinearAlgebra` / `SparseArrays` operations.
+"""
+
+using LinearAlgebra
+using SparseArrays
+
+# ============================================================================
+# Forward-reference abstract types (used by other modules)
+# ============================================================================
+
+"""
+    AbstractCoordinateSystem
+
+Root abstract type for all coordinate systems in Dedalus.jl.  Concrete
+subtypes must implement `coords`, `dim`, and intertwiner methods.
+"""
+abstract type AbstractCoordinateSystem end
+
+"""
+    CurvilinearCoordinateSystem <: AbstractCoordinateSystem
+
+Abstract base for coordinate systems with curvature (e.g. spherical, polar).
+Sets `is_curvilinear(cs) = true`.
+"""
+abstract type CurvilinearCoordinateSystem <: AbstractCoordinateSystem end
+
+# ============================================================================
+# SeparableIntertwiners interface (via multiple dispatch)
+# ============================================================================
+#
+# In Python these are a mixin class providing `forward_intertwiner` /
+# `backward_intertwiner` that delegate to `forward_vector_intertwiner` /
+# `backward_vector_intertwiner` and use `nkron`.  In Julia we express this
+# via fallback methods on the abstract types + `Coordinate`.
+# ============================================================================
+
+"""
+    forward_vector_intertwiner(cs, subaxis, group)
+
+Return the forward vector intertwiner matrix for the coordinate system
+(or single coordinate) `cs` at the given `subaxis` and spectral `group`.
+Must be overridden by concrete types that participate in the separable-
+intertwiner protocol.
+"""
+function forward_vector_intertwiner end
+
+"""
+    backward_vector_intertwiner(cs, subaxis, group)
+
+Return the backward vector intertwiner matrix.  See
+[`forward_vector_intertwiner`](@ref).
+"""
+function backward_vector_intertwiner end
+
+"""
+    forward_intertwiner(cs, subaxis, order, group)
+
+Return the forward intertwiner matrix of the given tensor `order`.
+Default (separable) implementation builds it from the vector intertwiner
+via the `nkron` Kronecker-power helper.
+
+Non-separable coordinate systems (e.g. `SphericalCoordinates`) override
+this directly.
+"""
+function forward_intertwiner(cs, subaxis, order, group)
+    vec = forward_vector_intertwiner(cs, subaxis, group)
+    return nkron(vec, order)
+end
+
+"""
+    backward_intertwiner(cs, subaxis, order, group)
+
+Return the backward intertwiner matrix of the given tensor `order`.
+Default (separable) implementation uses `nkron`.
+"""
+function backward_intertwiner(cs, subaxis, order, group)
+    vec = backward_vector_intertwiner(cs, subaxis, group)
+    return nkron(vec, order)
+end
+
+# ============================================================================
+# Coordinate
+# ============================================================================
+
+"""
+    Coordinate
+
+A single named coordinate, optionally belonging to a parent coordinate system.
+
+# Fields
+- `name::String` — coordinate name (e.g. `"x"`, `"theta"`).
+- `cs::Union{Nothing, AbstractCoordinateSystem}` — parent coordinate system,
+  or `nothing` for standalone coordinates.
+
+# Properties (access via functions)
+- `get_dim(::Coordinate)` → `1`
+- `get_coords(c)` → `(c,)`
+- `is_curvilinear(::Coordinate)` → `false`
+- `default_nonconst_groups(::Coordinate)` → `(1,)`
+"""
+mutable struct Coordinate
+    name::String
+    cs::Union{Nothing, AbstractCoordinateSystem}
+
+    function Coordinate(name::AbstractString; cs::Union{Nothing, AbstractCoordinateSystem}=nothing)
+        return new(String(name), cs)
+    end
+end
+
+# Convenience constructor matching Python `Coordinate(name, cs=None)`
+Coordinate(name::AbstractString, cs::Union{Nothing, AbstractCoordinateSystem}) =
+    Coordinate(name; cs=cs)
+
+# --- display ------------------------------------------------------------------
+
+Base.show(io::IO, c::Coordinate) = print(io, c.name)
+Base.string(c::Coordinate) = c.name
+
+# --- equality / hashing -------------------------------------------------------
+# Python Coordinate.__eq__ compares type and name.
+# Python Coordinate.__hash__ uses id (object identity) — we mirror that.
+
+function Base.:(==)(a::Coordinate, b::Coordinate)
+    typeof(a) === typeof(b) || return false
+    return a.name == b.name
+end
+
+Base.hash(c::Coordinate, h::UInt) = hash(objectid(c), h)
+
+# --- properties ---------------------------------------------------------------
+
+get_dim(::Coordinate) = 1
+get_coords(c::Coordinate) = (c,)
+is_curvilinear(::Coordinate) = false
+default_nonconst_groups(::Coordinate) = (1,)
+
+"""
+    check_bounds(coord::Coordinate, bounds)
+
+Delegate bounds-checking to the parent coordinate system, if any.
+"""
+function check_bounds(coord::Coordinate, bounds)
+    if coord.cs !== nothing
+        check_bounds(coord.cs, coord, bounds)
+    end
+    return nothing
+end
+
+# --- separable intertwiner interface ------------------------------------------
+
+forward_vector_intertwiner(::Coordinate, subaxis, group) = reshape([1], 1, 1)
+backward_vector_intertwiner(::Coordinate, subaxis, group) = reshape([1], 1, 1)
+
+# ============================================================================
+# AzimuthalCoordinate
+# ============================================================================
+
+"""
+    AzimuthalCoordinate <: Coordinate
+
+Specialised coordinate marking the azimuthal direction.  Behaves identically
+to [`Coordinate`](@ref) except for its distinct Julia type, which enables
+dispatch-based logic that treats azimuthal directions specially.
+"""
+mutable struct AzimuthalCoordinate
+    name::String
+    cs::Union{Nothing, AbstractCoordinateSystem}
+
+    function AzimuthalCoordinate(name::AbstractString; cs::Union{Nothing, AbstractCoordinateSystem}=nothing)
+        return new(String(name), cs)
+    end
+end
+
+AzimuthalCoordinate(name::AbstractString, cs::Union{Nothing, AbstractCoordinateSystem}) =
+    AzimuthalCoordinate(name; cs=cs)
+
+# AzimuthalCoordinate shares all the same interfaces as Coordinate
+Base.show(io::IO, c::AzimuthalCoordinate) = print(io, c.name)
+Base.string(c::AzimuthalCoordinate) = c.name
+
+function Base.:(==)(a::AzimuthalCoordinate, b::AzimuthalCoordinate)
+    return a.name == b.name
+end
+
+Base.hash(c::AzimuthalCoordinate, h::UInt) = hash(objectid(c), h)
+
+get_dim(::AzimuthalCoordinate) = 1
+get_coords(c::AzimuthalCoordinate) = (c,)
+is_curvilinear(::AzimuthalCoordinate) = false
+default_nonconst_groups(::AzimuthalCoordinate) = (1,)
+
+function check_bounds(coord::AzimuthalCoordinate, bounds)
+    if coord.cs !== nothing
+        check_bounds(coord.cs, coord, bounds)
+    end
+    return nothing
+end
+
+forward_vector_intertwiner(::AzimuthalCoordinate, subaxis, group) = reshape([1], 1, 1)
+backward_vector_intertwiner(::AzimuthalCoordinate, subaxis, group) = reshape([1], 1, 1)
+
+"""
+    CoordinateOrAzimuthal
+
+Union type for use in dispatch where either kind of coordinate is accepted.
+"""
+const CoordinateOrAzimuthal = Union{Coordinate, AzimuthalCoordinate}
+
+# ============================================================================
+# AbstractCoordinateSystem — shared interface methods
+# ============================================================================
+
+"""
+    get_dim(cs::AbstractCoordinateSystem) -> Int
+
+Return the spatial dimensionality of the coordinate system.
+"""
+function get_dim end
+
+"""
+    get_coords(cs::AbstractCoordinateSystem) -> NTuple{N, CoordinateOrAzimuthal}
+
+Return the tuple of `Coordinate` / `AzimuthalCoordinate` objects comprising
+this coordinate system.
+"""
+function get_coords end
+
+"""
+    is_curvilinear(cs::AbstractCoordinateSystem) -> Bool
+
+Return whether the coordinate system is curvilinear.
+"""
+is_curvilinear(::AbstractCoordinateSystem) = false
+is_curvilinear(::CurvilinearCoordinateSystem) = true
+
+"""
+    check_bounds(cs::AbstractCoordinateSystem, coord, bounds)
+
+Validate that `bounds` are admissible for `coord` within the coordinate
+system `cs`.  Default implementation is a no-op.
+"""
+check_bounds(::AbstractCoordinateSystem, coord, bounds) = nothing
+
+"""
+    get_names(cs::AbstractCoordinateSystem)
+
+Return the coordinate names as a tuple of strings.
+"""
+function get_names end
+
+"""
+    Base.getindex(cs::AbstractCoordinateSystem, key)
+
+Index into the coordinate system by integer index or string name.
+"""
+function Base.getindex(cs::AbstractCoordinateSystem, key::Integer)
+    return get_coords(cs)[key]
+end
+
+function Base.getindex(cs::AbstractCoordinateSystem, key::AbstractString)
+    names = get_names(cs)
+    idx = findfirst(==(key), names)
+    if idx === nothing
+        throw(KeyError(key))
+    end
+    return get_coords(cs)[idx]
+end
+
+"""
+    Base.:(==)(a::AbstractCoordinateSystem, b::AbstractCoordinateSystem)
+
+Two coordinate systems are equal if they are the same type and have the
+same coordinates (by name equality).
+"""
+function Base.:(==)(a::T, b::T) where {T <: AbstractCoordinateSystem}
+    ac = get_coords(a)
+    bc = get_coords(b)
+    length(ac) == length(bc) || return false
+    for i in eachindex(ac)
+        ac[i] == bc[i] || return false
+    end
+    return true
+end
+
+Base.:(==)(::AbstractCoordinateSystem, ::AbstractCoordinateSystem) = false
+
+Base.hash(cs::AbstractCoordinateSystem, h::UInt) = hash(objectid(cs), h)
+
+# ============================================================================
+# CartesianCoordinates
+# ============================================================================
+
+"""
+    CartesianCoordinates <: AbstractCoordinateSystem
+
+N-dimensional Cartesian coordinate system.  Created from a list of unique
+coordinate names.
+
+# Fields
+- `names::NTuple{N, String}` — coordinate names.
+- `coords::NTuple{N, Coordinate}` — individual `Coordinate` objects.
+- `_dim::Int` — spatial dimensionality (length of `names`).
+- `right_handed::Bool` — handedness flag (only meaningful for 3D).
+- `_default_nonconst_groups::NTuple{N, Int}` — default non-constant group
+  indices (all ones for Cartesian).
+- `_unit_vector_cache::Dict{UInt, Any}` — per-distributor cache for
+  `unit_vector_fields`.
+
+# Examples
+```julia
+cc = CartesianCoordinates("x", "y", "z")
+get_dim(cc)          # 3
+get_coords(cc)       # (Coordinate("x"), Coordinate("y"), Coordinate("z"))
+is_curvilinear(cc)   # false
+```
+"""
+struct CartesianCoordinates{N} <: AbstractCoordinateSystem
+    names::NTuple{N, String}
+    coords::NTuple{N, Coordinate}
+    _dim::Int
+    right_handed::Bool
+    _default_nonconst_groups::NTuple{N, Int}
+    _unit_vector_cache::Dict{UInt, Any}
+
+    function CartesianCoordinates(names::Vararg{AbstractString, N}; right_handed::Bool=true) where {N}
+        str_names = ntuple(i -> String(names[i]), Val(N))
+        if length(Set(str_names)) < N
+            throw(ArgumentError("Must specify unique names."))
+        end
+        # Placeholder: cs reference is set after construction via _set_cs!
+        coord_objs = ntuple(i -> Coordinate(str_names[i]; cs=nothing), Val(N))
+        inst = new{N}(str_names, coord_objs, N,
+                      right_handed,
+                      ntuple(_ -> 1, Val(N)),
+                      Dict{UInt, Any}())
+        # Back-link coordinates to their parent coordinate system
+        for c in coord_objs
+            c.cs = inst
+        end
+        return inst
+    end
+end
+
+# Convenience: accept a vector/tuple of strings
+CartesianCoordinates(names::AbstractVector{<:AbstractString}; kw...) =
+    CartesianCoordinates(names...; kw...)
+
+get_dim(cc::CartesianCoordinates) = cc._dim
+get_coords(cc::CartesianCoordinates) = cc.coords
+get_names(cc::CartesianCoordinates) = cc.names
+is_curvilinear(::CartesianCoordinates) = false
+default_nonconst_groups(cc::CartesianCoordinates) = cc._default_nonconst_groups
+
+function Base.show(io::IO, cc::CartesianCoordinates)
+    print(io, "{", join([c.name for c in cc.coords], ","), "}")
+end
+
+# --- separable intertwiner interface ------------------------------------------
+
+function forward_vector_intertwiner(cc::CartesianCoordinates, subaxis, group)
+    d = get_dim(cc)
+    return Matrix{Float64}(I, d, d)
+end
+
+function backward_vector_intertwiner(cc::CartesianCoordinates, subaxis, group)
+    d = get_dim(cc)
+    return Matrix{Float64}(I, d, d)
+end
+
+# --- unit_vector_fields -------------------------------------------------------
+
+"""
+    unit_vector_fields(cc::CartesianCoordinates, dist)
+
+Return a tuple of vector fields, one per coordinate direction, each set to
+the corresponding Cartesian unit vector (identity columns in grid space).
+Results are cached per distributor instance.
+
+The `dist` argument must support `VectorField(cs, name=...)` and the
+returned field must support `['g'][i] = 1` indexing (distributor and field
+types are forward-referenced).
+"""
+function unit_vector_fields(cc::CartesianCoordinates, dist)
+    key = objectid(dist)
+    cached = get(cc._unit_vector_cache, key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    fields = []
+    for (i, c) in enumerate(cc.coords)
+        ec = dist.VectorField(cc; name="e$(c.name)")
+        ec["g"][i] = 1
+        push!(fields, ec)
+    end
+    result = Tuple(fields)
+    cc._unit_vector_cache[key] = result
+    return result
+end
+
+# ============================================================================
+# S2Coordinates
+# ============================================================================
+
+"""
+    S2Coordinates <: CurvilinearCoordinateSystem
+
+2D surface coordinates on the 2-sphere: (azimuth, colatitude).
+
+Coord component ordering: (azimuth, colatitude).
+Spin component ordering:  (-, +).
+
+# Fields
+- `names::NTuple{2, String}`
+- `azimuth::AzimuthalCoordinate`
+- `colatitude::Coordinate`
+- `coords::Tuple{AzimuthalCoordinate, Coordinate}`
+"""
+struct S2Coordinates <: CurvilinearCoordinateSystem
+    names::NTuple{2, String}
+    azimuth::AzimuthalCoordinate
+    colatitude::Coordinate
+    coords::Tuple{AzimuthalCoordinate, Coordinate}
+
+    function S2Coordinates(azimuth_name::AbstractString, colatitude_name::AbstractString)
+        names = (String(azimuth_name), String(colatitude_name))
+        az = AzimuthalCoordinate(azimuth_name; cs=nothing)
+        co = Coordinate(colatitude_name; cs=nothing)
+        inst = new(names, az, co, (az, co))
+        az.cs = inst
+        co.cs = inst
+        return inst
+    end
+end
+
+get_dim(::S2Coordinates) = 2
+get_coords(s::S2Coordinates) = s.coords
+get_names(s::S2Coordinates) = s.names
+default_nonconst_groups(::S2Coordinates) = (0, 1)  # ell=0 has different validity
+
+const S2_SPIN_ORDERING = (-1, +1)
+
+"""
+    _U_forward_S2(order::Int) -> Matrix{ComplexF64}
+
+Unitary transform from coord components to spin components for S2.
+u[+-] = (u[theta] +- 1j*u[phi]) / sqrt(2)
+"""
+function _U_forward_S2(order::Int)
+    Ui = Dict(
+        +1 => ComplexF64[+1im, 1] / sqrt(2),
+        -1 => ComplexF64[-1im, 1] / sqrt(2)
+    )
+    U = vcat([transpose(Ui[spin]) for spin in S2_SPIN_ORDERING]...)
+    if order > 1
+        U = nkron(U, order)
+    end
+    return U
+end
+
+"""
+    _U_backward_S2(order::Int) -> Matrix{ComplexF64}
+
+Unitary transform from spin components to coord components for S2.
+"""
+function _U_backward_S2(order::Int)
+    return conj(transpose(_U_forward_S2(order)))
+end
+
+function forward_vector_intertwiner(s::S2Coordinates, subaxis, group)
+    d = get_dim(s)
+    if subaxis == 0
+        # Azimuth intertwiner is identity, independent of group
+        return Matrix{Float64}(I, d, d)
+    elseif subaxis == 1
+        # Colatitude intertwiner is spin-U, independent of group
+        return _U_forward_S2(1)
+    else
+        throw(ArgumentError("Invalid axis: $subaxis"))
+    end
+end
+
+function backward_vector_intertwiner(s::S2Coordinates, subaxis, group)
+    d = get_dim(s)
+    if subaxis == 0
+        return Matrix{Float64}(I, d, d)
+    elseif subaxis == 1
+        return _U_backward_S2(1)
+    else
+        throw(ArgumentError("Invalid axis: $subaxis"))
+    end
+end
+
+# ============================================================================
+# PolarCoordinates
+# ============================================================================
+
+"""
+    PolarCoordinates <: CurvilinearCoordinateSystem
+
+2D polar coordinate system: (azimuth, radius).
+
+Coord component ordering: (azimuth, radius).
+Spin component ordering:  (-, +).
+
+# Fields
+- `names::NTuple{2, String}`
+- `azimuth::AzimuthalCoordinate`
+- `radius::Coordinate`
+- `coords::Tuple{AzimuthalCoordinate, Coordinate}`
+"""
+struct PolarCoordinates <: CurvilinearCoordinateSystem
+    names::NTuple{2, String}
+    azimuth::AzimuthalCoordinate
+    radius::Coordinate
+    coords::Tuple{AzimuthalCoordinate, Coordinate}
+
+    function PolarCoordinates(azimuth_name::AbstractString, radius_name::AbstractString)
+        names = (String(azimuth_name), String(radius_name))
+        az = AzimuthalCoordinate(azimuth_name; cs=nothing)
+        rad = Coordinate(radius_name; cs=nothing)
+        inst = new(names, az, rad, (az, rad))
+        az.cs = inst
+        rad.cs = inst
+        return inst
+    end
+end
+
+get_dim(::PolarCoordinates) = 2
+get_coords(p::PolarCoordinates) = p.coords
+get_names(p::PolarCoordinates) = p.names
+default_nonconst_groups(::PolarCoordinates) = (0, 0)
+
+const POLAR_SPIN_ORDERING = (-1, +1)
+
+"""
+    _U_forward_polar(order::Int) -> Matrix{ComplexF64}
+
+Unitary transform from coord to spin components for polar coordinates.
+u[+-] = (u[radius] +- 1j*u[phi]) / sqrt(2)
+"""
+function _U_forward_polar(order::Int)
+    Ui = Dict(
+        +1 => ComplexF64[+1im, 1] / sqrt(2),
+        -1 => ComplexF64[-1im, 1] / sqrt(2)
+    )
+    U = vcat([transpose(Ui[spin]) for spin in POLAR_SPIN_ORDERING]...)
+    if order > 1
+        U = nkron(U, order)
+    end
+    return U
+end
+
+"""
+    _U_backward_polar(order::Int) -> Matrix{ComplexF64}
+
+Unitary transform from spin to coord components for polar coordinates.
+"""
+function _U_backward_polar(order::Int)
+    return conj(transpose(_U_forward_polar(order)))
+end
+
+function forward_vector_intertwiner(p::PolarCoordinates, subaxis, group)
+    d = get_dim(p)
+    if subaxis == 0
+        return Matrix{Float64}(I, d, d)
+    elseif subaxis == 1
+        return _U_forward_polar(1)
+    else
+        throw(ArgumentError("Invalid axis: $subaxis"))
+    end
+end
+
+function backward_vector_intertwiner(p::PolarCoordinates, subaxis, group)
+    d = get_dim(p)
+    if subaxis == 0
+        return Matrix{Float64}(I, d, d)
+    elseif subaxis == 1
+        return _U_backward_polar(1)
+    else
+        throw(ArgumentError("Invalid axis: $subaxis"))
+    end
+end
+
+"""
+    cartesian(::Type{PolarCoordinates}, phi, r) -> (x, y)
+
+Convert polar coordinates (phi, r) to Cartesian coordinates (x, y).
+"""
+function cartesian(::Type{PolarCoordinates}, phi, r)
+    x = r .* cos.(phi)
+    y = r .* sin.(phi)
+    return (x, y)
+end
+
+# ============================================================================
+# SphericalCoordinates
+# ============================================================================
+
+"""
+    SphericalCoordinates <: CurvilinearCoordinateSystem
+
+3D spherical coordinate system: (azimuth, colatitude, radius).
+
+Coord component ordering:       (azimuth, colatitude, radius).
+Spin component ordering:        (-, +, 0).
+Regularity component ordering:  (-, +, 0).
+
+Unlike the other curvilinear coordinate systems, `SphericalCoordinates` does
+**not** use separable intertwiners; it overrides `forward_intertwiner` and
+`backward_intertwiner` directly with order-dependent logic.
+
+# Fields
+- `names::NTuple{3, String}`
+- `azimuth::AzimuthalCoordinate`
+- `colatitude::Coordinate`
+- `radius::Coordinate`
+- `S2coordsys::S2Coordinates` — embedded 2-sphere sub-coordinate system.
+- `coords::NTuple{3, CoordinateOrAzimuthal}`
+- `right_handed::Bool`
+"""
+struct SphericalCoordinates <: CurvilinearCoordinateSystem
+    names::NTuple{3, String}
+    azimuth::AzimuthalCoordinate
+    colatitude::Coordinate
+    radius::Coordinate
+    S2coordsys::S2Coordinates
+    coords::Tuple{AzimuthalCoordinate, Coordinate, Coordinate}
+    right_handed::Bool
+
+    function SphericalCoordinates(azimuth_name::AbstractString,
+                                  colatitude_name::AbstractString,
+                                  radius_name::AbstractString)
+        names = (String(azimuth_name), String(colatitude_name), String(radius_name))
+        az = AzimuthalCoordinate(azimuth_name; cs=nothing)
+        co = Coordinate(colatitude_name; cs=nothing)
+        rad = Coordinate(radius_name; cs=nothing)
+        s2 = S2Coordinates(azimuth_name, colatitude_name)
+        inst = new(names, az, co, rad, s2, (az, co, rad), false)
+        az.cs = inst
+        co.cs = inst
+        rad.cs = inst
+        return inst
+    end
+end
+
+get_dim(::SphericalCoordinates) = 3
+get_coords(s::SphericalCoordinates) = s.coords
+get_names(s::SphericalCoordinates) = s.names
+default_nonconst_groups(::SphericalCoordinates) = (0, 1, 0)  # ell=0 has different validity
+
+const SPHERICAL_SPIN_ORDERING = (-1, +1, 0)
+const SPHERICAL_REG_ORDERING = (-1, +1, 0)
+
+"""
+    _U_forward_spherical(order::Int) -> Matrix{ComplexF64}
+
+Unitary transform from coord to spin components for spherical coordinates.
+u[+-] = (u[theta] +- 1j*u[phi]) / sqrt(2)
+u[0]  = u[r]
+"""
+function _U_forward_spherical(order::Int)
+    Ui = Dict(
+        +1 => ComplexF64[+1im, 1, 0] / sqrt(2),
+        -1 => ComplexF64[-1im, 1, 0] / sqrt(2),
+         0 => ComplexF64[  0,  0, 1]
+    )
+    U = vcat([transpose(Ui[spin]) for spin in SPHERICAL_SPIN_ORDERING]...)
+    return nkron(U, order)
+end
+
+"""
+    _U_backward_spherical(order::Int) -> Matrix{ComplexF64}
+
+Unitary transform from spin to coord components for spherical coordinates.
+"""
+function _U_backward_spherical(order::Int)
+    return conj(transpose(_U_forward_spherical(order)))
+end
+
+"""
+    _Q_forward_spherical(ell::Int, order::Int) -> Matrix
+
+Orthogonal transform from spin to regularity components.
+Q_forward = Q_backward^T.
+
+!!! note
+    This currently delegates to the `dedalus_sphere` spin operators module.
+    A placeholder is provided until that module is translated to Julia.
+"""
+function _Q_forward_spherical(ell::Int, order::Int)
+    return transpose(_Q_backward_spherical(ell, order))
+end
+
+"""
+    _Q_backward_spherical(ell::Int, order::Int) -> Matrix
+
+Orthogonal transform from regularity to spin components.
+
+!!! note
+    Delegates to `dedalus_sphere.spin_operators.Intertwiner`. Currently
+    a placeholder that returns an identity matrix until that module is
+    translated.
+"""
+function _Q_backward_spherical(ell::Int, order::Int)
+    # Placeholder: once the dedalus_sphere spin_operators module is
+    # translated, this should call:
+    #   dedalus_sphere_spin_operators_intertwiner(ell, indexing=SPHERICAL_REG_ORDERING)(order)
+    # For now, return an identity matrix of the correct size.
+    n = 3^order
+    return Matrix{Float64}(I, n, n)
+end
+
+function check_bounds(s::SphericalCoordinates, coord::CoordinateOrAzimuthal, bounds)
+    if coord == s.radius
+        if minimum(bounds) < 0
+            throw(ArgumentError("Bounds for radial coordinate must not be negative."))
+        end
+    end
+    return nothing
+end
+
+"""
+    sub_cs(s::SphericalCoordinates, other)
+
+Check whether `other` (a `Coordinate` or `S2Coordinates`) is a
+sub-coordinate-system of this spherical coordinate system.
+"""
+function sub_cs(s::SphericalCoordinates, other::CoordinateOrAzimuthal)
+    return other == s.radius || other == s.colatitude || other == s.azimuth
+end
+
+function sub_cs(s::SphericalCoordinates, other::S2Coordinates)
+    return other == s.S2coordsys
+end
+
+sub_cs(::SphericalCoordinates, other) = false
+
+"""
+    cartesian(::Type{SphericalCoordinates}, phi, theta, r) -> (x, y, z)
+
+Convert spherical coordinates to Cartesian coordinates.
+"""
+function cartesian(::Type{SphericalCoordinates}, phi, theta, r)
+    x = r .* sin.(theta) .* cos.(phi)
+    y = r .* sin.(theta) .* sin.(phi)
+    z = r .* cos.(theta)
+    return (x, y, z)
+end
+
+# SphericalCoordinates overrides the intertwiner interface directly (NOT separable)
+
+"""
+    forward_intertwiner(s::SphericalCoordinates, subaxis, order, group)
+
+Compute the forward intertwiner for spherical coordinates.
+
+- subaxis 0 (azimuth): identity
+- subaxis 1 (colatitude): spin-U transform
+- subaxis 2 (radius): regularity-Q transform (depends on ell via group)
+"""
+function forward_intertwiner(s::SphericalCoordinates, subaxis, order, group)
+    d = get_dim(s)
+    if subaxis == 0
+        # Azimuth intertwiner is identity, independent of group
+        return Matrix{Float64}(I, d^order, d^order)
+    elseif subaxis == 1
+        # Colatitude intertwiner is spin-U, independent of group
+        return _U_forward_spherical(order)
+    elseif subaxis == 2
+        # Radius intertwiner is reg-Q, dependent on ell
+        ell = group[subaxis]  # 0-based subaxis matches Python group indexing: group[subaxis-1] in Python with 0-indexed subaxis=2 → group[1]
+        return _Q_forward_spherical(ell, order)
+    else
+        throw(ArgumentError("Invalid axis: $subaxis"))
+    end
+end
+
+"""
+    backward_intertwiner(s::SphericalCoordinates, subaxis, order, group)
+
+Compute the backward intertwiner for spherical coordinates.
+"""
+function backward_intertwiner(s::SphericalCoordinates, subaxis, order, group)
+    d = get_dim(s)
+    if subaxis == 0
+        return Matrix{Float64}(I, d^order, d^order)
+    elseif subaxis == 1
+        return _U_backward_spherical(order)
+    elseif subaxis == 2
+        ell = group[subaxis]  # see forward_intertwiner note on indexing
+        return _Q_backward_spherical(ell, order)
+    else
+        throw(ArgumentError("Invalid axis: $subaxis"))
+    end
+end
+
+# ============================================================================
+# DirectProduct
+# ============================================================================
+
+"""
+    DirectProduct <: AbstractCoordinateSystem
+
+A direct product of multiple coordinate systems.  All constituent systems
+must support the separable-intertwiner protocol.
+
+# Fields
+- `coordsystems::Tuple` — constituent coordinate systems (or single coordinates).
+- `coords::Tuple` — flattened tuple of all individual coordinates.
+- `_dim::Int` — total dimensionality.
+- `right_handed::Bool` — handedness flag (meaningful only for 3D).
+- `_subaxis_by_cs::Dict{Any, Int}` — cached mapping from constituent CS to
+  its starting sub-axis offset.
+- `_curvilinear::Union{Nothing, Bool}` — lazily computed curvilinearity.
+- `_default_nonconst_groups::Union{Nothing, Tuple}` — lazily computed.
+"""
+mutable struct DirectProduct <: AbstractCoordinateSystem
+    coordsystems::Tuple
+    coords::Tuple
+    _dim::Int
+    right_handed::Bool
+    _subaxis_by_cs::Dict{Any, Int}
+    _curvilinear::Union{Nothing, Bool}
+    _default_nonconst_groups::Union{Nothing, Tuple}
+
+    function DirectProduct(coordsystems::Vararg{Any}; right_handed::Union{Nothing, Bool}=nothing)
+        # Validate that all constituents support separable intertwiners
+        # (In Julia we check by whether they have the right methods defined —
+        #  all Coordinate, CartesianCoordinates, S2Coordinates, PolarCoordinates
+        #  and DirectProduct do.)
+
+        all_coords = ()
+        for cs in coordsystems
+            all_coords = (all_coords..., get_coords(cs)...)
+        end
+
+        # Check for duplicate coordinates
+        coord_set = Set{Any}()
+        for c in all_coords
+            if c in coord_set
+                throw(ArgumentError("Cannot repeat coordinates in DirectProduct."))
+            end
+            push!(coord_set, c)
+        end
+
+        total_dim = sum(get_dim(cs) for cs in coordsystems)
+
+        # Determine handedness
+        rh = if total_dim == 3
+            curv = any(is_curvilinear(cs) for cs in coordsystems)
+            if right_handed === nothing
+                curv ? false : true
+            else
+                right_handed
+            end
+        else
+            right_handed === nothing ? true : right_handed
+        end
+
+        # Build subaxis_by_cs mapping
+        subaxis_dict = Dict{Any, Int}()
+        subaxis = 0
+        for cs in coordsystems
+            subaxis_dict[cs] = subaxis
+            subaxis += get_dim(cs)
+        end
+
+        return new(coordsystems, all_coords, total_dim, rh,
+                   subaxis_dict, nothing, nothing)
+    end
+end
+
+get_dim(dp::DirectProduct) = dp._dim
+get_coords(dp::DirectProduct) = dp.coords
+
+function get_names(dp::DirectProduct)
+    return Tuple(string(c) for c in dp.coords)
+end
+
+"""
+    subaxis_by_cs(dp::DirectProduct) -> Dict
+
+Return the mapping from constituent coordinate system → starting sub-axis index.
+"""
+subaxis_by_cs(dp::DirectProduct) = dp._subaxis_by_cs
+
+"""
+    is_curvilinear(dp::DirectProduct) -> Bool
+
+A direct product is curvilinear if any constituent is curvilinear.
+"""
+function is_curvilinear(dp::DirectProduct)
+    if dp._curvilinear === nothing
+        dp._curvilinear = any(is_curvilinear(cs) for cs in dp.coordsystems)
+    end
+    return dp._curvilinear
+end
+
+"""
+    default_nonconst_groups(dp::DirectProduct) -> Tuple
+
+Concatenation of the default non-constant groups from each constituent.
+"""
+function default_nonconst_groups(dp::DirectProduct)
+    if dp._default_nonconst_groups === nothing
+        groups = ()
+        for cs in dp.coordsystems
+            groups = (groups..., default_nonconst_groups(cs)...)
+        end
+        dp._default_nonconst_groups = groups
+    end
+    return dp._default_nonconst_groups
+end
+
+"""
+    forward_vector_intertwiner(dp::DirectProduct, subaxis, group)
+
+Compute the forward vector intertwiner by block-diagonal assembly of
+constituent intertwiners.  The constituent whose subaxis range includes
+the given `subaxis` provides its intertwiner; all others contribute an
+identity block.
+"""
+function forward_vector_intertwiner(dp::DirectProduct, subaxis, group)
+    factors = []
+    start_axis = 0
+    for cs in dp.coordsystems
+        d = get_dim(cs)
+        if start_axis <= subaxis < start_axis + d
+            push!(factors, sparse(forward_vector_intertwiner(cs, subaxis - start_axis, group)))
+        else
+            push!(factors, sparse(Matrix{Float64}(I, d, d)))
+        end
+        start_axis += d
+    end
+    return Array(sparse_block_diag(factors))
+end
+
+"""
+    backward_vector_intertwiner(dp::DirectProduct, subaxis, group)
+
+Compute the backward vector intertwiner (see [`forward_vector_intertwiner`](@ref)).
+"""
+function backward_vector_intertwiner(dp::DirectProduct, subaxis, group)
+    factors = []
+    start_axis = 0
+    for cs in dp.coordsystems
+        d = get_dim(cs)
+        if start_axis <= subaxis < start_axis + d
+            push!(factors, sparse(backward_vector_intertwiner(cs, subaxis - start_axis, group)))
+        else
+            push!(factors, sparse(Matrix{Float64}(I, d, d)))
+        end
+        start_axis += d
+    end
+    return Array(sparse_block_diag(factors))
+end
+
+# ============================================================================
+# Exports
+# ============================================================================
+
+export AbstractCoordinateSystem,
+       CurvilinearCoordinateSystem,
+       Coordinate,
+       AzimuthalCoordinate,
+       CoordinateOrAzimuthal,
+       CartesianCoordinates,
+       S2Coordinates,
+       PolarCoordinates,
+       SphericalCoordinates,
+       DirectProduct,
+       get_dim,
+       get_coords,
+       get_names,
+       is_curvilinear,
+       default_nonconst_groups,
+       check_bounds,
+       sub_cs,
+       cartesian,
+       unit_vector_fields,
+       forward_intertwiner,
+       backward_intertwiner,
+       forward_vector_intertwiner,
+       backward_vector_intertwiner,
+       subaxis_by_cs
