@@ -880,6 +880,192 @@ function reduced_view_5(data::AbstractArray, axis::Int)
 end
 
 # ============================================================================
+# transform_plan concrete methods for each basis type
+# (Defined here because transform types are not yet available in basis.jl)
+# ============================================================================
+
+"""
+    transform_plan(b::JacobiBasis, dist, grid_size)
+
+Build or retrieve cached JacobiMMT transform plan for the given grid size.
+"""
+function transform_plan(b::JacobiBasis, dist, grid_size)
+    cache_key = grid_size
+    cached = get(b._transform_cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    plan = JacobiMMT(grid_size, b._size, b.a, b.b, b.a0, b.b0)
+    b._transform_cache[cache_key] = plan
+    return plan
+end
+
+"""
+    transform_plan(b::ComplexFourierBasis, dist, grid_size)
+
+Build or retrieve cached FFTWComplexFFT transform plan for the given grid size.
+"""
+function transform_plan(b::ComplexFourierBasis, dist, grid_size)
+    cache_key = grid_size
+    cached = get(b._transform_cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    plan = FFTWComplexFFT(grid_size, b._size)
+    b._transform_cache[cache_key] = plan
+    return plan
+end
+
+"""
+    transform_plan(b::RealFourierBasis, dist, grid_size)
+
+Build or retrieve cached FFTWRealFFT transform plan for the given grid size.
+"""
+function transform_plan(b::RealFourierBasis, dist, grid_size)
+    cache_key = grid_size
+    cached = get(b._transform_cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    plan = FFTWRealFFT(grid_size, b._size)
+    b._transform_cache[cache_key] = plan
+    return plan
+end
+
+# ============================================================================
+# subspace_matrix dispatch methods (operator + basis type)
+# (Defined here because basis types are not available in operators.jl)
+# ============================================================================
+
+function subspace_matrix(op::Differentiate, layout)
+    basis = op.input_basis
+    if basis === nothing
+        return sparse(I, 1, 1)
+    end
+    if basis isa JacobiBasis
+        return differentiate_jacobi_matrix(basis, op.output_basis)
+    elseif basis isa ComplexFourierBasis
+        N = basis._size
+        wn = native_wavenumbers(basis)
+        diag_vals = ComplexF64[1im * k / basis.COV.stretch for k in wn]
+        return sparse(Diagonal(diag_vals))
+    elseif basis isa RealFourierBasis
+        N = basis._size
+        wn = native_wavenumbers(basis)
+        mat = spzeros(Float64, N, N)
+        for k_idx in 1:2:N
+            k_val = wn[k_idx] / basis.COV.stretch
+            if k_idx + 1 <= N
+                mat[k_idx, k_idx+1] = -k_val
+                mat[k_idx+1, k_idx] = k_val
+            end
+        end
+        return mat
+    else
+        n = basis_size(basis)
+        return sparse(I, n, n)
+    end
+end
+
+function subspace_matrix(op::Convert, layout)
+    input_basis = op.input_basis
+    output_basis = op.output_basis
+    if input_basis === nothing && output_basis !== nothing
+        if output_basis isa JacobiBasis
+            unit_amplitude = 1.0 / output_basis.constant_mode_value
+            N = output_basis._size
+            col = zeros(N)
+            col[1] = unit_amplitude
+            return sparse(reshape(col, :, 1))
+        else
+            N = output_basis isa IntervalBasis ? output_basis._size : 1
+            return sparse(I, N, 1)
+        end
+    elseif input_basis !== nothing && output_basis !== nothing
+        if input_basis isa JacobiBasis && output_basis isa JacobiBasis
+            return convert_jacobi_matrix(input_basis, output_basis)
+        else
+            N = basis_size(input_basis)
+            return sparse(I, N, N)
+        end
+    else
+        return sparse(I, 1, 1)
+    end
+end
+
+function subspace_matrix(op::Interpolate, layout)
+    basis = op.input_basis
+    if basis === nothing
+        return sparse(I, 1, 1)
+    end
+    if basis isa JacobiBasis
+        return sparse(interpolate_jacobi_matrix(basis, op.position))
+    elseif basis isa ComplexFourierBasis
+        return sparse(interpolate_complex_fourier_matrix(basis, op.position))
+    elseif basis isa RealFourierBasis
+        return sparse(interpolate_real_fourier_matrix(basis, op.position))
+    elseif basis isa CardinalBasis && op.position isa Integer
+        return sparse(interpolate_cardinal_matrix(basis, op.position))
+    else
+        n = basis_size(basis)
+        return sparse(I, 1, n)
+    end
+end
+
+function subspace_matrix(op::Integrate, layout)
+    basis = op.input_basis
+    if basis === nothing
+        return sparse(I, 1, 1)
+    end
+    if basis isa JacobiBasis
+        return sparse(integrate_jacobi_matrix(basis))
+    elseif basis isa CardinalBasis
+        return sparse(integrate_cardinal_matrix(basis))
+    else
+        n = basis_size(basis)
+        return sparse(ones(1, n))
+    end
+end
+
+function subspace_matrix(op::Average, layout)
+    basis = op.input_basis
+    if basis === nothing
+        return sparse(I, 1, 1)
+    end
+    if basis isa JacobiBasis
+        return sparse(average_jacobi_matrix(basis))
+    elseif basis isa CardinalBasis
+        return sparse(average_cardinal_matrix(basis))
+    else
+        n = basis_size(basis)
+        return sparse(fill(1.0 / n, 1, n))
+    end
+end
+
+function subspace_matrix(op::Lift, layout)
+    basis = op.output_basis
+    if basis === nothing
+        return sparse(I, 1, 1)
+    end
+    N = basis_size(basis)
+    mode = N + op.n + 1  # convert negative index to 1-based
+    if op.input_basis === nothing
+        col = spzeros(N, 1)
+        if 1 <= mode <= N
+            col[mode, 1] = 1.0
+        end
+        return col
+    else
+        n_in = basis_size(op.input_basis)
+        mat = spzeros(N, n_in)
+        if 1 <= mode <= N
+            mat[mode, 1:min(n_in, 1)] .= 1.0
+        end
+        return mat
+    end
+end
+
+# ============================================================================
 # Exports
 # ============================================================================
 

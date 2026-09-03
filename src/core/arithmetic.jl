@@ -432,7 +432,7 @@ Perform the addition operation, writing results into `out`.
 function operate(op::AddFields, out)
     arg0, arg1 = op.args[1], op.args[2]
     # Set output layout
-    preset_layout(out, arg0.layout)
+    preset_layout!(out, arg0.layout)
     @. out.data = arg0.data + arg1.data
 end
 
@@ -1077,7 +1077,7 @@ Perform the dot product operation using einsum-like contraction.
 """
 function operate(op::DotProduct, out)
     arg0, arg1 = op.args[1], op.args[2]
-    preset_layout(out, arg0.layout)
+    preset_layout!(out, arg0.layout)
     # Broadcast
     arg0_data = ghost_cast(op.arg0_ghost_broadcaster, arg0)
     arg1_data = ghost_cast(op.arg1_ghost_broadcaster, arg1)
@@ -1270,7 +1270,7 @@ Perform the cross product operation.
 """
 function operate(op::CrossProduct, out)
     arg0, arg1 = op.args[1], op.args[2]
-    preset_layout(out, arg0.layout)
+    preset_layout!(out, arg0.layout)
     arg0_data = ghost_cast(op.arg0_ghost_broadcaster, arg0)
     arg1_data = ghost_cast(op.arg1_ghost_broadcaster, arg1)
     op._operate_fn(op, out, arg0_data, arg1_data)
@@ -1419,7 +1419,7 @@ Perform field-field multiplication with tensor broadcasting.
 function operate(op::MultiplyFields, out)
     arg0, arg1 = op.args[1], op.args[2]
     # Set output layout
-    preset_layout(out, arg0.layout)
+    preset_layout!(out, arg0.layout)
     # Broadcast
     arg0_data = ghost_cast(op.arg0_ghost_broadcaster, arg0)
     arg1_data = ghost_cast(op.arg1_ghost_broadcaster, arg1)
@@ -1581,7 +1581,7 @@ Perform scalar multiplication.
 function operate(op::MultiplyNumberField, out)
     arg0, arg1 = op.args[1], op.args[2]
     # Set output layout
-    preset_layout(out, arg1.layout)
+    preset_layout!(out, arg1.layout)
     # Multiply argument data
     @. out.data = arg0 * arg1.data
 end

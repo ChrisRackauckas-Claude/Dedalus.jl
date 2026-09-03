@@ -2101,31 +2101,6 @@ function laplacian(field, cs)
     end
 end
 
-"""Differentiate along a coordinate."""
-function differentiate(arg, coord)
-    return Differentiate(arg, coord)
-end
-
-"""Interpolate at a position along a coordinate."""
-function interpolate(arg, coord, position)
-    return Interpolate(arg, coord, position)
-end
-
-"""Integrate over a coordinate."""
-function integrate(arg, coord)
-    return Integrate(arg, coord)
-end
-
-"""Average over a coordinate."""
-function average(arg, coord)
-    return Average(arg, coord)
-end
-
-"""Lift operator."""
-function lift(arg, basis, n)
-    return Lift(arg, basis, n)
-end
-
 """Trace of tensor field (contracts first two indices)."""
 trace_op(field) = CartesianTrace(field)
 
@@ -2180,13 +2155,13 @@ end
     subspace_matrix(op, layout)
 
 Return the subspace (basis conversion/differentiation/interpolation) matrix
-for operator `op` at the given layout.  This is a placeholder that returns
-an identity matrix; it will be replaced with actual basis matrix computation
-once the basis infrastructure is wired up.
+for operator `op` at the given layout.  Generic fallback returns an identity
+matrix.  Concrete dispatch methods for each operator+basis combination are
+defined in transforms.jl (loaded after both operators.jl and basis.jl).
 """
 function subspace_matrix(op, layout)
-    # Placeholder: return identity matrix matching the operator's axis size
-    n = 1  # Will be replaced with actual basis matrix computation
+    # Fallback: identity matrix
+    n = 1
     return sparse(I, n, n)
 end
 

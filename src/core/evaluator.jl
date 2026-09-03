@@ -172,6 +172,9 @@ function evaluate_scheduled(ev::Evaluator; kw...)
     evaluate_handlers(ev, handlers; kw...)
 end
 
+"""Alias: callers in solvers.jl and timesteppers.jl use the bang name."""
+const evaluate_scheduled! = evaluate_scheduled
+
 """
     evaluate_handlers(ev::Evaluator, handlers; id=nothing, kw...)
 
@@ -1109,32 +1112,8 @@ function write_file_metadata(h::H5FileHandlerBase, file; kw...)
     end
 end
 
-"""
-    write_task(h::H5FileHandlerBase, file, task)
-
-Write task data to the HDF5 file. Must be implemented by concrete subtypes.
-"""
-function write_task(h::H5FileHandlerBase, file, task)
-    error("write_task() not implemented for $(typeof(h))")
-end
-
-"""
-    open_h5file(h::H5FileHandlerBase; mode="r+")
-
-Open the current HDF5 file. Must be implemented by concrete subtypes.
-"""
-function open_h5file(h::H5FileHandlerBase; mode="r+")
-    error("open_h5file() not implemented for $(typeof(h))")
-end
-
-"""
-    close_h5file(h::H5FileHandlerBase, file)
-
-Close the current HDF5 file. Must be implemented by concrete subtypes.
-"""
-function close_h5file(h::H5FileHandlerBase, file)
-    error("close_h5file() not implemented for $(typeof(h))")
-end
+# open_h5file, close_h5file, and write_task for H5FileHandlerBase are
+# defined below with the H5GatherFileHandler implementation (serial mode).
 
 # ============================================================================
 # H5GatherFileHandler

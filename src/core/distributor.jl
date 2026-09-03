@@ -1121,7 +1121,7 @@ function increment_single(transform::DistTransform, field)
     cdata = field.data
 
     # Switch to grid layout
-    preset_layout(field, transform.layout1)
+    preset_layout!(field, transform.layout1)
     gdata = field.data
 
     # Transform non-constant bases with data
@@ -1143,7 +1143,7 @@ function decrement_single(transform::DistTransform, field)
     gdata = field.data
 
     # Switch to coefficient layout
-    preset_layout(field, transform.layout0)
+    preset_layout!(field, transform.layout0)
     cdata = field.data
 
     # Transform non-constant bases with data
@@ -1215,7 +1215,7 @@ Backward transpose a single field.
 In serial mode, just updates the field layout.
 """
 function increment_single(transpose_obj::Transpose, field)
-    preset_layout(field, transpose_obj.layout1)
+    preset_layout!(field, transpose_obj.layout1)
 end
 
 """
@@ -1226,7 +1226,7 @@ Forward transpose a single field.
 In serial mode, just updates the field layout.
 """
 function decrement_single(transpose_obj::Transpose, field)
-    preset_layout(field, transpose_obj.layout0)
+    preset_layout!(field, transpose_obj.layout0)
 end
 
 # ============================================================================
@@ -1236,13 +1236,7 @@ end
 # These functions define the interface that Field types must implement.
 # They will be properly defined when the Field module is translated.
 
-"""
-    preset_layout(field, layout)
-
-Set a field's layout without triggering data transforms.
-Must be implemented by Field types.
-"""
-function preset_layout end
+# preset_layout!(field, layout) is defined in field.jl (loaded before this file)
 
 """
     backward_transform(basis, field, axis, cdata, gdata)
