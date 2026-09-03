@@ -361,6 +361,12 @@ mutable struct AddFields <: Add
     dtype::DataType
     _bases::Tuple
     scales::Any
+    name::String
+    last_id::Any
+    last_out::Any
+    store_last::Bool
+    _grid_layout::Any
+    _coeff_layout::Any
 end
 
 # Make AddFields also satisfy FutureField interface
@@ -382,7 +388,9 @@ function AddFields(args...; out=nothing, kw...)
     domain = Domain(dist, _bases)
     tensorsig = unify_attributes(converted_args, :tensorsig)
     dtype = promote_type([arg.dtype for arg in converted_args]...)
-    return AddFields(arg_list, original, out, dist, domain, tensorsig, dtype, _bases, 1)
+    return AddFields(arg_list, original, out, dist, domain, tensorsig, dtype, _bases, 1,
+                      "Add", nothing, nothing, STORE_LAST_DEFAULT,
+                      dist.grid_layout, dist.coeff_layout)
 end
 
 """
@@ -934,6 +942,12 @@ mutable struct DotProduct <: Product
     _ncc_data::Any
     _ncc_matrices::Any
     scales::Any
+    name::String
+    last_id::Any
+    last_out::Any
+    store_last::Bool
+    _grid_layout::Any
+    _coeff_layout::Any
 
     function DotProduct(arg0, arg1; indices=(-1, 1), out=nothing, kw...)
         checked_indices = _check_dot_indices(arg0, arg1, indices)
@@ -973,7 +987,9 @@ mutable struct DotProduct <: Product
         new(args_list, copy(args_list), out, dist, domain, tensorsig, dtype,
             checked_indices, [checked_indices], einsum_str, arg0_gb, arg1_gb,
             "dot_product_ncc",
-            nothing, false, nothing, nothing, nothing, nothing, 1)
+            nothing, false, nothing, nothing, nothing, nothing, 1,
+            "Dot", nothing, nothing, STORE_LAST_DEFAULT,
+            dist.grid_layout, dist.coeff_layout)
     end
 end
 
@@ -1154,6 +1170,12 @@ mutable struct CrossProduct <: Product
     _ncc_data::Any
     _ncc_matrices::Any
     scales::Any
+    name::String
+    last_id::Any
+    last_out::Any
+    store_last::Bool
+    _grid_layout::Any
+    _coeff_layout::Any
 
     function CrossProduct(arg0, arg1; out=nothing, kw...)
         # Check that both fields are rank-1
@@ -1187,7 +1209,9 @@ mutable struct CrossProduct <: Product
         args_list = Any[arg0, arg1]
         new(args_list, copy(args_list), out, dist, domain, tensorsig, dtype,
             arg0_gb, arg1_gb, _operate,
-            nothing, false, nothing, nothing, nothing, nothing, 1)
+            nothing, false, nothing, nothing, nothing, nothing, 1,
+            "Cross", nothing, nothing, STORE_LAST_DEFAULT,
+            dist.grid_layout, dist.coeff_layout)
     end
 end
 
@@ -1350,6 +1374,12 @@ mutable struct MultiplyFields <: Multiply
     _ncc_data::Any
     _ncc_matrices::Any
     scales::Any
+    name::String
+    last_id::Any
+    last_out::Any
+    store_last::Bool
+    _grid_layout::Any
+    _coeff_layout::Any
 
     function MultiplyFields(arg0, arg1; out=nothing, kw...)
         dist = unify_attributes((arg0, arg1), :dist)
@@ -1373,7 +1403,9 @@ mutable struct MultiplyFields <: Multiply
         new(args_list, copy(args_list), out, dist, domain, tensorsig, dtype,
             Any[], arg0_gb, arg1_gb, arg0_exp_tshape, arg1_exp_tshape,
             "tensor_product_ncc",
-            nothing, false, nothing, nothing, nothing, nothing, 1)
+            nothing, false, nothing, nothing, nothing, nothing, 1,
+            "Mul", nothing, nothing, STORE_LAST_DEFAULT,
+            dist.grid_layout, dist.coeff_layout)
     end
 end
 
@@ -1500,6 +1532,12 @@ mutable struct MultiplyNumberField <: Multiply
     _ncc_data::Any
     _ncc_matrices::Any
     scales::Any
+    name::String
+    last_id::Any
+    last_out::Any
+    store_last::Bool
+    _grid_layout::Any
+    _coeff_layout::Any
 
     function MultiplyNumberField(arg0, arg1; out=nothing, kw...)
         # Make number come first
@@ -1513,7 +1551,9 @@ mutable struct MultiplyNumberField <: Multiply
         dist = arg1.dist
         args_list = Any[arg0, arg1]
         new(args_list, copy(args_list), out, dist, domain, tensorsig, dtype,
-            nothing, false, nothing, nothing, nothing, nothing, 1)
+            nothing, false, nothing, nothing, nothing, nothing, 1,
+            "Mul", nothing, nothing, STORE_LAST_DEFAULT,
+            dist.grid_layout, dist.coeff_layout)
     end
 end
 

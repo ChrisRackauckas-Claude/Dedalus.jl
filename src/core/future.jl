@@ -484,11 +484,21 @@ future_type(::FutureLockedField) = LockedField
 # Exports
 # ============================================================================
 
+"""
+    evaluate
+
+Alias for `evaluate_future` — provided for convenience so that call sites
+(tests, arithmetic helpers) can write `evaluate(expr)` instead of the
+longer `evaluate_future(expr)`.
+"""
+const evaluate = evaluate_future
+
 export FutureField,
        FutureLockedField,
        init_future!,
        reset_future!,
        evaluate_future,
+       evaluate,
        get_out,
        build_out,
        check_conditions,

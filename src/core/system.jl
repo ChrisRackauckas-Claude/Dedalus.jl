@@ -47,6 +47,16 @@ function CoeffSystem(subproblems, dtype::Type{T}) where {T}
 end
 
 """
+    CoeffSystem(subproblems; dtype=Float64)
+
+Keyword-argument convenience constructor that delegates to the positional
+form `CoeffSystem(subproblems, dtype)`.
+"""
+function CoeffSystem(subproblems; dtype::Type{T}=Float64) where {T}
+    CoeffSystem(subproblems, dtype)
+end
+
+"""
     get_subdata(cs, sp; ss=nothing)
 
 Return view of coefficient data for the given subproblem and subsystem.

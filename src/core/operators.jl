@@ -2173,6 +2173,39 @@ end
 # Differentiate has its own show method defined above
 
 # ============================================================================
+# subspace_matrix placeholder
+# ============================================================================
+
+"""
+    subspace_matrix(op, layout)
+
+Return the subspace (basis conversion/differentiation/interpolation) matrix
+for operator `op` at the given layout.  This is a placeholder that returns
+an identity matrix; it will be replaced with actual basis matrix computation
+once the basis infrastructure is wired up.
+"""
+function subspace_matrix(op, layout)
+    # Placeholder: return identity matrix matching the operator's axis size
+    n = 1  # Will be replaced with actual basis matrix computation
+    return sparse(I, n, n)
+end
+
+# ============================================================================
+# AdvectiveCFL operate method
+# ============================================================================
+
+function operate(op::AdvectiveCFL, out)
+    vel = op.args[1]
+    preset_layout!(out, vel.layout)
+    # Compute |velocity| / grid_spacing for each component
+    # Simplified: just use absolute value of velocity components
+    out.data .= 0
+    for i in 1:length(vel.tensorsig)
+        out.data .+= abs.(vel.data[i, fill(:, ndims(vel.data)-1)...])
+    end
+end
+
+# ============================================================================
 # Exports
 # ============================================================================
 
@@ -2201,4 +2234,5 @@ export AbstractOperator, AbstractLinearOperator, SpectralOperator, SpectralOpera
        OPERATOR_ALIASES, register_operator_alias!,
        operator_operand, new_operand,
        subproblem_matrix, expression_matrices,
+       subspace_matrix,
        dt, lap
