@@ -122,3 +122,13 @@ function scatter!(fs::FieldSystem)
         field["c"] = av
     end
 end
+
+# ============================================================
+# Exports
+# ============================================================
+
+export CoeffSystem,
+       FieldSystem,
+       get_subdata,
+       gather!,
+       scatter!
