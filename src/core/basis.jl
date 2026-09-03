@@ -840,13 +840,6 @@ function basis_rmatmul(operand::JacobiBasis, ncc)
     return nothing
 end
 
-function clone_with(b::JacobiBasis; size=b._size, a=b.a, b_param=b.b,
-                    a0=b.a0, b0=b.b0, coord=b.coord, bounds=b.bounds,
-                    dealias=b._dealias, library=b.library)
-    return Jacobi(coord, size, bounds, a, b_param; a0=a0, b0=b0, dealias=dealias, library=library)
-end
-
-# Convenience overload with keyword `b` (must rename to avoid conflict)
 function clone_with(basis::JacobiBasis; kwargs...)
     # Extract with explicit field mapping to handle the `b` name conflict
     kw = Dict{Symbol,Any}(kwargs)
