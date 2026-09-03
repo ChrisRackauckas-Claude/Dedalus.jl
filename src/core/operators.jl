@@ -1556,7 +1556,7 @@ function subproblem_matrix(op::CartesianTrace, subproblem)
     trace_vec = vec(Matrix{Float64}(I, d, d))
     # Kronecker with remaining tensor components and coefficient size
     n_eye = prod(cs_dim(cs) for cs in op.tensorsig; init=1)
-    n_eye *= subproblem.coeff_size(op.domain)
+    n_eye *= coeff_size(subproblem, op.domain)
     eye_mat = sparse(1.0I, n_eye, n_eye)
     return kron(sparse(trace_vec'), eye_mat)
 end
@@ -1685,7 +1685,7 @@ end
 function subproblem_matrix(op::CartesianComponent, subproblem)
     # Build selection matrix via Kronecker product
     factors = [sparse(1.0I, cs_dim(cs), cs_dim(cs)) for cs in op.operand.tensorsig]
-    push!(factors, sparse(1.0I, subproblem.coeff_size(op.domain), subproblem.coeff_size(op.domain)))
+    push!(factors, sparse(1.0I, coeff_size(subproblem, op.domain), coeff_size(subproblem, op.domain)))
     # Build selection row for the indexed coordinate
     sel = zeros(1, get_dim(op.operand.tensorsig[op.index]))
     sel[1, op.coord_subaxis] = 1.0
