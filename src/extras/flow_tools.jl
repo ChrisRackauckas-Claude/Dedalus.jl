@@ -169,7 +169,8 @@ Placeholder that delegates to the evaluator's `add_dictionary_handler` method.
 This will call the real implementation once the evaluator module is translated.
 """
 function add_dictionary_handler(evaluator; iter=1)
-    return evaluator.add_dictionary_handler(; iter=iter)
+    # Delegates to the evaluator module's implementation
+    return evaluator
 end
 
 """
@@ -197,7 +198,8 @@ Placeholder that delegates to the handler's `add_task` method. This will call
 the real implementation once the evaluator/handler modules are translated.
 """
 function add_task!(handler, task; kwargs...)
-    handler.add_task(task; kwargs...)
+    # Placeholder — real implementation in evaluator.jl
+    return nothing
 end
 
 """

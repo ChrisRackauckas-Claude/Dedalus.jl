@@ -2220,9 +2220,7 @@ export AbstractOperator, AbstractLinearOperator, SpectralOperator, SpectralOpera
 differentiate(arg, coord) = Differentiate(arg, coord)
 interpolate(arg, coord, position) = Interpolate(arg, coord, position)
 integrate(arg, coord) = Integrate(arg, coord)
-integrate(arg) = Integrate(arg)
 average(arg, coord) = Average(arg, coord)
-average(arg) = Average(arg)
 lift(arg, basis, n) = Lift(arg, basis, n)
 
 # ============================================================================

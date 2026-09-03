@@ -459,7 +459,7 @@ function local_grid(dist::Distributor, basis; scale=nothing)
         scale = 1
     end
     if get_dim(basis) == 1
-        return basis.local_grid(dist; scale=scale)
+        return local_grid(basis, dist; scale=scale)
     else
         throw(ArgumentError("Use `local_grids` for multidimensional bases."))
     end
@@ -477,7 +477,7 @@ function local_grids(dist::Distributor, bases...; scales=nothing)
         fa = first_axis(dist, basis)
         la = last_axis(dist, basis)
         basis_scales = scales[fa:la]
-        append!(grids, basis.local_grids(dist; scales=basis_scales))
+        append!(grids, local_grids(basis, dist; scales=basis_scales))
     end
     return grids
 end

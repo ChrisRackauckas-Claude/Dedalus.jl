@@ -1296,3 +1296,7 @@ function get_basis_axis(dist, basis)
     end
     return 1  # default
 end
+
+const add_system_handler! = add_system_handler
+const evaluate_group! = evaluate_group
+

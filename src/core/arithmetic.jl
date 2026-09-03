@@ -126,7 +126,7 @@ end
 Return the dimension of a coordinate system. Dispatches to the `dim` field
 or property of the coordinate system object.
 """
-cs_dim(cs) = cs.dim
+cs_dim(cs) = hasproperty(cs, :_dim) ? cs._dim : (hasproperty(cs, :dim) ? cs.dim : 1)
 
 # ============================================================================
 # Add — Abstract addition operator
@@ -251,7 +251,7 @@ end
 Expand expression over specified variables.
 """
 function expand(op::Add, vars...)
-    if has(op, vars...)
+    if has_operand(op, vars...)
         return sum(expand(arg, vars...) for arg in op.args)
     else
         return op
@@ -556,13 +556,13 @@ end
 Expand expression over specified variables.
 """
 function expand(op::Product, vars...)
-    if has(op, vars...)
+    if has_operand(op, vars...)
         # Expand arguments
         exp_args = [expand(arg, vars...) for arg in op.args]
         # Sum over cartesian product of sums including specified variables
         arg_sets = []
         for arg in exp_args
-            if arg isa Add && has(arg, vars...)
+            if arg isa Add && has_operand(arg, vars...)
                 push!(arg_sets, arg.args)
             else
                 push!(arg_sets, [arg])
