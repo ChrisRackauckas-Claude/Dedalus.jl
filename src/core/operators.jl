@@ -2227,7 +2227,7 @@ lift(arg, basis, n) = Lift(arg, basis, n)
 # Stubs for subsystem/solver wiring
 # ============================================================================
 
-function local_groupset_slices(layout, domain, subsystem)
+function local_groupset_slices(layout, group, domain; scales=1)
     return (Colon(),)
 end
 
