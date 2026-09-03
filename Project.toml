@@ -1,0 +1,31 @@
+name = "Dedalus"
+uuid = "d8e4c038-7a2e-4b8f-9c1a-1e3f5d2a7b9c"
+authors = ["Dedalus Project"]
+version = "3.0.5"
+
+[deps]
+FFTW = "7a1cc6d0-90b4-57f2-9754-b56e0e60ef58"
+FastTransforms = "057dd010-8810-581a-b7be-e3fc3b93f78c"
+HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+LinearSolve = "7ed4a6bd-45f5-4d41-b270-4a48e9bafcae"
+Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+
+[compat]
+FFTW = "1.10"
+FastTransforms = "0.16"
+HDF5 = "0.17"
+LinearSolve = "2"
+MPI = "0.20"
+SpecialFunctions = "2"
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
