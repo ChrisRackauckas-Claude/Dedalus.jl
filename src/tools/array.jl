@@ -16,7 +16,7 @@ Key differences from the Python original:
 using SparseArrays
 using LinearAlgebra
 
-include("config.jl")
+# config.jl is included by the main module before this file
 
 # ---------------------------------------------------------------------------
 # Module-level configuration flags
