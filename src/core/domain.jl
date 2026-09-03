@@ -7,11 +7,12 @@ domain for a field or operand.
 
 ## Key translation choices
 
-- Python's `CachedClass` metaclass → `CachedClass` wrapper from `tools/cache.jl`.
+- Python's `CachedClass` metaclass → plain Julia `struct` with preprocessing
+  in `make_domain` (deduplication, overlap check, axis sorting).
 - Python `@CachedAttribute` → lazily-computed fields with accessor functions.
-- Python `@CachedMethod` → `CachedMethod` wrappers or Julia memoization.
+- Python `@CachedMethod` → Dict-based memoization keyed by arguments.
 - Python `OrderedDict` → `OrderedDict` from `OrderedCollections`.
-- `numpy` arrays → Julia arrays.
+- `numpy` arrays → Julia arrays / tuples.
 - 0-based axis indexing → 1-based (Julia convention).
 
 ## Forward references
@@ -109,10 +110,15 @@ mutable struct Domain
     bases::Tuple
     _dim::Int
     _cache::Dict{Symbol, Any}
+    _chunk_shape_cache::Dict{UInt, Tuple}
+    _grid_shape_cache::Dict{Tuple, Tuple}
 
     function Domain(dist::AbstractDistributor, bases::Tuple)
         dim_val = sum(get_dim(b) for b in bases; init=0)
-        return new(dist, bases, dim_val, Dict{Symbol, Any}())
+        return new(dist, bases, dim_val,
+                   Dict{Symbol, Any}(),
+                   Dict{UInt, Tuple}(),
+                   Dict{Tuple, Tuple}())
     end
 end
 
@@ -302,9 +308,11 @@ function bases_by_coord(dom::Domain)
                 result[cs] = nothing
             end
         end
-        # Fill in with bases
+        # Fill in with bases — keyed by the basis's `coords` attribute,
+        # which is the coordinate or coordinate system the basis spans
+        # (matches Python: `bases_by_coord[basis.coords] = basis`).
         for basis in dom.bases
-            result[get_coords(basis)] = basis
+            result[basis.coords] = basis
         end
         result
     end)
@@ -545,9 +553,14 @@ end
 """
     _grid_shape_cached(dom::Domain, scales) -> Tuple
 
-Internal cached grid-shape computation.
+Internal cached grid-shape computation (mirrors Python `@CachedMethod`).
 """
 function _grid_shape_cached(dom::Domain, scales)
+    key = Tuple(scales)
+    cached = get(dom._grid_shape_cache, key, nothing)
+    if cached !== nothing
+        return cached
+    end
     dist_dim = get_dim(dom.dist)
     shape = ones(Int, dist_dim)
     for basis in dom.bases
@@ -557,7 +570,9 @@ function _grid_shape_cached(dom::Domain, scales)
         subshape = grid_shape(basis, subscales)
         shape[ax:ax+d-1] .= subshape
     end
-    return Tuple(shape)
+    result = Tuple(shape)
+    dom._grid_shape_cache[key] = result
+    return result
 end
 
 """
@@ -582,9 +597,15 @@ end
 """
     chunk_shape(dom::Domain, layout) -> Tuple
 
-Compute the chunk shape for a given layout.
+Compute the chunk shape for a given layout (memoized by layout identity,
+matching Python `@CachedMethod`).
 """
 function chunk_shape(dom::Domain, layout)
+    key = objectid(layout)
+    cached = get(dom._chunk_shape_cache, key, nothing)
+    if cached !== nothing
+        return cached
+    end
     dist_dim = get_dim(dom.dist)
     shape = ones(Int, dist_dim)
     for basis in dom.bases
@@ -594,7 +615,9 @@ function chunk_shape(dom::Domain, layout)
         gs = layout.grid_space[basis_axes]
         shape[basis_axes] .= chunk_shape(basis, gs)
     end
-    return Tuple(shape)
+    result = Tuple(shape)
+    dom._chunk_shape_cache[key] = result
+    return result
 end
 
 """
