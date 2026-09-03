@@ -2161,9 +2161,8 @@ matrix.  Concrete dispatch methods for each operator+basis combination are
 defined in transforms.jl (loaded after both operators.jl and basis.jl).
 """
 function subspace_matrix(op, layout)
-    # Fallback: identity matrix
-    n = 1
-    return sparse(I, n, n)
+    error("subspace_matrix not implemented for operator type $(typeof(op)). " *
+          "Add a dispatch method in transforms.jl for this operator+basis combination.")
 end
 
 # ============================================================================
