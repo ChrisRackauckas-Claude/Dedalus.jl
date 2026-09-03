@@ -247,7 +247,7 @@ function volume_integral(flow::GlobalFlowProperty, name::AbstractString)
             # Compute volume integral on the fly
             field = flow.properties[name]
             integral_op = Integrate(field)
-            integral_field = evaluate(integral_op)
+            integral_field = evaluate_future(integral_op)
         else
             rethrow(e)
         end
@@ -272,46 +272,8 @@ end
 # Integrate / AdvectiveCFL operator placeholders
 # ---------------------------------------------------------------------------
 
-# These are forward references to operator types that live in `core/operators.jl`.
-# Once that module is translated they should be imported instead. The placeholder
-# callables allow flow_tools to be parsed and tested in isolation.
-
-"""
-    Integrate(operand)
-
-Placeholder for the `Integrate` operator constructor.
-Delegates to `Operators.Integrate` if available, otherwise errors.
-"""
-function Integrate(operand)
-    if isdefined(Main, :Operators) && isdefined(Main.Operators, :Integrate)
-        return Base.invokelatest(Main.Operators.Integrate, operand)
-    end
-    error("Integrate operator is not yet available. " *
-          "Import the operators module before using volume_integral.")
-end
-
-"""
-    evaluate(op)
-
-Placeholder for evaluating an operator.
-"""
-function evaluate(op)
-    return op.evaluate()
-end
-
-"""
-    AdvectiveCFL(velocity, coord)
-
-Placeholder for the `AdvectiveCFL` operator constructor.
-Delegates to `Operators.AdvectiveCFL` if available, otherwise errors.
-"""
-function AdvectiveCFL(velocity, coord)
-    if isdefined(Main, :Operators) && isdefined(Main.Operators, :AdvectiveCFL)
-        return Base.invokelatest(Main.Operators.AdvectiveCFL, velocity, coord)
-    end
-    error("AdvectiveCFL operator is not yet available. " *
-          "Import the operators module before using add_velocity!.")
-end
+# Integrate, AdvectiveCFL, and evaluate_future are defined in core/operators.jl
+# and core/future.jl respectively (included before this file).
 
 # ---------------------------------------------------------------------------
 # CFL
