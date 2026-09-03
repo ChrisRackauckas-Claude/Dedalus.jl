@@ -1306,7 +1306,6 @@ export Distributor,
        decrement,
        increment_single,
        decrement_single,
-       preset_layout,
        backward_transform,
        forward_transform,
        elements_to_groups
