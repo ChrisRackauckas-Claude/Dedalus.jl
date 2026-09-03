@@ -1363,19 +1363,9 @@ end
 # Delegate common methods from LockedField to its inner field-like storage
 # (LockedField has the same struct fields as Field, so these work directly)
 
-Base.getindex(f::LockedField, key) = Base.getindex(f::Field, key)
-Base.setindex!(f::LockedField, data, key) = Base.setindex!(f::Field, data, key)
-
-# LockedField shares all AbstractCurrent methods via the abstract type dispatch.
-
 # ============================================================================
-# Shared Field/LockedField operations
+# LockedField getindex/setindex!
 # ============================================================================
-
-# Make getindex/setindex! work for LockedField via reinterpretation as Field-like
-# Since LockedField has all the same fields, the Field methods above work on it too
-# via the AbstractCurrent dispatch. We need to provide explicit methods though
-# because Julia dispatches on concrete types.
 
 function Base.getindex(f::LockedField, key)
     if isa(key, Tuple)
