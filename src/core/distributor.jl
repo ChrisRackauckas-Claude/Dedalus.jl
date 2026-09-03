@@ -1005,7 +1005,7 @@ function _build_layouts!(dist::Distributor; dry_run::Bool=false)
                     grid_space[d] = true
                     layout_i = Layout(dist, local_flags, grid_space)
                     if !dry_run
-                        path_i = Transform(dist.layouts[end], layout_i, d)
+                        path_i = DistTransform(dist.layouts[end], layout_i, d)
                         # Insert at beginning of transforms list
                         # (transforms are indexed by axis, built in reverse)
                         pushfirst!(dist.transforms, path_i)
@@ -1068,22 +1068,22 @@ In serial mode, transforms are simple basis forward/backward calls.
 - `layout1` -- grid-space side layout.
 - `axis::Int` -- axis being transformed (1-based).
 """
-struct Transform
+struct DistTransform
     layout0::Layout
     layout1::Layout
     axis::Int
 end
 
-function Base.show(io::IO, t::Transform)
-    print(io, "Transform(axis=$(t.axis), layout0=$(t.layout0.index) -> layout1=$(t.layout1.index))")
+function Base.show(io::IO, t::DistTransform)
+    print(io, "DistTransform(axis=$(t.axis), layout0=$(t.layout0.index) -> layout1=$(t.layout1.index))")
 end
 
 """
-    increment(transform::Transform, fields)
+    increment(transform::DistTransform, fields)
 
 Backward transform (coeff -> grid) a list of fields along the transform axis.
 """
-function increment(transform::Transform, fields)
+function increment(transform::DistTransform, fields)
     if length(fields) == 1
         increment_single(transform, fields[1])
     else
@@ -1094,11 +1094,11 @@ function increment(transform::Transform, fields)
 end
 
 """
-    decrement(transform::Transform, fields)
+    decrement(transform::DistTransform, fields)
 
 Forward transform (grid -> coeff) a list of fields along the transform axis.
 """
-function decrement(transform::Transform, fields)
+function decrement(transform::DistTransform, fields)
     if length(fields) == 1
         decrement_single(transform, fields[1])
     else
@@ -1109,11 +1109,11 @@ function decrement(transform::Transform, fields)
 end
 
 """
-    increment_single(transform::Transform, field)
+    increment_single(transform::DistTransform, field)
 
 Backward transform a single field (coeff -> grid).
 """
-function increment_single(transform::Transform, field)
+function increment_single(transform::DistTransform, field)
     ax = transform.axis
     basis = full_bases(field.domain)[ax]
 
@@ -1131,11 +1131,11 @@ function increment_single(transform::Transform, field)
 end
 
 """
-    decrement_single(transform::Transform, field)
+    decrement_single(transform::DistTransform, field)
 
 Forward transform a single field (grid -> coeff).
 """
-function decrement_single(transform::Transform, field)
+function decrement_single(transform::DistTransform, field)
     ax = transform.axis
     basis = full_bases(field.domain)[ax]
 

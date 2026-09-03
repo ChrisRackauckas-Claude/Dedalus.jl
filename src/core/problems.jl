@@ -827,70 +827,9 @@ function _is_field(obj)
 end
 
 # ============================================================================
-# Forward-reference stubs for expression tree operations
-# ============================================================================
-# These are expected to be defined by the expression tree / operators modules.
-# We declare them here so this file compiles independently.
-
-"""Stub: split an expression by an operator type."""
-function split_operator end
-
-"""Stub: replace occurrences of an operator or operand in an expression."""
-function replace_op end
-
-"""Stub: check if an expression contains given operands."""
-function has end
-
-"""Stub: compute Frechet differential."""
-function frechet_differential end
-
-"""Stub: get atoms of a specific type."""
-function atoms end
-
-"""Stub: Field constructor."""
-function Field end
-
-"""Stub: preset_scales for a field."""
-function preset_scales end
-
-"""Stub: TimeDerivative operator type marker."""
-struct TimeDerivative end
-
-"""Stub: Lock operator type marker."""
-struct Lock end
-
-"""Stub: LockedField type marker."""
-struct LockedField end
-
-"""Stub: unlock a locked field."""
-function unlock end
-
-"""Stub: require_linearity."""
-function require_linearity end
-
-"""Stub: require_independent."""
-function require_independent end
-
-"""Stub: require_first_order."""
-function require_first_order end
-
-"""Stub: matrix_dependence of an expression."""
-function matrix_dependence end
-
-"""Stub: matrix_coupling of an expression."""
-function matrix_coupling end
-
-"""Stub: reinitialize an expression."""
-function reinitialize end
-
-"""Stub: prep NCCs in an expression."""
-function prep_nccs end
-
-"""Stub: solver constructors (forward references)."""
-function LinearBoundaryValueSolver end
-function NonlinearBoundaryValueSolver end
-function InitialValueSolver end
-function EigenvalueSolver end
+# Types and functions referenced here (Field, LockedField, TimeDerivative,
+# solver types, expression tree methods) are defined in other core modules
+# that are included before or after this file in Dedalus.jl.
 
 # ============================================================================
 # Aliases

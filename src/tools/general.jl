@@ -48,11 +48,11 @@ Create an empty `OrderedSet{Any}`.
 OrderedSet() = OrderedSet{Any}()
 
 """
-    OrderedSet{T}(iter)
+    ordered_set_from(::Type{T}, iter)
 
 Create an `OrderedSet{T}` populated with elements from `iter`.
 """
-function OrderedSet{T}(iter) where {T}
+function ordered_set_from(::Type{T}, iter) where {T}
     s = OrderedSet{T}()
     for item in iter
         push!(s, item)
