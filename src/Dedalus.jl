@@ -1,5 +1,7 @@
 module Dedalus
 
+__precompile__(false)
+
 const VERSION = "3.0.5"
 
 # ============================================================

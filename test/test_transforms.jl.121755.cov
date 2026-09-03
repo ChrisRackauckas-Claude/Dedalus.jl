@@ -1,0 +1,243 @@
+        - """Tests for forward/backward transforms on Jacobi and Fourier bases."""
+        - 
+        - using Test
+        - using Dedalus
+        - 
+        1 @testset "Transforms" begin
+        - 
+        -     # ---- 1D Fourier transforms ----
+        - 
+        3     @testset "CF scalar roundtrip N=$N dealias=$dealias" for
+        -             N in [8],
+        -             dealias in [0.5, 1.0, 1.5]
+        3         c = Coordinate("x")
+        3         d = Distributor([c])
+        0         xb = ComplexFourier(c, size=N, bounds=(0, 1), dealias=dealias)
+        0         x = local_grid(d, xb, scale=dealias)
+        0         u = Field(dist=d, bases=(xb,), dtype=ComplexF64)
+        0         preset_scales!(u, dealias)
+        0         ug = @. exp(2 * pi * im * x)
+        0         u["g"] = ug
+        0         u["c"]  # force forward transform
+        0         @test isapprox(u["g"], ug, atol=1e-12)
+        0     end
+        - 
+        2     @testset "RF scalar roundtrip N=$N dealias=$dealias" for
+        -             N in [8],
+        -             dealias in [0.5, 1.0, 1.5]
+        3         c = Coordinate("x")
+        3         d = Distributor([c])
+        0         xb = RealFourier(c, size=N, bounds=(0, 1), dealias=dealias)
+        0         x = local_grid(d, xb, scale=dealias)
+        0         u = Field(dist=d, bases=(xb,), dtype=Float64)
+        0         preset_scales!(u, dealias)
+        0         ug = @. cos(2 * pi * x + pi / 4)
+        0         u["g"] = ug
+        0         u["c"]
+        0         @test isapprox(u["g"], ug, atol=1e-12)
+        0     end
+        - 
+        -     # ---- 1D Jacobi transforms ----
+        - 
+        2     @testset "J scalar roundtrip a=$a b=$b N=$N dealias=$dealias T=$T" for
+        -             a in [-0.5, 0.0],
+        -             b in [-0.5, 0.0],
+        -             N in [8],
+        -             dealias in [0.5, 1.0, 1.5],
+        -             T in [Float64, ComplexF64]
+       24         c = Coordinate("x")
+       24         d = Distributor([c])
+        0         xb = Jacobi(c, a=a, b=b, size=N, bounds=(0, 1), dealias=dealias)
+        0         x = local_grid(d, xb, scale=dealias)
+        0         u = Field(dist=d, bases=(xb,), dtype=T)
+        0         preset_scales!(u, dealias)
+        0         ug = @. 2 * x^2 - 1
+        0         u["g"] = ug
+        0         u["c"]
+        0         @test isapprox(u["g"], ug, atol=1e-12)
+        0     end
+        - 
+        -     # ---- 1D Fourier library backward/forward tests ----
+        - 
+        2     @testset "Real Fourier libraries backward N=$N dealias=$dealias" for
+        -             N in [16],
+        -             dealias in [0.5, 1.0, 1.5]
+        3         c = Coordinate("x")
+        3         d = Distributor([c])
+        -         # Matrix reference
+        0         b_mat = RealFourier(c, size=N, bounds=(0, 2 * pi), dealias=dealias, library="matrix")
+        0         u_mat = Field(dist=d, bases=(b_mat,), dtype=Float64)
+        0         preset_scales!(u_mat, dealias)
+        0         u_mat["c"] = randn(N)
+        -         # Library
+        0         for library in ["fftpack", "scipy", "fftw", "fftw_hc"]
+        0             b_lib = RealFourier(c, size=N, bounds=(0, 2 * pi), dealias=dealias, library=library)
+        0             u_lib = Field(dist=d, bases=(b_lib,), dtype=Float64)
+        0             preset_scales!(u_lib, dealias)
+        0             u_lib["c"] = u_mat["c"]
+        0             @test isapprox(u_mat["g"], u_lib["g"], atol=1e-12)
+        0         end
+        0     end
+        - 
+        2     @testset "Real Fourier libraries forward N=$N dealias=$dealias" for
+        -             N in [16],
+        -             dealias in [0.5, 1.0, 1.5]
+        3         c = Coordinate("x")
+        3         d = Distributor([c])
+        0         b_mat = RealFourier(c, size=N, bounds=(0, 2 * pi), dealias=dealias, library="matrix")
+        0         u_mat = Field(dist=d, bases=(b_mat,), dtype=Float64)
+        0         preset_scales!(u_mat, dealias)
+        0         u_mat["g"] = randn(Int(ceil(dealias * N)))
+        0         for library in ["fftpack", "scipy", "fftw", "fftw_hc"]
+        0             b_lib = RealFourier(c, size=N, bounds=(0, 2 * pi), dealias=dealias, library=library)
+        0             u_lib = Field(dist=d, bases=(b_lib,), dtype=Float64)
+        0             preset_scales!(u_lib, dealias)
+        0             u_lib["g"] = u_mat["g"]
+        0             @test isapprox(u_mat["c"], u_lib["c"], atol=1e-12)
+        0         end
+        0     end
+        - 
+        2     @testset "Chebyshev libraries backward N=$N alpha=$alpha dealias=$dealias T=$T" for
+        -             N in [15, 16],
+        -             alpha in [0, 1, 2],
+        -             dealias in [0.5, 1.0, 1.5],
+        -             T in [Float64, ComplexF64]
+       36         c = Coordinate("x")
+       36         d = Distributor([c])
+        0         b_mat = Ultraspherical(c, size=N, alpha0=0, alpha=alpha, bounds=(-1, 1), dealias=dealias, library="matrix")
+        0         u_mat = Field(dist=d, bases=(b_mat,), dtype=T)
+        0         preset_scales!(u_mat, dealias)
+        0         u_mat["c"] = randn(N)
+        0         for library in ["scipy_dct", "fftw_dct"]
+        0             b_lib = Ultraspherical(c, size=N, alpha0=0, alpha=alpha, bounds=(-1, 1), dealias=dealias, library=library)
+        0             u_lib = Field(dist=d, bases=(b_lib,), dtype=T)
+        0             preset_scales!(u_lib, dealias)
+        0             u_lib["c"] = u_mat["c"]
+        0             @test isapprox(u_mat["g"], u_lib["g"], atol=1e-12)
+        0         end
+        0     end
+        - 
+        2     @testset "Chebyshev libraries forward N=$N alpha=$alpha dealias=$dealias T=$T" for
+        -             N in [15, 16],
+        -             alpha in [0, 1, 2],
+        -             dealias in [0.5, 1.0, 1.5],
+        -             T in [Float64, ComplexF64]
+       36         c = Coordinate("x")
+       36         d = Distributor([c])
+        0         b_mat = Ultraspherical(c, size=N, alpha0=0, alpha=alpha, bounds=(-1, 1), dealias=dealias, library="matrix")
+        0         u_mat = Field(dist=d, bases=(b_mat,), dtype=T)
+        0         preset_scales!(u_mat, dealias)
+        0         u_mat["g"] = randn(Int(ceil(dealias * N)))
+        0         for library in ["scipy_dct", "fftw_dct"]
+        0             b_lib = Ultraspherical(c, size=N, alpha0=0, alpha=alpha, bounds=(-1, 1), dealias=dealias, library=library)
+        0             u_lib = Field(dist=d, bases=(b_lib,), dtype=T)
+        0             preset_scales!(u_lib, dealias)
+        0             u_lib["g"] = u_mat["g"]
+        0             @test isapprox(u_mat["c"], u_lib["c"], atol=1e-12)
+        0         end
+        0     end
+        - 
+        -     # ---- 2D Cartesian transforms ----
+        - 
+        2     @testset "CF-CF scalar roundtrip Nx=$Nx Ny=$Ny dx=$dx dy=$dy" for
+        -             Nx in [8],
+        -             Ny in [8],
+        -             dx in [0.5, 1.0, 1.5],
+        -             dy in [0.5, 1.0, 1.5]
+        9         c = CartesianCoordinates("x", "y")
+        9         d = Distributor((c,))
+        0         xb = ComplexFourier(c.coords[1], size=Nx, bounds=(0, pi), dealias=dx)
+        0         yb = ComplexFourier(c.coords[2], size=Ny, bounds=(0, pi), dealias=dy)
+        0         x = local_grid(d, xb, scale=dx)
+        0         y = local_grid(d, yb, scale=dy)
+        0         f = Field(dist=d, bases=(xb, yb), dtype=ComplexF64)
+        0         preset_scales!(f, (dx, dy))
+        0         fg = @. exp(2im * x) * exp(2im * y + im * pi / 3) + 3 + exp(2im * y)
+        0         f["g"] = fg
+        0         f["c"]
+        0         @test isapprox(f["g"], fg, atol=1e-12)
+        0     end
+        - 
+        2     @testset "RF-RF scalar roundtrip Nx=$Nx Ny=$Ny dx=$dx dy=$dy" for
+        -             Nx in [8],
+        -             Ny in [8],
+        -             dx in [0.5, 1.0, 1.5],
+        -             dy in [0.5, 1.0, 1.5]
+        9         c = CartesianCoordinates("x", "y")
+        9         d = Distributor((c,))
+        0         xb = RealFourier(c.coords[1], size=Nx, bounds=(0, pi), dealias=dx)
+        0         yb = RealFourier(c.coords[2], size=Ny, bounds=(0, pi), dealias=dy)
+        0         x = local_grid(d, xb, scale=dx)
+        0         y = local_grid(d, yb, scale=dy)
+        0         f = Field(dist=d, bases=(xb, yb), dtype=Float64)
+        0         preset_scales!(f, (dx, dy))
+        0         fg = @. sin(2 * x) + cos(2 * y + pi / 3) + 3 + sin(2 * y)
+        0         f["g"] = fg
+        0         f["c"]
+        0         @test isapprox(f["g"], fg, atol=1e-12)
+        0     end
+        - 
+        2     @testset "CF-J scalar roundtrip a=$a b=$b Nx=$Nx Ny=$Ny dx=$dx dy=$dy" for
+        -             a in [-0.5, 0.0],
+        -             b in [-0.5, 0.0],
+        -             Nx in [8],
+        -             Ny in [8],
+        -             dx in [0.5, 1.0, 1.5],
+        -             dy in [0.5, 1.0, 1.5]
+       36         c = CartesianCoordinates("x", "y")
+       36         d = Distributor((c,))
+        0         xb = ComplexFourier(c.coords[1], size=Nx, bounds=(0, pi), dealias=dx)
+        0         yb = Jacobi(c.coords[2], a=a, b=b, size=Ny, bounds=(0, 1), dealias=dy)
+        0         x = local_grid(d, xb, scale=dx)
+        0         y = local_grid(d, yb, scale=dy)
+        0         f = Field(dist=d, bases=(xb, yb), dtype=ComplexF64)
+        0         preset_scales!(f, (dx, dy))
+        0         fg = @. sin(2 * x) * y^5
+        0         f["g"] = fg
+        0         f["c"]
+        0         @test isapprox(f["g"], fg, atol=1e-12)
+        0     end
+        - 
+        2     @testset "CF-J vector roundtrip a=$a b=$b Nx=$Nx Ny=$Ny dx=$dx dy=$dy" for
+        -             a in [-0.5, 0.0],
+        -             b in [-0.5, 0.0],
+        -             Nx in [8],
+        -             Ny in [8],
+        -             dx in [0.5, 1.0, 1.5],
+        -             dy in [0.5, 1.0, 1.5]
+       36         c = CartesianCoordinates("x", "y")
+       36         d = Distributor((c,))
+        0         xb = ComplexFourier(c.coords[1], size=Nx, bounds=(0, pi), dealias=dx)
+        0         yb = Jacobi(c.coords[2], a=a, b=b, size=Ny, bounds=(0, 1), dealias=dy)
+        0         x = local_grid(d, xb, scale=dx)
+        0         y = local_grid(d, yb, scale=dy)
+        0         u = Field(dist=d, bases=(xb, yb), tensorsig=(c,), dtype=ComplexF64)
+        0         preset_scales!(u, (dx, dy))
+        0         ug = cat((@. cos(2 * x) * 2 * y^2), (@. sin(2 * x) * y + y); dims=1)
+        0         u["g"] = ug
+        0         u["c"]
+        0         @test isapprox(u["g"], ug, atol=1e-12)
+        0     end
+        - 
+        2     @testset "CF-J 1d vector roundtrip a=$a b=$b Nx=$Nx Ny=$Ny dx=$dx dy=$dy" for
+        -             a in [-0.5, 0.0],
+        -             b in [-0.5, 0.0],
+        -             Nx in [8],
+        -             Ny in [8],
+        -             dx in [0.5, 1.0, 1.5],
+        -             dy in [0.5, 1.0, 1.5]
+       36         c = CartesianCoordinates("x", "y")
+       36         d = Distributor((c,))
+        0         xb = ComplexFourier(c.coords[1], size=Nx, bounds=(0, pi), dealias=dx)
+        0         yb = Jacobi(c.coords[2], a=a, b=b, size=Ny, bounds=(0, 1), dealias=dy)
+        0         x = local_grid(d, xb, scale=dx)
+        0         y = local_grid(d, yb, scale=dy)
+        0         v = Field(dist=d, bases=(xb,), tensorsig=(c,), dtype=ComplexF64)
+        0         preset_scales!(v, (dx, dy))
+        0         vg = cat((@. cos(2 * x) * 2), (@. sin(2 * x) + 1); dims=1)
+        0         v["g"] = vg
+        0         v["c"]
+        0         @test isapprox(v["g"], vg, atol=1e-12)
+        0     end
+        - 
+        - end

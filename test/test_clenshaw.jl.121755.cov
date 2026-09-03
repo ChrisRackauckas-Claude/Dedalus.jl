@@ -1,0 +1,34 @@
+        - """Tests for Clenshaw summation algorithms."""
+        - # Note: The original Python test_clenshaw.py only tests ball (spherical) Clenshaw.
+        - # Since we restrict to Cartesian parametrizations, and the Python file has no
+        - # Cartesian tests, we provide placeholder tests for 1D Jacobi Clenshaw
+        - # (as noted by the TODO in the original).
+        - 
+        - using Test
+        - using Dedalus
+        - 
+        1 @testset "Clenshaw" begin
+        - 
+        3     @testset "Jacobi Clenshaw scalar N=$N a=$a b=$b T=$T" for
+        -             N in [8],
+        -             a in [-0.5, 0.0],
+        -             b in [-0.5, 0.0],
+        -             T in [Float64, ComplexF64]
+        -         # Test that Clenshaw summation of Jacobi polynomials reproduces
+        -         # direct evaluation for a simple polynomial NCC.
+        -         # Setup: construct a Jacobi basis and evaluate a polynomial via
+        -         # coefficient expansion (Clenshaw) vs direct grid evaluation.
+        8         c = Coordinate("x")
+        8         d = Distributor(c, dtype=T)
+        0         basis = Jacobi(c, size=N, a=a, b=b, bounds=(0, 1))
+        0         x = local_grid(d, basis, scale=1)
+        -         # Field with known polynomial
+        0         f = Field(d, bases=basis)
+        0         f["g"] = @. 2 * x^2 - 1
+        -         # Round-trip through coefficients should preserve values
+        0         fc = f["c"]
+        0         fg = f["g"]
+        0         @test isapprox(fg, @.(2 * x^2 - 1), atol=1e-12)
+        0     end
+        - 
+        - end

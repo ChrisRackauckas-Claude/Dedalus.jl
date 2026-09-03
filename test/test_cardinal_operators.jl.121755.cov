@@ -1,0 +1,94 @@
+        - """Tests for Cardinal basis operators: ConvertConstant, Interpolate, Integrate, Average."""
+        - 
+        - using Test
+        - using Dedalus
+        - 
+        1 @testset "Cardinal Operators" begin
+        - 
+        3     N_range = [5, 10]
+        2     dtype_range = [Float64, ComplexF64]
+        - 
+        2     @testset "convert constant N=$N T=$T layout=$layout" for
+        -             N in N_range,
+        -             T in dtype_range,
+        -             layout in ["g", "c"]
+        8         c = Coordinate("n")
+        8         dist = Distributor(c, dtype=T)
+        0         b = CardinalBasis(c, size=N)
+        0         n = local_grid(dist, b, scale=1)
+        0         f = Field(dist)
+        0         f["g"] = 3
+        0         change_layout!(f, layout)
+        0         g = evaluate(Convert(f, b))
+        0         @test isapprox(g["g"], 3 * ones(N), atol=1e-12)
+        0     end
+        - 
+        2     @testset "interpolate N=$N T=$T index=$index" for
+        -             N in N_range,
+        -             T in dtype_range,
+        -             index in [0, 2, -1]
+       12         c = Coordinate("n")
+       12         dist = Distributor(c, dtype=T)
+        0         b = CardinalBasis(c, size=N)
+        0         n = local_grid(dist, b, scale=1)
+        0         f = Field(dist, bases=b)
+        0         fill_random!(f, "g")
+        0         g = evaluate(Interpolate(f, c, index))
+        -         # Convert Python index to Julia indexing
+        0         jl_index = index >= 0 ? index + 1 : N + index + 1
+        0         @test isapprox(g["g"], f["g"][jl_index], atol=1e-12)
+        0     end
+        - 
+        2     @testset "integrate N=$N T=$T" for
+        -             N in N_range,
+        -             T in dtype_range
+        4         c = Coordinate("n")
+        4         dist = Distributor(c, dtype=T)
+        0         b = CardinalBasis(c, size=N)
+        0         n = local_grid(dist, b, scale=1)
+        0         f = Field(dist, bases=b)
+        0         fill_random!(f, "g")
+        0         g = evaluate(Integrate(f, c))
+        0         @test isapprox(g["g"], sum(f["g"]), atol=1e-12)
+        0     end
+        - 
+        2     @testset "integrate constant N=$N T=$T" for
+        -             N in N_range,
+        -             T in dtype_range
+        4         c = Coordinate("n")
+        4         dist = Distributor(c, dtype=T)
+        0         b = CardinalBasis(c, size=N)
+        0         n = local_grid(dist, b, scale=1)
+        0         f = Field(dist, bases=b)
+        0         f["g"] .= 3
+        0         g = evaluate(Integrate(f, c))
+        0         @test isapprox(g["g"], 3 * N, atol=1e-12)
+        0     end
+        - 
+        2     @testset "average N=$N T=$T" for
+        -             N in N_range,
+        -             T in dtype_range
+        4         c = Coordinate("n")
+        4         dist = Distributor(c, dtype=T)
+        0         b = CardinalBasis(c, size=N)
+        0         n = local_grid(dist, b, scale=1)
+        0         f = Field(dist, bases=b)
+        0         fill_random!(f, "g")
+        0         g = evaluate(Average(f, c))
+        0         @test isapprox(g["g"], sum(f["g"]) / N, atol=1e-12)
+        0     end
+        - 
+        2     @testset "average constant N=$N T=$T" for
+        -             N in N_range,
+        -             T in dtype_range
+        4         c = Coordinate("n")
+        4         dist = Distributor(c, dtype=T)
+        0         b = CardinalBasis(c, size=N)
+        0         n = local_grid(dist, b, scale=1)
+        0         f = Field(dist, bases=b)
+        0         f["g"] .= 7
+        0         g = evaluate(Average(f, c))
+        0         @test isapprox(g["g"], 7, atol=1e-12)
+        0     end
+        - 
+        - end
