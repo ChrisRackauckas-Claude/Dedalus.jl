@@ -1482,21 +1482,21 @@ end
 # ============================================================================
 # AssertionError compatibility
 # ============================================================================
-# Python uses AssertionError (their spelling); we match it for fidelity.
+# The Python Dedalus codebase uses "AssertionError" (their consistent spelling
+# throughout the project).  We define it here as a Julia exception type.
 
-const AssertionError = AssertionError_exists = begin
-    if !@isdefined(AssertionError)
-        # Define it if not already present
-        struct _AssertionErrorType <: Exception
-            msg::String
-        end
-        Base.showerror(io::IO, e::_AssertionErrorType) =
-            print(io, "AssertionError: ", e.msg)
-        _AssertionErrorType
-    else
-        AssertionError
-    end
+"""
+    AssertionError <: Exception
+
+Exception type matching the Python Dedalus `AssertionError` name. Used for
+linearity / independence / first-order checks in the expression tree.
+"""
+struct AssertionError <: Exception
+    msg::String
 end
+
+Base.showerror(io::IO, e::AssertionError) =
+    print(io, "AssertionError: ", e.msg)
 
 # ============================================================================
 # Exports
