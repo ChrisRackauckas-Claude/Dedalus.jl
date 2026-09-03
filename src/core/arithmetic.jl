@@ -160,7 +160,7 @@ function add_build_bases(args...)
     bases = []
     bases_by_coord_first = args[1].domain.bases_by_coord
     for coord in keys(bases_by_coord_first)
-        ax_bases = [get(arg.domain.bases_by_coord, coord, nothing) for arg in args]
+        ax_bases = [get(bases_by_coord(arg.domain), coord, nothing) for arg in args]
         # All constant bases yields constant basis
         if all(b === nothing for b in ax_bases)
             push!(bases, nothing)
@@ -466,9 +466,9 @@ function product_build_bases(arg0, arg1; ncc::Bool=false, ncc_vars=nothing, kw..
         if b0 === nothing && b1 === nothing
             continue
         # Multiply all bases
-        elseif ncc && has(arg0, ncc_vars...)
+        elseif ncc && has_operand(arg0, ncc_vars...)
             push!(bases, b1 * b0)  # matmul order: b1 @ b0
-        elseif ncc && has(arg1, ncc_vars...)
+        elseif ncc && has_operand(arg1, ncc_vars...)
             push!(bases, b0 * b1)  # matmul order: b0 @ b1
         else
             push!(bases, b0 * b1)
@@ -588,8 +588,8 @@ function require_linearity(op::Product, vars...;
                            error_type::Type=ErrorException,
                            recurse::Bool=true)
     arg0, arg1 = op.args[1], op.args[2]
-    op_arg0 = (arg0 isa AbstractOperand) && has(arg0, vars...)
-    op_arg1 = (arg1 isa AbstractOperand) && has(arg1, vars...)
+    op_arg0 = (arg0 isa AbstractOperand) && has_operand(arg0, vars...)
+    op_arg1 = (arg1 isa AbstractOperand) && has_operand(arg1, vars...)
     if op_arg0 && op_arg1
         sn = self_name === nothing ? string(op) : self_name
         vn = vars_name === nothing ? [string(v) for v in vars] : vars_name
@@ -780,9 +780,9 @@ function cartesian_mode_matrix(subproblem_shape, ncc_domain, arg_domain, out_dom
     dim = out_domain.dist.dim
     matrix = nothing
     for axis in 1:dim
-        ncc_basis = ncc_domain.full_bases[axis]
-        arg_basis = arg_domain.full_bases[axis]
-        out_basis = out_domain.full_bases[axis]
+        ncc_basis = full_bases(ncc_domain)[axis]
+        arg_basis = full_bases(arg_domain)[axis]
+        out_basis = full_bases(out_domain)[axis]
         if ncc_basis === nothing
             mode_mat = sparse(1.0I, subproblem_shape[axis], subproblem_shape[axis])
         else
@@ -827,7 +827,7 @@ Determine dimension-by-dimension matrix dependence for product operations.
 function matrix_dependence(op::Product, vars...)
     operand = op.operand
     operand_dep = matrix_dependence(operand, vars...)
-    ncc_dep = operand.domain.mode_dependence
+    ncc_dep = mode_dependence(operand.domain)
     return ncc_dep .| operand_dep
 end
 
@@ -840,7 +840,7 @@ function matrix_coupling(op::Product, vars...)
     operand = op.operand
     operand_coupling = matrix_coupling(operand, vars...)
     ncc = op.ncc
-    ncc_coupling = ncc.domain.nonconstant
+    ncc_coupling = ncc.domain_nonconstant(domain)
     return ncc_coupling .| operand_coupling
 end
 
@@ -965,7 +965,7 @@ mutable struct DotProduct <: Product
         domain = Domain(dist, bases)
         dtype = promote_type(arg0.dtype, arg1.dtype)
         # Setup ghost broadcasting
-        broadcast_dims = collect(domain.nonconstant)
+        broadcast_dims = collect(domain_nonconstant(domain))
         arg0_gb = GhostBroadcaster(arg0.domain, dist.grid_layout, broadcast_dims)
         arg1_gb = GhostBroadcaster(arg1.domain, dist.grid_layout, broadcast_dims)
         # Compose einsum string (for reference / potential use)
@@ -1197,7 +1197,7 @@ mutable struct CrossProduct <: Product
         tensorsig = arg0.tensorsig
         dtype = promote_type(arg0.dtype, arg1.dtype)
         # Setup ghost broadcasting
-        broadcast_dims = collect(domain.nonconstant)
+        broadcast_dims = collect(domain_nonconstant(domain))
         arg0_gb = GhostBroadcaster(arg0.domain, dist.grid_layout, broadcast_dims)
         arg1_gb = GhostBroadcaster(arg1.domain, dist.grid_layout, broadcast_dims)
         # Pick operate method based on coordsys handedness
@@ -1388,7 +1388,7 @@ mutable struct MultiplyFields <: Multiply
         tensorsig = (arg0.tensorsig..., arg1.tensorsig...)
         dtype = promote_type(arg0.dtype, arg1.dtype)
         # Setup ghost broadcasting
-        broadcast_dims = collect(domain.nonconstant)
+        broadcast_dims = collect(domain_nonconstant(domain))
         arg0_gb = GhostBroadcaster(arg0.domain, dist.grid_layout, broadcast_dims)
         arg1_gb = GhostBroadcaster(arg1.domain, dist.grid_layout, broadcast_dims)
         # Compute expanded shapes for broadcasting data
@@ -1454,7 +1454,7 @@ struct GhostBroadcaster
 
     function GhostBroadcaster(domain, layout, broadcast_dims)
         broadcast_arr = collect(Bool, broadcast_dims)
-        constant_arr = collect(Bool, domain.constant)
+        constant_arr = collect(Bool, domain_constant(domain))
         # Determine deployment dimensions: broadcast AND constant
         deploy_dims_ext = broadcast_arr .& constant_arr
         # Filter to non-local (distributed) dimensions

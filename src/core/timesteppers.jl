@@ -244,7 +244,7 @@ function _multistep_step!(data::MultistepIMEXData, stepper::MultistepIMEX,
     for sp in subproblems
         if update_LHS
             if STORE_EXPANDED
-                sp.LHS.data .= a0 .* sp.M_exp.data .+ b0 .* sp.L_exp.data
+                sp.LHS.nzval .= a0 .* sp.M_exp.nzval .+ b0 .* sp.L_exp.nzval
             else
                 sp.LHS = a0 * sp.M_min + b0 * sp.L_min
             end
@@ -883,7 +883,7 @@ function _rk_step!(data::RungeKuttaIMEXData, stepper::RungeKuttaIMEX,
     data._LHS_params = k
     if update_LHS
         for sp in subproblems
-            sp.LHS_solvers = fill(nothing, num_stages + 1)
+            sp.LHS_solvers = Any[nothing for _ in 1:num_stages + 1]
         end
     end
 
@@ -937,8 +937,8 @@ function _rk_step!(data::RungeKuttaIMEXData, stepper::RungeKuttaIMEX,
         for sp in subproblems
             if update_LHS
                 if STORE_EXPANDED
-                    copyto!(sp.LHS.data, sp.M_exp.data)
-                    axpy!(k_Hii, sp.L_exp.data, sp.LHS.data)
+                    copyto!(sp.LHS.nzval, sp.M_exp.nzval)
+                    axpy!(k_Hii, sp.L_exp.nzval, sp.LHS.nzval)
                 else
                     sp.LHS = sp.M_min + k_Hii * sp.L_min
                 end
@@ -1155,22 +1155,16 @@ register_scheme!(RKGFY)
 """Stub: preset_layout! for fields."""
 
 """Stub: gather_inputs from subproblem."""
-function gather_inputs end
 
 """Stub: gather_outputs from subproblem."""
-function gather_outputs end
 
 """Stub: scatter_inputs! to subproblem."""
-function scatter_inputs! end
 
 """Stub: subproblem_shape query."""
-function subproblem_shape end
 
 """Stub: subproblem_size query."""
-function subproblem_size end
 
 """Stub: solve from matsolvers."""
-function solve end
 
 # ============================================================================
 # Exports
