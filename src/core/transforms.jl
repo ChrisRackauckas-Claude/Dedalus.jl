@@ -226,9 +226,9 @@ function JacobiMMT(grid_size::Int, coeff_size::Int, a, b, a0, b0;
     # -- lazy forward matrix --------------------------------------------------
     fwd_cache = CachedAttribute{Matrix{Float64}}(function()
         # Gauss quadrature with base (a0, b0) polynomials
-        base_grid = build_grid(N; a=a0, b=b0)
+        base_grid = build_grid(N, a0, b0)
         base_polynomials = build_polynomials(max(M, N), a0, b0, base_grid)
-        base_weights = build_weights(N; a=a0, b=b0)
+        base_weights = build_weights(N, a0, b0)
         base_transform = base_polynomials .* base_weights'
         # Zero higher coefficients for transforms with grid_size < coeff_size
         if size(base_transform, 1) > N
@@ -256,7 +256,7 @@ function JacobiMMT(grid_size::Int, coeff_size::Int, a, b, a0, b0;
     # -- lazy backward matrix -------------------------------------------------
     bwd_cache = CachedAttribute{Matrix{Float64}}(function()
         # Construct polynomials on the base grid
-        base_grid = build_grid(N; a=a0, b=b0)
+        base_grid = build_grid(N, a0, b0)
         polynomials = build_polynomials(M, a, b, base_grid)
         # Zero higher polynomials for transforms with grid_size < coeff_size
         if size(polynomials, 1) > N
@@ -783,7 +783,7 @@ function _get_plans(t::FFTWRealFFT, gshape::Tuple, axis::Int)
     fwd = plan_rfft(tmp_real, axis; flags=t.rigor)
     # For irfft we need the complex-shaped array
     cshape = collect(gshape)
-    cshape[axis] = gshape[axis] >> 1 + 1  # N/2 + 1
+    cshape[axis] = (gshape[axis] >> 1) + 1  # N/2 + 1
     tmp_complex = zeros(ComplexF64, Tuple(cshape))
     bwd = plan_irfft(tmp_complex, gshape[axis], axis; flags=t.rigor)
     plans = (fwd, bwd)
@@ -807,7 +807,7 @@ function backward!(t::FFTWRealFFT, cdata::AbstractArray{Float64},
     N = t.N
     # Allocate complex temporary (N/2+1 along axis)
     cshape = collect(size(gdata))
-    cshape[axis] = N >> 1 + 1
+    cshape[axis] = (N >> 1) + 1
     temp = zeros(ComplexF64, Tuple(cshape))
     # Repack into complex form and rescale
     # irfft includes the 1/N factor, so we pre-multiply by N

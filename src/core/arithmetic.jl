@@ -411,7 +411,7 @@ Require arguments to be in a proper layout.
 function enforce_conditions(op::AddFields)
     layout = choose_layout(op)
     for arg in op.args
-        change_layout(arg, layout)
+        change_layout!(arg, layout)
     end
 end
 
@@ -656,7 +656,7 @@ function gather_ncc_coeffs(op::Product)
     end
     # Allgather NCC coefficients
     if ncc isa Field
-        require_coeff_space(ncc)
+        require_coeff_space!(ncc)
         op._ncc_data = allgather_data(ncc)
     else
         op._ncc_data = ncc
@@ -862,7 +862,7 @@ Require arguments to be in full grid space.
 """
 function enforce_conditions(op::Product)
     for arg in op.args
-        require_grid_space(arg)
+        require_grid_space!(arg)
     end
 end
 

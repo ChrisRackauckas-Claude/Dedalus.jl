@@ -294,7 +294,7 @@ function frechet_differential(op::AbstractOperand, variables, perturbations;
     diff = sym_diff(diff, epsilon)
     # e -> 0
     if diff !== nothing && diff != 0
-        diff = operand_cast(diff, dist; tensorsig=tensorsig, dtype=dtype)
+        diff = operand_cast(diff, dist, tensorsig, dtype)
         diff = replace_operand(diff, epsilon, 0)
     end
     # Replace variables with backgrounds, if specified
@@ -331,7 +331,7 @@ end
 Get general coefficient-space valid modes, returning a copy.
 """
 function valid_modes(op::AbstractOperand)
-    vm = op.dist.coeff_layout.valid_elements(op.tensorsig, op.domain, 1)
+    vm = valid_elements(op.dist.coeff_layout, op.tensorsig, op.domain, 1)
     return copy(vm)
 end
 
@@ -438,7 +438,7 @@ end
 
 function expression_matrices(c::AbstractCurrent, subproblem, vars; kw...)
     require_linearity(c, vars...)
-    size_val = subproblem.field_size(c)
+    size_val = field_size(subproblem, c)
     matrix = sparse(1.0I, size_val, size_val)
     return Dict(c => matrix)
 end
@@ -565,7 +565,7 @@ mutable struct Field <: AbstractCurrent
                 Dict{Symbol,Any}(),
                 -1)
         # Set initial layout to coefficient space
-        f.layout = dist.get_layout_object(Symbol("c"))
+        f.layout = get_layout_object(dist, Symbol("c"))
         # Set initial scales and build buffer/data
         preset_scales!(f, ntuple(_ -> 1, get_dim(dist)))
         # Add weak reference to distributor's field set
@@ -607,9 +607,9 @@ function Base.setindex!(f::Field, data, key)
     if isa(key, Tuple)
         layout_key, sc = key
         preset_scales!(f, sc)
-        layout = f.dist.get_layout_object(layout_key)
+        layout = get_layout_object(f.dist, layout_key)
     else
-        layout = f.dist.get_layout_object(key)
+        layout = get_layout_object(f.dist, key)
     end
     preset_layout!(f, layout)
     dedalus_copyto!(f.data, data)
@@ -635,7 +635,7 @@ end
 Return the global data shape in the current layout and scales.
 """
 function global_shape(f::Field)
-    return f.layout.global_shape(f.domain, f.scales)
+    return global_shape(f.layout, f.domain, f.scales)
 end
 
 """
@@ -665,7 +665,7 @@ end
 Return the local elements in the current layout.
 """
 function local_elements(f::Field)
-    return f.layout.local_elements(f.domain, f.scales)
+    return local_elements(f.layout, f.domain, f.scales)
 end
 
 # ============================================================================
@@ -679,7 +679,7 @@ Compute and cache the buffer size needed for dealias-scale data.
 """
 function _dealias_buffer_size(f::Field)
     return get!(f._cache, :dealias_buffer_size) do
-        f.dist.buffer_size(f.domain, domain_dealias(f.domain); dtype=f.dtype)
+        buffer_size(f.dist, f.domain, domain_dealias(f.domain), f.dtype)
     end
 end
 
@@ -703,21 +703,21 @@ Set new transform scales, reallocating the buffer if necessary.
 Does not transform data -- use `change_scales!` for that.
 """
 function preset_scales!(f::Field, scales)
-    new_scales = f.dist.remedy_scales(scales)
+    new_scales = remedy_scales(f.dist, scales)
     old_scales = f.scales
     # Return if scales are unchanged
     if new_scales == old_scales
         return nothing
     end
     # Get required buffer size
-    buffer_size = f.dist.buffer_size(f.domain, new_scales; dtype=f.dtype)
+    buf_size = buffer_size(f.dist, f.domain, new_scales, f.dtype)
     # Use dealias buffer if possible
     dbs = _dealias_buffer_size(f)
-    if buffer_size <= dbs
+    if buf_size <= dbs
         f.buffer = _dealias_buffer(f)
     else
         ncomp = prod(get_dim(vs) for vs in f.tensorsig; init=1)
-        f.buffer = create_buffer(ncomp * buffer_size)
+        f.buffer = create_buffer(ncomp * buf_size)
     end
     # Reset layout to build new data view
     f.scales = new_scales
@@ -733,11 +733,11 @@ end
 Interpret the buffer as data in the specified layout. Rebuilds the data view.
 """
 function preset_layout!(f::Field, layout)
-    layout = f.dist.get_layout_object(layout)
+    layout = get_layout_object(f.dist, layout)
     f.layout = layout
     tens_shape = [get_dim(vs) for vs in f.tensorsig]
-    local_shape = layout.local_shape(f.domain, f.scales)
-    total_shape = Tuple(vcat(tens_shape, collect(local_shape)))
+    loc_shape = local_shape(layout, f.domain, f.scales)
+    total_shape = Tuple(vcat(tens_shape, collect(loc_shape)))
     total_len = prod(total_shape; init=1)
     # Build a view into the buffer
     if total_len > 0 && length(f.buffer) >= total_len
@@ -755,7 +755,7 @@ end
 Change data to specified scales, preserving data via transforms if needed.
 """
 function change_scales!(f::Field, scales)
-    new_scales = f.dist.remedy_scales(scales)
+    new_scales = remedy_scales(f.dist, scales)
     old_scales = f.scales
     # Quit if new scales aren't new
     if new_scales == old_scales
@@ -785,7 +785,7 @@ end
 Change data to the specified layout via sequential transforms.
 """
 function change_layout!(f::Field, layout)
-    layout = f.dist.get_layout_object(layout)
+    layout = get_layout_object(f.dist, layout)
     if f.layout.index < layout.index
         while f.layout.index < layout.index
             towards_grid_space!(f)
@@ -805,7 +805,7 @@ Change to the next layout towards grid space.
 """
 function towards_grid_space!(f::Field)
     index = f.layout.index
-    f.dist.paths[index].increment([f])
+    increment(f.dist.paths[index], [f])
     return nothing
 end
 
@@ -816,7 +816,7 @@ Change to the next layout towards coefficient space.
 """
 function towards_coeff_space!(f::Field)
     index = f.layout.index
-    f.dist.paths[index - 1].decrement([f])
+    decrement(f.dist.paths[index - 1], [f])
     return nothing
 end
 
@@ -893,10 +893,10 @@ function allgather_data(f::Field; layout=nothing)
     end
     # Build global buffers
     tensor_shape = Tuple(get_dim(cs) for cs in f.tensorsig)
-    gs = f.layout.global_shape(f.domain, f.scales)
+    gs = global_shape(f.layout, f.domain, f.scales)
     global_shape_full = (tensor_shape..., gs...)
     component_slices = ntuple(_ -> Colon(), length(f.tensorsig))
-    spatial_slices = f.layout.slices(f.domain, f.scales)
+    spatial_slices = slices(f.layout, f.domain, f.scales)
     local_slices = (component_slices..., spatial_slices...)
     send_buff = zeros(f.dtype, global_shape_full)
     recv_buff = similar(send_buff)
@@ -1028,7 +1028,7 @@ function fill_random!(f::Field; layout=nothing, scales=nothing, seed=nothing,
     global_data = ChunkedRandomArray(shape, seed, chunk_size, distribution)
     # Extract local data
     component_slices = ntuple(_ -> Colon(), length(f.tensorsig))
-    spatial_slices = f.layout.slices(f.domain, f.scales)
+    spatial_slices = slices(f.layout, f.domain, f.scales)
     local_slices = (component_slices..., spatial_slices...)
     local_data = global_data[local_slices...]
     if is_real_operand(f)
@@ -1050,7 +1050,7 @@ function low_pass_filter!(f::Field; shape=nothing, scales=nothing)
         if scales !== nothing
             throw(ArgumentError("Specify either shape or scales."))
         end
-        gs = f.dist.grid_layout.global_shape(f.domain, 1)
+        gs = global_shape(f.dist.grid_layout, f.domain, 1)
         scales = Tuple(shape[i] / gs[i] for i in eachindex(shape))
     end
     change_scales!(f, scales)
@@ -1104,13 +1104,13 @@ function load_from_global_coeff_data!(f::Field, global_data;
     layout = f.dist.coeff_layout
     # Check shapes
     data_shape = size(global_data)[(end-dim+1):end]
-    self_shape = layout.global_shape(f.domain; scales=1)
+    self_shape = global_shape(layout, f.domain, 1)
     if data_shape != self_shape
         throw(ArgumentError("Cannot change global shape when loading coeff data."))
     end
     # Extract local data from global data
     component_slices = ntuple(_ -> Colon(), length(f.tensorsig))
-    spatial_slices = layout.slices(f.domain, 1)
+    spatial_slices = slices(layout, f.domain, 1)
     local_slices = (pre_slices..., component_slices..., spatial_slices...)
     if func === nothing
         f[layout] = global_data[local_slices...]
@@ -1131,12 +1131,12 @@ function load_from_global_grid_data!(f::Field, global_data;
     layout = f.dist.grid_layout
     # Set scales to match saved data
     saved_shape = size(global_data)[(end-dim+1):end]
-    base_shape = layout.global_shape(f.domain; scales=1)
+    base_shape = global_shape(layout, f.domain, 1)
     sc = Tuple(saved_shape[i] / base_shape[i] for i in 1:dim)
     preset_scales!(f, sc)
     # Extract local data
     component_slices = ntuple(_ -> Colon(), length(f.tensorsig))
-    spatial_slices = layout.slices(f.domain, sc)
+    spatial_slices = slices(layout, f.domain, sc)
     local_slices = (pre_slices..., component_slices..., spatial_slices...)
     if func === nothing
         f[layout] = global_data[local_slices...]
@@ -1154,7 +1154,7 @@ end
 Set local data from global data using layout elements.
 """
 function set_global_data!(f::Field, global_data)
-    elements = f.layout.local_elements(f.domain, f.scales)
+    elements = local_elements(f.layout, f.domain, f.scales)
     local_data = global_data[elements...]
     dedalus_copyto!(f.data, local_data)
     return nothing
@@ -1285,7 +1285,7 @@ end
 Override: locked fields cannot change scales.
 """
 function change_scales!(f::LockedField, scales)
-    sc = f.dist.remedy_scales(scales)
+    sc = remedy_scales(f.dist, scales)
     if sc != f.scales
         throw(ArgumentError("Cannot change locked scales."))
     end
@@ -1303,7 +1303,7 @@ function towards_grid_space!(f::LockedField)
     new_layout = f.dist.layouts[new_index]
     if new_layout in f.allowed_layouts
         # Delegate to the standard Field logic via the dist paths
-        f.dist.paths[index].increment([f])
+        increment(f.dist.paths[index], [f])
     else
         throw(ArgumentError("Cannot change locked layout."))
     end
@@ -1320,7 +1320,7 @@ function towards_coeff_space!(f::LockedField)
     new_index = index - 1
     new_layout = f.dist.layouts[new_index]
     if new_layout in f.allowed_layouts
-        f.dist.paths[index - 1].decrement([f])
+        decrement(f.dist.paths[index - 1], [f])
     else
         throw(ArgumentError("Cannot change locked layout."))
     end
@@ -1382,9 +1382,9 @@ function Base.setindex!(f::LockedField, data, key)
     if isa(key, Tuple)
         layout_key, sc = key
         preset_scales!(f, sc)
-        layout = f.dist.get_layout_object(layout_key)
+        layout = get_layout_object(f.dist, layout_key)
     else
-        layout = f.dist.get_layout_object(key)
+        layout = get_layout_object(f.dist, key)
     end
     preset_layout!(f, layout)
     dedalus_copyto!(f.data, data)
@@ -1393,18 +1393,18 @@ end
 
 # preset_scales!/preset_layout! for LockedField (delegate to the Field versions)
 function preset_scales!(f::LockedField, scales)
-    new_scales = f.dist.remedy_scales(scales)
+    new_scales = remedy_scales(f.dist, scales)
     old_scales = f.scales
     if new_scales == old_scales
         return nothing
     end
-    buffer_size = f.dist.buffer_size(f.domain, new_scales; dtype=f.dtype)
+    buf_size = buffer_size(f.dist, f.domain, new_scales, f.dtype)
     dbs = _dealias_buffer_size(f)
-    if buffer_size <= dbs
+    if buf_size <= dbs
         f.buffer = _dealias_buffer(f)
     else
         ncomp = prod(get_dim(vs) for vs in f.tensorsig; init=1)
-        f.buffer = create_buffer(ncomp * buffer_size)
+        f.buffer = create_buffer(ncomp * buf_size)
     end
     f.scales = new_scales
     if f.layout !== nothing
@@ -1414,11 +1414,11 @@ function preset_scales!(f::LockedField, scales)
 end
 
 function preset_layout!(f::LockedField, layout)
-    layout = f.dist.get_layout_object(layout)
+    layout = get_layout_object(f.dist, layout)
     f.layout = layout
     tens_shape = [get_dim(vs) for vs in f.tensorsig]
-    local_shape = layout.local_shape(f.domain, f.scales)
-    total_shape = Tuple(vcat(tens_shape, collect(local_shape)))
+    loc_shape = local_shape(layout, f.domain, f.scales)
+    total_shape = Tuple(vcat(tens_shape, collect(loc_shape)))
     total_len = prod(total_shape; init=1)
     if total_len > 0 && length(f.buffer) >= total_len
         data_flat = reinterpret(f.dtype, view(f.buffer, 1:total_len * sizeof(f.dtype) ÷ sizeof(Float64)))
@@ -1430,7 +1430,7 @@ function preset_layout!(f::LockedField, layout)
 end
 
 function change_layout!(f::LockedField, layout)
-    layout = f.dist.get_layout_object(layout)
+    layout = get_layout_object(f.dist, layout)
     if f.layout.index < layout.index
         while f.layout.index < layout.index
             towards_grid_space!(f)

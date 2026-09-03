@@ -488,7 +488,7 @@ end
 Return local modes for a basis.
 """
 function local_modes(dist::Distributor, basis)
-    return basis.local_modes(dist)
+    return local_modes(basis, dist)
 end
 
 # ============================================================================

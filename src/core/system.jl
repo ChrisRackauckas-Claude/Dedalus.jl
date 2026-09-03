@@ -90,7 +90,7 @@ function FieldSystem(fields, subproblems, coeff_layout)
     T = fields[1].dtype
     dim = fields[1].dist.dim
 
-    array_shapes = [coeff_layout.local_shape(f.domain, ntuple(_ -> 1, dim)) for f in fields]
+    array_shapes = [local_shape(coeff_layout, f.domain, ntuple(_ -> 1, dim)) for f in fields]
     array_sizes = [prod(shape) for shape in array_shapes]
     buffer_size = sum(array_sizes)
     starts = cumsum(array_sizes) .- array_sizes

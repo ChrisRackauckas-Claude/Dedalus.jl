@@ -417,7 +417,7 @@ function unit_vector_fields(cc::CartesianCoordinates, dist)
     end
     fields = []
     for (i, c) in enumerate(cc.coords)
-        ec = dist.VectorField(cc; name="e$(c.name)")
+        ec = VectorField(dist, cc; name="e$(c.name)")
         ec["g"][i] = 1
         push!(fields, ec)
     end

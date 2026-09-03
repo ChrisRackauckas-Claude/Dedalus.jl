@@ -116,7 +116,7 @@ by the operator's subproblem_matrix.
 function expression_matrices(op::AbstractLinearOperator, subproblem, vars; kw...)
     # Intercept calls when self is a variable
     if op in vars
-        size_val = subproblem.field_size(op)
+        size_val = field_size(subproblem, op)
         matrix = sparse(1.0I, size_val, size_val)
         return Dict(op => matrix)
     end
@@ -333,7 +333,7 @@ function new_operand(op::FieldCopy, operand; kw...)
 end
 
 function subproblem_matrix(op::FieldCopy, subproblem)
-    sz = subproblem.field_size(op.operand)
+    sz = field_size(subproblem, op.operand)
     return sparse(1.0I, sz, sz)
 end
 
