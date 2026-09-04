@@ -90,6 +90,8 @@ include("core/evaluator.jl")
 # Layer 9: Extras
 # ============================================================
 include("extras/flow_tools.jl")
+include("extras/plot_tools.jl")
+include("extras/quick_domains.jl")
 
 # ============================================================
 # Public API exports (matching Python dedalus/public.py)
@@ -128,8 +130,21 @@ export LinearBoundaryValueSolver, EigenvalueSolver,
 export CNAB1, CNAB2, MCNAB2, CNLF2, SBDF1, SBDF2, SBDF3, SBDF4,
        RK111, RK222, RK443, RKSMR, RKGFY
 
-# Extras
+# Extras – flow tools
 export CFL, GlobalFlowProperty
+
+# Extras – plot tools
+export FieldWrapper, DimWrapper,
+       PlotBox, xbox, ybox,
+       PlotFrame, bottom_left, top_right,
+       MultiFigure, subfigure_axes,
+       get_1d_vertices, quad_mesh, pad_limits, get_plane,
+       plot_bot, plot_bot_2d, plot_bot_3d
+
+# Extras – quick domains
+export quick_fourier, quick_chebyshev,
+       quick_fourier_2d, quick_fourier_3d,
+       quick_channel_2d, quick_channel_3d
 
 # Warn if threading is not disabled
 if get(ENV, "OMP_NUM_THREADS", "") != "1"
