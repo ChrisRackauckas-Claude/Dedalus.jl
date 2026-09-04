@@ -129,6 +129,7 @@ mutable struct MultistepIMEXData{T}
     F::Vector{CoeffSystem{T}}
     _iteration::Int
     _LHS_params::Union{Nothing, Tuple{Float64, Float64}}
+    _nonempty_subproblems::Vector{Any}
 end
 
 """
@@ -144,7 +145,8 @@ function _init_multistep(solver, amax::Int, bmax::Int, cmax::Int, steps::Int;
     MX = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:amax]
     LX = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:bmax]
     F_sys = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:cmax]
-    return MultistepIMEXData{dtype}(solver, RHS, dt_history, MX, LX, F_sys, 0, nothing)
+    nonempty = Any[sp for sp in subproblems if subproblem_size(sp) > 0]
+    return MultistepIMEXData{dtype}(solver, RHS, dt_history, MX, LX, F_sys, 0, nothing, nonempty)
 end
 
 """
@@ -162,7 +164,7 @@ This implements the core multistep algorithm:
 function _multistep_step!(data::MultistepIMEXData, stepper::MultistepIMEX,
                           dt::Float64, wall_time::Float64)::Nothing
     solver = data.solver
-    subproblems = [sp for sp in solver.subproblems if subproblem_size(sp) > 0]
+    subproblems = data._nonempty_subproblems
     evaluator = solver.evaluator
     state_fields = solver.state
     F_fields = solver.F
@@ -265,7 +267,7 @@ end
 Rotate vector elements to the right by one position (last element wraps to first).
 Equivalent to Python's `deque.rotate()`.
 """
-function _rotate_right!(v::Vector)
+@inline function _rotate_right!(v::Vector)
     n = length(v)
     if n <= 1
         return v
@@ -284,7 +286,7 @@ end
 Apply sparse matrix along the first axis of subdata arrays.
 Handles both 1D and 2D data.
 """
-function _apply_sparse_to_subdata!(A, X, out)::Nothing
+@inline function _apply_sparse_to_subdata!(A, X, out)::Nothing
     if ndims(X) <= 1 && ndims(out) <= 1
         mul!(out, A, X)
     else
@@ -831,6 +833,7 @@ mutable struct RungeKuttaIMEXData{T}
     LX::Vector{CoeffSystem{T}}
     F::Vector{CoeffSystem{T}}
     _LHS_params::Union{Nothing, Float64}
+    _nonempty_subproblems::Vector{Any}
 end
 
 """
@@ -844,7 +847,8 @@ function _init_rk(solver, num_stages::Int; dtype::DataType=Float64)
     MX0 = CoeffSystem(subproblems; dtype=dtype)
     LX = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:num_stages]
     F_sys = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:num_stages]
-    return RungeKuttaIMEXData{dtype}(solver, RHS, MX0, LX, F_sys, nothing)
+    nonempty = Any[sp for sp in subproblems if subproblem_size(sp) > 0]
+    return RungeKuttaIMEXData{dtype}(solver, RHS, MX0, LX, F_sys, nothing, nonempty)
 end
 
 """
@@ -860,7 +864,7 @@ For each stage i = 1, ..., s:
 function _rk_step!(data::RungeKuttaIMEXData, stepper::RungeKuttaIMEX,
                    dt::Float64, wall_time::Float64)::Nothing
     solver = data.solver
-    subproblems = [sp for sp in solver.subproblems if subproblem_size(sp) > 0]
+    subproblems = data._nonempty_subproblems
     evaluator = solver.evaluator
     state_fields = solver.state
     F_fields = solver.F
@@ -883,8 +887,12 @@ function _rk_step!(data::RungeKuttaIMEXData, stepper::RungeKuttaIMEX,
     update_LHS = (k != data._LHS_params)
     data._LHS_params = k
     if update_LHS
+        required_len = num_stages + 1
         for sp in subproblems
-            sp.LHS_solvers = Any[nothing for _ in 1:num_stages + 1]
+            if length(sp.LHS_solvers) != required_len
+                resize!(sp.LHS_solvers, required_len)
+            end
+            fill!(sp.LHS_solvers, nothing)
         end
     end
 
