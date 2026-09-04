@@ -431,6 +431,14 @@ function matrix_coupling(c::AbstractCurrent, vars...)
     return falses(get_dim(c.domain.dist))
 end
 
+function prep_nccs(c::AbstractCurrent, vars)
+    return nothing
+end
+
+function gather_ncc_coeffs(c::AbstractCurrent)
+    return nothing
+end
+
 function build_ncc_matrices(c::AbstractCurrent, separability, vars; kw...)
     require_linearity(c, vars...)
     return nothing
