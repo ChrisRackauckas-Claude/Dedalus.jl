@@ -326,6 +326,16 @@ end
     get_out(f::AbstractFuture)
 
 Get or create the output field for this future.
+
+Output buffer reuse: when `STORE_OUTPUTS` is true (the default), the output
+field built by `build_out` is cached in `f.out` after the first evaluation.
+Subsequent evaluations return the same buffer, so no per-evaluation allocation
+occurs for output fields.  This mirrors the Python Dedalus `@CachedAttribute`
+pattern on the `out` property.
+
+A second caching layer (`store_last` / `last_id` / `last_out`) allows the
+*evaluated result* to be reused across evaluations that share the same `id`,
+short-circuiting the entire recursive evaluation when the cached id matches.
 """
 function get_out(f::AbstractFuture)::AbstractCurrent
     if f.out !== nothing

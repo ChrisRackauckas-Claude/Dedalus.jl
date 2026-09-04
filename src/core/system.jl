@@ -118,7 +118,7 @@ function gather!(fs::FieldSystem)
     for (field, av) in zip(fs.fields, fs.array_views)
         av .= field["c"]
     end
-    fs.group_buffer .= fs.perm * fs.field_buffer
+    mul!(fs.group_buffer, fs.perm, fs.field_buffer)
 end
 
 """
@@ -127,7 +127,7 @@ end
 Extract fields from system buffer.
 """
 function scatter!(fs::FieldSystem)
-    fs.field_buffer .= transpose(fs.perm) * fs.group_buffer
+    mul!(fs.field_buffer, transpose(fs.perm), fs.group_buffer)
     for (field, av) in zip(fs.fields, fs.array_views)
         field["c"] = av
     end
