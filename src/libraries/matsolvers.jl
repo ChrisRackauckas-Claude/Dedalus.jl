@@ -302,24 +302,18 @@ function solve(s::FactorizedTransposeSolver, vector::AbstractVecOrMat)
     if s.trans == :N
         return s.LU \ vector
     elseif s.trans == :T
-        # LU was built on A^T, so LU \ b  ≡  A^{-T} b
-        return s.LU \ vector
+        return transpose(s.LU) \ vector
     else  # :H
-        # LU was built on A^H, so LU \ b  ≡  A^{-H} b
-        return s.LU \ vector
+        return adjoint(s.LU) \ vector
     end
 end
 
 function solve_H(s::FactorizedTransposeSolver, vector::AbstractVecOrMat)
     if s.trans == :N
-        # Need A^{-H} b.  LU is of A, so use adjoint factorisation.
         return adjoint(s.LU) \ vector
     elseif s.trans == :H
-        # LU is of A^H → LU \ b  =  A^{-H} b, but we need A^{-1} b.
-        # A^{-1} = (A^H)^{-H}, use adjoint of LU.
-        return adjoint(s.LU) \ vector
+        return s.LU \ vector
     else  # :T
-        # LU is of A^T.  A^{-H} = conj(A^{-T}) = conj(LU \ ·)
         return conj.(s.LU \ conj.(vector))
     end
 end
