@@ -13,10 +13,15 @@ layouts (coefficient space vs grid space) and coordinates basis transforms.
     Transform
     Transpose
 
+    AbstractTransposePlanner
+    `-- AlltoallvTranspose
+        `-- ColDistributor
+        `-- RowDistributor
+
 ## Key translation choices
 
-- Python's MPI communicator -> `nothing` for serial mode; a comm wrapper for
-  future MPI support.
+- Python's MPI communicator -> `nothing` for serial mode; MPI.jl communicators
+  for parallel mode.
 - Python 0-based layout indices -> kept 0-based conceptually, but stored in
   1-based Julia arrays (layout at conceptual index `i` lives at `layouts[i+1]`).
 - Python `np.array` of bools -> Julia `Vector{Bool}` / `NTuple{N, Bool}`.
@@ -26,12 +31,13 @@ layouts (coefficient space vs grid space) and coordinates basis transforms.
 - Python `isinstance` checks -> Julia multiple dispatch / `isa`.
 - Python `prod` from `math` -> Julia `prod`.
 - Python `numbers.Number` -> Julia `Number`.
+- Julia arrays are column-major; buffer packing loops account for this.
 
 ## Serial-mode simplifications
 
 In serial (single-process) mode:
 - `comm` is `nothing` -- no real MPI needed.
-- `mesh` is an empty tuple `()` -- all data is local.
+- `mesh` is `[1]` -- all data is local.
 - All layouts have `local_flags = (true, true, ...)` -- everything is local.
 - Transposes never occur (no distributed axes).
 - Transforms are just basis forward/backward transform calls.
@@ -77,6 +83,694 @@ Base.getproperty(c::SerialCommCart, s::Symbol) = begin
 end
 
 # ============================================================================
+# Abstract transpose planner type
+# ============================================================================
+
+"""
+    AbstractTransposePlanner
+
+Abstract supertype for MPI transpose planners. Subtypes implement
+`localize_rows(planner, CL, RL)` and `localize_columns(planner, RL, CL)`.
+"""
+abstract type AbstractTransposePlanner end
+
+# ============================================================================
+# AlltoallvTranspose
+# ============================================================================
+
+"""
+    AlltoallvTranspose <: AbstractTransposePlanner
+
+MPI Alltoallv-based distributed array transpose, for redistributing a
+block-distributed multidimensional array across adjacent axes.
+
+Translates `AlltoallvTranspose` from `dedalus/core/transposes.pyx`.
+
+# Fields
+- `comm_sub` -- sub-communicator for the transpose axis.
+- `datasize::Int` -- number of doubles per element (1 for Float64, 2 for ComplexF64).
+- `axis::Int` -- column axis of transposition plan (1-based).
+- `N0::Int`, `N1::Int`, `N2::Int`, `N3::Int` -- reduced 4D global shape.
+- `global_shape::Vector{Int32}` -- global array shape.
+- `col_starts::Vector{Int32}`, `col_ends::Vector{Int32}` -- per-rank column start/end.
+- `row_starts::Vector{Int32}`, `row_ends::Vector{Int32}` -- per-rank row start/end.
+- `col_counts::Vector{Int32}`, `row_counts::Vector{Int32}` -- per-rank column/row counts.
+- `CL_reduced_shape::Vector{Int32}`, `RL_reduced_shape::Vector{Int32}` -- local reduced shapes.
+- `CL_displs::Vector{Int32}`, `RL_displs::Vector{Int32}` -- Alltoallv displacements.
+- `CL_counts::Vector{Int32}`, `RL_counts::Vector{Int32}` -- Alltoallv counts.
+- `CL_buffer::Vector{Float64}`, `RL_buffer::Vector{Float64}` -- communication buffers.
+- `local_col_count::Int`, `local_row_count::Int` -- local counts.
+"""
+mutable struct AlltoallvTranspose <: AbstractTransposePlanner
+    comm_sub::Any        # MPI sub-communicator
+    datasize::Int
+    axis::Int            # 1-based
+    N0::Int
+    N1::Int
+    N2::Int
+    N3::Int
+    global_shape::Vector{Int32}
+    col_starts::Vector{Int32}
+    col_ends::Vector{Int32}
+    row_starts::Vector{Int32}
+    row_ends::Vector{Int32}
+    col_counts::Vector{Int32}
+    row_counts::Vector{Int32}
+    CL_reduced_shape::Vector{Int32}
+    RL_reduced_shape::Vector{Int32}
+    CL_displs::Vector{Int32}
+    RL_displs::Vector{Int32}
+    CL_counts::Vector{Int32}
+    RL_counts::Vector{Int32}
+    CL_buffer::Vector{Float64}
+    RL_buffer::Vector{Float64}
+    local_col_count::Int
+    local_row_count::Int
+end
+
+"""
+    AlltoallvTranspose(global_shape, dtype, axis, comm_sub)
+
+Construct an Alltoallv transpose planner.
+
+# Arguments
+- `global_shape` -- global array shape (vector or tuple of integers).
+- `dtype` -- data type (`Float64` or `ComplexF64`).
+- `axis` -- column axis (1-based in Julia; Python's 0-based axis is shifted).
+- `comm_sub` -- MPI sub-communicator for this transpose axis.
+"""
+function AlltoallvTranspose(global_shape_in, dtype, axis::Integer, comm_sub)
+    gs = Int32.(collect(global_shape_in))
+    datasize = dtype == ComplexF64 ? 2 : 1
+
+    # Get communicator size and rank
+    nprocs = comm_size(comm_sub)
+    myrank = comm_rank(comm_sub)
+
+    # Reduced global shape (4D array):
+    # Dimensions before the transpose axis, the two transpose axes, and after.
+    # axis is 1-based: axes 1..axis-1 are "before", axis and axis+1 are transposed,
+    # axis+2..end are "after".
+    N0 = axis > 1 ? prod(gs[1:axis-1]) : 1
+    N1 = gs[axis]
+    N2 = gs[axis+1]
+    N3_raw = axis + 2 <= length(gs) ? prod(gs[axis+2:end]) : 1
+    N3 = N3_raw * datasize
+
+    # Block sizes (ceiling division)
+    B1 = cld(Int(N1), nprocs)
+    B2 = cld(Int(N2), nprocs)
+
+    # Per-rank start/end/count arrays
+    ranks = Int32.(collect(0:nprocs-1))
+
+    col_starts = Int32.(min.(B2 .* ranks, Int(N2)))
+    row_starts = Int32.(min.(B1 .* ranks, Int(N1)))
+    col_ends   = Int32.(min.(B2 .* (ranks .+ 1), Int(N2)))
+    row_ends   = Int32.(min.(B1 .* (ranks .+ 1), Int(N1)))
+
+    col_counts = col_ends .- col_starts
+    row_counts = row_ends .- row_starts
+
+    local_col_count = Int(col_counts[myrank + 1])
+    local_row_count = Int(row_counts[myrank + 1])
+
+    # Local reduced shapes
+    CL_reduced_shape = Int32[N0, N1, local_col_count, N3]
+    RL_reduced_shape = Int32[N0, local_row_count, N2, N3]
+
+    # Alltoallv displacements and counts (in doubles, matching Python)
+    CL_displs = Int32.((Int(N0) * local_col_count * Int(N3)) .* row_starts)
+    RL_displs = Int32.((Int(N0) * local_row_count * Int(N3)) .* col_starts)
+
+    CL_counts = Int32.((Int(N0) * local_col_count * Int(N3)) .* row_counts)
+    RL_counts = Int32.((Int(N0) * local_row_count * Int(N3)) .* col_counts)
+
+    # Communication buffers
+    CL_size = Int(N0) * Int(N1) * local_col_count * Int(N3)
+    RL_size = Int(N0) * local_row_count * Int(N2) * Int(N3)
+    CL_buffer = zeros(Float64, max(CL_size, 1))
+    RL_buffer = zeros(Float64, max(RL_size, 1))
+
+    return AlltoallvTranspose(
+        comm_sub, datasize, Int(axis),
+        Int(N0), Int(N1), Int(N2), Int(N3),
+        gs,
+        col_starts, col_ends, row_starts, row_ends,
+        col_counts, row_counts,
+        CL_reduced_shape, RL_reduced_shape,
+        CL_displs, RL_displs,
+        CL_counts, RL_counts,
+        CL_buffer, RL_buffer,
+        local_col_count, local_row_count
+    )
+end
+
+# ---------------------------------------------------------------------------
+# AlltoallvTranspose buffer packing/unpacking
+# ---------------------------------------------------------------------------
+
+"""
+    split_rows!(plan::AlltoallvTranspose, A, B)
+
+Reorder column-local dataset `A` (4D view: [N0, N1, local_col_count, N3])
+into the sending buffer `B` (flat), grouped by destination process (row blocks).
+"""
+function split_rows!(plan::AlltoallvTranspose, A::AbstractArray{Float64, 4}, B::Vector{Float64})
+    N0 = plan.N0
+    col_count = plan.local_col_count
+    N3 = plan.N3
+    nprocs = length(plan.row_starts)
+    i = 1
+    @inbounds for proc in 1:nprocs
+        row_start = Int(plan.row_starts[proc]) + 1  # 1-based
+        row_end   = Int(plan.row_ends[proc])         # inclusive
+        for n0 in 1:N0
+            for n1 in row_start:row_end
+                for n2 in 1:col_count
+                    for n3 in 1:N3
+                        B[i] = A[n0, n1, n2, n3]
+                        i += 1
+                    end
+                end
+            end
+        end
+    end
+end
+
+"""
+    combine_rows!(plan::AlltoallvTranspose, B, A)
+
+Reorder receiving buffer `B` (flat) into column-local dataset `A`
+(4D view: [N0, N1, local_col_count, N3]), grouped by source process (row blocks).
+"""
+function combine_rows!(plan::AlltoallvTranspose, B::Vector{Float64}, A::AbstractArray{Float64, 4})
+    N0 = plan.N0
+    col_count = plan.local_col_count
+    N3 = plan.N3
+    nprocs = length(plan.row_starts)
+    i = 1
+    @inbounds for proc in 1:nprocs
+        row_start = Int(plan.row_starts[proc]) + 1
+        row_end   = Int(plan.row_ends[proc])
+        for n0 in 1:N0
+            for n1 in row_start:row_end
+                for n2 in 1:col_count
+                    for n3 in 1:N3
+                        A[n0, n1, n2, n3] = B[i]
+                        i += 1
+                    end
+                end
+            end
+        end
+    end
+end
+
+"""
+    split_columns!(plan::AlltoallvTranspose, A, B)
+
+Reorder row-local dataset `A` (4D view: [N0, local_row_count, N2, N3])
+into the sending buffer `B` (flat), grouped by destination process (column blocks).
+"""
+function split_columns!(plan::AlltoallvTranspose, A::AbstractArray{Float64, 4}, B::Vector{Float64})
+    N0 = plan.N0
+    row_count = plan.local_row_count
+    N3 = plan.N3
+    nprocs = length(plan.col_starts)
+    i = 1
+    @inbounds for proc in 1:nprocs
+        col_start = Int(plan.col_starts[proc]) + 1  # 1-based
+        col_end   = Int(plan.col_ends[proc])         # inclusive
+        for n0 in 1:N0
+            for n1 in 1:row_count
+                for n2 in col_start:col_end
+                    for n3 in 1:N3
+                        B[i] = A[n0, n1, n2, n3]
+                        i += 1
+                    end
+                end
+            end
+        end
+    end
+end
+
+"""
+    combine_columns!(plan::AlltoallvTranspose, B, A)
+
+Reorder receiving buffer `B` (flat) into row-local dataset `A`
+(4D view: [N0, local_row_count, N2, N3]), grouped by source process (column blocks).
+"""
+function combine_columns!(plan::AlltoallvTranspose, B::Vector{Float64}, A::AbstractArray{Float64, 4})
+    N0 = plan.N0
+    row_count = plan.local_row_count
+    N3 = plan.N3
+    nprocs = length(plan.col_starts)
+    i = 1
+    @inbounds for proc in 1:nprocs
+        col_start = Int(plan.col_starts[proc]) + 1
+        col_end   = Int(plan.col_ends[proc])
+        for n0 in 1:N0
+            for n1 in 1:row_count
+                for n2 in col_start:col_end
+                    for n3 in 1:N3
+                        A[n0, n1, n2, n3] = B[i]
+                        i += 1
+                    end
+                end
+            end
+        end
+    end
+end
+
+# ---------------------------------------------------------------------------
+# AlltoallvTranspose localize_rows / localize_columns
+# ---------------------------------------------------------------------------
+
+"""
+    _make_reduced_view(data, shape::Vector{Int32})
+
+Reshape `data` (treated as a flat Float64 buffer via `reinterpret`) into
+a 4D array view of the given shape. If `data` is a complex array, it is
+first reinterpreted as Float64 (doubling the last dimension).
+"""
+function _make_reduced_view(data::AbstractArray, shape::Vector{Int32})
+    s = Tuple(Int.(shape))
+    if eltype(data) <: Complex
+        flat = reinterpret(Float64, vec(data))
+    else
+        flat = reinterpret(Float64, vec(data))
+    end
+    return reshape(flat, s)
+end
+
+"""
+    localize_rows(plan::AlltoallvTranspose, CL, RL)
+
+Transpose from column-local to row-local data distribution.
+`CL` and `RL` are the source and destination arrays (arbitrary-dimensional;
+will be reshaped internally to the plan's 4D reduced shapes).
+"""
+function localize_rows(plan::AlltoallvTranspose, CL::AbstractArray, RL::AbstractArray)
+    CL_reduced = _make_reduced_view(CL, plan.CL_reduced_shape)
+    RL_reduced = _make_reduced_view(RL, plan.RL_reduced_shape)
+
+    # Pack column-local data into send buffer, split by row blocks
+    if plan.local_col_count > 0
+        split_rows!(plan, CL_reduced, plan.CL_buffer)
+    end
+
+    # MPI Alltoallv
+    alltoallv!(plan.CL_buffer, Vector{Int}(plan.CL_counts), Vector{Int}(plan.CL_displs),
+               plan.RL_buffer, Vector{Int}(plan.RL_counts), Vector{Int}(plan.RL_displs),
+               plan.comm_sub)
+
+    # Unpack receiving buffer into row-local dataset
+    if plan.local_row_count > 0
+        combine_columns!(plan, plan.RL_buffer, RL_reduced)
+    end
+end
+
+"""
+    localize_columns(plan::AlltoallvTranspose, RL, CL)
+
+Transpose from row-local to column-local data distribution.
+`RL` and `CL` are the source and destination arrays (arbitrary-dimensional;
+will be reshaped internally to the plan's 4D reduced shapes).
+"""
+function localize_columns(plan::AlltoallvTranspose, RL::AbstractArray, CL::AbstractArray)
+    CL_reduced = _make_reduced_view(CL, plan.CL_reduced_shape)
+    RL_reduced = _make_reduced_view(RL, plan.RL_reduced_shape)
+
+    # Pack row-local data into send buffer, split by column blocks
+    if plan.local_row_count > 0
+        split_columns!(plan, RL_reduced, plan.RL_buffer)
+    end
+
+    # MPI Alltoallv
+    alltoallv!(plan.RL_buffer, Vector{Int}(plan.RL_counts), Vector{Int}(plan.RL_displs),
+               plan.CL_buffer, Vector{Int}(plan.CL_counts), Vector{Int}(plan.CL_displs),
+               plan.comm_sub)
+
+    # Unpack receiving buffer into column-local dataset
+    if plan.local_col_count > 0
+        combine_rows!(plan, plan.CL_buffer, CL_reduced)
+    end
+end
+
+# ============================================================================
+# ColDistributor (1D column distribution via Allgatherv/Scatterv)
+# ============================================================================
+
+"""
+    ColDistributor <: AbstractTransposePlanner
+
+MPI Allgatherv-based distributed array duplication and condensation for
+column distribution. Translates `ColDistributor` from transposes.pyx.
+
+In localize_rows: restricts to local rows (simple slice, no communication).
+In localize_columns: gathers data across all ranks via Allgatherv.
+"""
+mutable struct ColDistributor <: AbstractTransposePlanner
+    comm_sub::Any
+    datasize::Int
+    axis::Int
+    N0::Int
+    N1::Int
+    N2::Int
+    N3::Int
+    global_shape::Vector{Int32}
+    col_starts::Vector{Int32}
+    col_ends::Vector{Int32}
+    row_starts::Vector{Int32}
+    row_ends::Vector{Int32}
+    col_counts::Vector{Int32}
+    row_counts::Vector{Int32}
+    CL_reduced_shape::Vector{Int32}
+    RL_reduced_shape::Vector{Int32}
+    CL_displs::Vector{Int32}
+    RL_displs::Vector{Int32}
+    CL_counts::Vector{Int32}
+    RL_counts::Vector{Int32}
+    CL_buffer::Vector{Float64}
+    RL_buffer::Vector{Float64}
+    local_col_count::Int
+    local_row_count::Int
+    local_row_start::Int
+    local_row_end::Int
+    local_RL_count::Int
+end
+
+"""
+    ColDistributor(global_shape, dtype, axis, comm_sub)
+
+Construct a column distributor.
+
+Unlike `AlltoallvTranspose`, columns span the full N2 dimension on every rank
+(B2 = N2). Rows are block-distributed across ranks.
+"""
+function ColDistributor(global_shape_in, dtype, axis::Integer, comm_sub)
+    gs = Int32.(collect(global_shape_in))
+    datasize = dtype == ComplexF64 ? 2 : 1
+
+    nprocs = comm_size(comm_sub)
+    myrank = comm_rank(comm_sub)
+
+    N0 = axis > 1 ? prod(gs[1:axis-1]) : 1
+    N1 = gs[axis]
+    N2 = gs[axis+1]
+    N3_raw = axis + 2 <= length(gs) ? prod(gs[axis+2:end]) : 1
+    N3 = N3_raw * datasize
+
+    # Blocks: rows are block-distributed, columns span full N2
+    B1 = cld(Int(N1), nprocs)
+    B2 = Int(N2)
+
+    ranks = Int32.(collect(0:nprocs-1))
+
+    col_starts = Int32.(0 .* ranks)                       # always 0
+    row_starts = Int32.(min.(B1 .* ranks, Int(N1)))
+    col_ends   = Int32.(0 .* ranks .+ B2)                 # always B2
+    row_ends   = Int32.(min.(B1 .* (ranks .+ 1), Int(N1)))
+
+    local_row_start = Int(row_starts[myrank + 1])
+    local_row_end   = Int(row_ends[myrank + 1])
+
+    col_counts = col_ends .- col_starts
+    row_counts = row_ends .- row_starts
+
+    local_row_count = Int(row_counts[myrank + 1])
+    local_col_count = Int(col_counts[myrank + 1])
+
+    CL_reduced_shape = Int32[N0, N1, local_col_count, N3]
+    RL_reduced_shape = Int32[N0, local_row_count, N2, N3]
+
+    CL_displs = Int32.((Int(N0) * local_col_count * Int(N3)) .* row_starts)
+    RL_displs = Int32.((Int(N0) * local_row_count * Int(N3)) .* col_starts)
+
+    CL_counts = Int32.((Int(N0) * local_col_count * Int(N3)) .* row_counts)
+    RL_counts = Int32.((Int(N0) * local_row_count * Int(N3)) .* col_counts)
+
+    local_RL_count = Int(RL_counts[myrank + 1])
+
+    CL_size = Int(N0) * Int(N1) * local_col_count * Int(N3)
+    RL_size = Int(N0) * local_row_count * Int(N2) * Int(N3)
+    CL_buffer = zeros(Float64, max(CL_size, 1))
+    RL_buffer = zeros(Float64, max(RL_size, 1))
+
+    return ColDistributor(
+        comm_sub, datasize, Int(axis),
+        Int(N0), Int(N1), Int(N2), Int(N3),
+        gs,
+        col_starts, col_ends, row_starts, row_ends,
+        col_counts, row_counts,
+        CL_reduced_shape, RL_reduced_shape,
+        CL_displs, RL_displs,
+        CL_counts, RL_counts,
+        CL_buffer, RL_buffer,
+        local_col_count, local_row_count,
+        local_row_start, local_row_end,
+        local_RL_count
+    )
+end
+
+"""
+    localize_rows(plan::ColDistributor, CL, RL)
+
+Column-local to row-local: simply restricts to local rows (no communication).
+"""
+function localize_rows(plan::ColDistributor, CL::AbstractArray, RL::AbstractArray)
+    CL_reduced = _make_reduced_view(CL, plan.CL_reduced_shape)
+    RL_reduced = _make_reduced_view(RL, plan.RL_reduced_shape)
+    # Restrict to local rows (1-based slicing)
+    start = plan.local_row_start + 1
+    stop  = plan.local_row_end
+    @views copyto!(RL_reduced, CL_reduced[:, start:stop, :, :])
+end
+
+"""
+    localize_columns(plan::ColDistributor, RL, CL)
+
+Row-local to column-local: gathers data across all ranks via Allgatherv,
+then unpacks with `combine_rows!`.
+"""
+function localize_columns(plan::ColDistributor, RL::AbstractArray, CL::AbstractArray)
+    CL_reduced = _make_reduced_view(CL, plan.CL_reduced_shape)
+    RL_reduced = _make_reduced_view(RL, plan.RL_reduced_shape)
+
+    # Copy from input array to RL buffer
+    flat_rl = vec(RL_reduced)
+    copyto!(plan.RL_buffer, 1, flat_rl, 1, min(length(flat_rl), length(plan.RL_buffer)))
+
+    # Allgatherv
+    allgatherv!(plan.RL_buffer, plan.local_RL_count,
+                plan.CL_buffer, Vector{Int}(plan.CL_counts), Vector{Int}(plan.CL_displs),
+                plan.comm_sub)
+
+    # Unpack buffer into column-local dataset
+    combine_rows!(plan, plan.CL_buffer, CL_reduced)
+end
+
+# Share the packing functions from AlltoallvTranspose:
+# combine_rows! and split_columns! work on the same 4D layout.
+# We define a dispatcher so the ColDistributor can use them.
+function combine_rows!(plan::ColDistributor, B::Vector{Float64}, A::AbstractArray{Float64, 4})
+    N0 = plan.N0
+    col_count = plan.local_col_count
+    N3 = plan.N3
+    nprocs = length(plan.row_starts)
+    i = 1
+    @inbounds for proc in 1:nprocs
+        row_start = Int(plan.row_starts[proc]) + 1
+        row_end   = Int(plan.row_ends[proc])
+        for n0 in 1:N0
+            for n1 in row_start:row_end
+                for n2 in 1:col_count
+                    for n3 in 1:N3
+                        A[n0, n1, n2, n3] = B[i]
+                        i += 1
+                    end
+                end
+            end
+        end
+    end
+end
+
+# ============================================================================
+# RowDistributor (1D row distribution via Allgatherv/Scatterv)
+# ============================================================================
+
+"""
+    RowDistributor <: AbstractTransposePlanner
+
+MPI Allgatherv-based distributed array duplication and condensation for
+row distribution. Translates `RowDistributor` from transposes.pyx.
+
+In localize_rows: gathers data across all ranks via Allgatherv.
+In localize_columns: restricts to local columns (simple slice, no communication).
+"""
+mutable struct RowDistributor <: AbstractTransposePlanner
+    comm_sub::Any
+    datasize::Int
+    axis::Int
+    N0::Int
+    N1::Int
+    N2::Int
+    N3::Int
+    global_shape::Vector{Int32}
+    col_starts::Vector{Int32}
+    col_ends::Vector{Int32}
+    row_starts::Vector{Int32}
+    row_ends::Vector{Int32}
+    col_counts::Vector{Int32}
+    row_counts::Vector{Int32}
+    CL_reduced_shape::Vector{Int32}
+    RL_reduced_shape::Vector{Int32}
+    CL_displs::Vector{Int32}
+    RL_displs::Vector{Int32}
+    CL_counts::Vector{Int32}
+    RL_counts::Vector{Int32}
+    CL_buffer::Vector{Float64}
+    RL_buffer::Vector{Float64}
+    local_col_count::Int
+    local_row_count::Int
+    local_col_start::Int
+    local_col_end::Int
+    local_CL_count::Int
+end
+
+"""
+    RowDistributor(global_shape, dtype, axis, comm_sub)
+
+Construct a row distributor.
+
+Unlike `AlltoallvTranspose`, rows span the full N1 dimension on every rank
+(B1 = N1). Columns are block-distributed across ranks.
+"""
+function RowDistributor(global_shape_in, dtype, axis::Integer, comm_sub)
+    gs = Int32.(collect(global_shape_in))
+    datasize = dtype == ComplexF64 ? 2 : 1
+
+    nprocs = comm_size(comm_sub)
+    myrank = comm_rank(comm_sub)
+
+    N0 = axis > 1 ? prod(gs[1:axis-1]) : 1
+    N1 = gs[axis]
+    N2 = gs[axis+1]
+    N3_raw = axis + 2 <= length(gs) ? prod(gs[axis+2:end]) : 1
+    N3 = N3_raw * datasize
+
+    # Blocks: rows span full N1, columns are block-distributed
+    B1 = Int(N1)
+    B2 = cld(Int(N2), nprocs)
+
+    ranks = Int32.(collect(0:nprocs-1))
+
+    col_starts = Int32.(min.(B2 .* ranks, Int(N2)))
+    row_starts = Int32.(0 .* ranks)                       # always 0
+    col_ends   = Int32.(min.(B2 .* (ranks .+ 1), Int(N2)))
+    row_ends   = Int32.(0 .* ranks .+ B1)                 # always B1
+
+    local_col_start = Int(col_starts[myrank + 1])
+    local_col_end   = Int(col_ends[myrank + 1])
+
+    col_counts = col_ends .- col_starts
+    row_counts = row_ends .- row_starts
+
+    local_col_count = Int(col_counts[myrank + 1])
+    local_row_count = Int(row_counts[myrank + 1])
+
+    CL_reduced_shape = Int32[N0, N1, local_col_count, N3]
+    RL_reduced_shape = Int32[N0, local_row_count, N2, N3]
+
+    CL_displs = Int32.((Int(N0) * local_col_count * Int(N3)) .* row_starts)
+    RL_displs = Int32.((Int(N0) * local_row_count * Int(N3)) .* col_starts)
+
+    CL_counts = Int32.((Int(N0) * local_col_count * Int(N3)) .* row_counts)
+    RL_counts = Int32.((Int(N0) * local_row_count * Int(N3)) .* col_counts)
+
+    local_CL_count = Int(CL_counts[myrank + 1])
+
+    CL_size = Int(N0) * Int(N1) * local_col_count * Int(N3)
+    RL_size = Int(N0) * local_row_count * Int(N2) * Int(N3)
+    CL_buffer = zeros(Float64, max(CL_size, 1))
+    RL_buffer = zeros(Float64, max(RL_size, 1))
+
+    return RowDistributor(
+        comm_sub, datasize, Int(axis),
+        Int(N0), Int(N1), Int(N2), Int(N3),
+        gs,
+        col_starts, col_ends, row_starts, row_ends,
+        col_counts, row_counts,
+        CL_reduced_shape, RL_reduced_shape,
+        CL_displs, RL_displs,
+        CL_counts, RL_counts,
+        CL_buffer, RL_buffer,
+        local_col_count, local_row_count,
+        local_col_start, local_col_end,
+        local_CL_count
+    )
+end
+
+"""
+    localize_rows(plan::RowDistributor, CL, RL)
+
+Column-local to row-local: gathers data across all ranks via Allgatherv,
+then unpacks with `combine_columns!`.
+"""
+function localize_rows(plan::RowDistributor, CL::AbstractArray, RL::AbstractArray)
+    CL_reduced = _make_reduced_view(CL, plan.CL_reduced_shape)
+    RL_reduced = _make_reduced_view(RL, plan.RL_reduced_shape)
+
+    # Copy from input array to CL buffer
+    flat_cl = vec(CL_reduced)
+    copyto!(plan.CL_buffer, 1, flat_cl, 1, min(length(flat_cl), length(plan.CL_buffer)))
+
+    # Allgatherv
+    allgatherv!(plan.CL_buffer, plan.local_CL_count,
+                plan.RL_buffer, Vector{Int}(plan.RL_counts), Vector{Int}(plan.RL_displs),
+                plan.comm_sub)
+
+    # Unpack buffer into row-local dataset
+    combine_columns!(plan, plan.RL_buffer, RL_reduced)
+end
+
+function combine_columns!(plan::RowDistributor, B::Vector{Float64}, A::AbstractArray{Float64, 4})
+    N0 = plan.N0
+    row_count = plan.local_row_count
+    N3 = plan.N3
+    nprocs = length(plan.col_starts)
+    i = 1
+    @inbounds for proc in 1:nprocs
+        col_start = Int(plan.col_starts[proc]) + 1
+        col_end   = Int(plan.col_ends[proc])
+        for n0 in 1:N0
+            for n1 in 1:row_count
+                for n2 in col_start:col_end
+                    for n3 in 1:N3
+                        A[n0, n1, n2, n3] = B[i]
+                        i += 1
+                    end
+                end
+            end
+        end
+    end
+end
+
+"""
+    localize_columns(plan::RowDistributor, RL, CL)
+
+Row-local to column-local: simply restricts to local columns (no communication).
+"""
+function localize_columns(plan::RowDistributor, RL::AbstractArray, CL::AbstractArray)
+    CL_reduced = _make_reduced_view(CL, plan.CL_reduced_shape)
+    RL_reduced = _make_reduced_view(RL, plan.RL_reduced_shape)
+    # Restrict to local columns (1-based slicing)
+    start = plan.local_col_start + 1
+    stop  = plan.local_col_end
+    @views copyto!(CL_reduced, RL_reduced[:, :, start:stop, :])
+end
+
+# ============================================================================
 # Distributor
 # ============================================================================
 
@@ -85,8 +779,8 @@ end
 
 Directs parallelized distribution and transformation of fields.
 
-In serial mode (the only mode supported in this milestone), all data is local
-and transforms are simple basis forward/backward calls.
+Supports both serial mode (single process, `comm=nothing`) and MPI-parallel
+mode (with a real MPI communicator).
 
 # Fields
 - `coordsystems::Tuple` -- coordinate systems managed by this distributor.
@@ -96,7 +790,7 @@ and transforms are simple basis forward/backward calls.
 - `comm` -- MPI communicator or `nothing` for serial mode.
 - `comm_cart` -- Cartesian communicator or `SerialCommCart`.
 - `comm_coords::Vector{Int}` -- coordinates in the Cartesian communicator.
-- `mesh::Vector{Int}` -- process mesh (empty in serial mode).
+- `mesh::Vector{Int}` -- process mesh.
 - `single_coordsys` -- the single coordinate system if only one, else `false`.
 - `layouts::Vector{Any}` -- available Layout objects.
 - `paths::Vector{Any}` -- Path objects connecting adjacent layouts.
@@ -162,15 +856,38 @@ mutable struct Distributor <: AbstractDistributor
 
         dim = length(all_coords)
 
-        # Handle comm
+        # Handle comm -- determine if we are in MPI or serial mode
+        using_mpi = false
+        mpi_comm_size = 1
         if comm === nothing
-            comm = SerialComm()
+            if MPI_ENABLED[]
+                # Use MPI.COMM_WORLD
+                mpi = get_mpi()
+                comm = mpi.COMM_WORLD
+                mpi_comm_size = mpi.Comm_size(comm)
+                using_mpi = true
+            else
+                # Serial mode
+                comm = nothing
+                mpi_comm_size = 1
+            end
+        else
+            # Caller provided a communicator -- assume MPI
+            if MPI_ENABLED[]
+                mpi = get_mpi()
+                mpi_comm_size = mpi.Comm_size(comm)
+                using_mpi = true
+            else
+                # comm provided but MPI not initialized; treat as serial
+                @warn "Communicator provided but MPI not initialised; running in serial mode."
+                comm = nothing
+                mpi_comm_size = 1
+            end
         end
 
         # Handle mesh
         if mesh === nothing
-            # Serial: single process
-            mesh_arr = Int[comm.size]
+            mesh_arr = Int[mpi_comm_size]
         elseif mesh isa Tuple || mesh isa AbstractVector
             mesh_arr = Int[m for m in mesh]
         else
@@ -187,19 +904,26 @@ mutable struct Distributor <: AbstractDistributor
             throw(ArgumentError(
                 "Mesh ($(mesh_arr)) must have lower dimension than distributor ($dim)"))
         end
-        if prod(mesh_arr) != comm.size
+        if prod(mesh_arr) != mpi_comm_size
             throw(ArgumentError(
-                "Wrong number of processes ($(comm.size)) for specified mesh ($(mesh_arr))"))
+                "Wrong number of processes ($mpi_comm_size) for specified mesh ($(mesh_arr))"))
         end
 
         # Create cartesian communicator
-        # In serial mode, this is a placeholder
         reduced_mesh = [m for m in mesh_arr if m > 1]
-        if comm isa SerialComm
+        if using_mpi && length(reduced_mesh) > 0
+            mpi = get_mpi()
+            # Create Cartesian communicator via MPI.jl
+            comm_cart = mpi.Cart_create(comm, reduced_mesh;
+                                         periodic=zeros(Bool, length(reduced_mesh)),
+                                         reorder=false)
+            comm_coords_arr = Int.(mpi.Cart_coords(comm_cart))
+        elseif using_mpi
+            # MPI but no distributed axes (single process or mesh = [1])
             comm_cart = SerialCommCart(reduced_mesh, zeros(Int, length(reduced_mesh)))
             comm_coords_arr = zeros(Int, length(reduced_mesh))
         else
-            # Future MPI support would create a real Cartesian communicator here
+            # Pure serial
             comm_cart = SerialCommCart(reduced_mesh, zeros(Int, length(reduced_mesh)))
             comm_coords_arr = zeros(Int, length(reduced_mesh))
         end
@@ -230,6 +954,15 @@ mutable struct Distributor <: AbstractDistributor
 
         return dist
     end
+end
+
+"""
+    _is_mpi_distributor(dist::Distributor) -> Bool
+
+Return `true` if the distributor is using real MPI (not serial mode).
+"""
+function _is_mpi_distributor(dist::Distributor)
+    return dist.comm !== nothing && !(dist.comm_cart isa SerialCommCart && all(m -> m <= 1, dist.mesh))
 end
 
 # ============================================================================
@@ -513,8 +1246,7 @@ end
 
 Describes the data distribution for a given transform and distribution state.
 
-In serial mode, all axes are local, so distribution logic simplifies
-significantly.
+Supports both serial and MPI-parallel modes.
 
 # Fields
 - `dist::Distributor` -- parent distributor.
@@ -643,7 +1375,21 @@ function local_chunks(layout::Layout, domain, scales;
         ext_c = layout.ext_coords
     else
         ext_c = zeros(Int, layout.dist.dim)
-        # In serial mode, rank is always 0, coords are all 0
+        # In MPI mode, compute coords for the given rank
+        if _is_mpi_distributor(layout.dist) && !(layout.dist.comm_cart isa SerialCommCart)
+            mpi = get_mpi()
+            remote_coords = Int.(mpi.Cart_coords(layout.dist.comm_cart, rank))
+            # Fill in ext_c for distributed axes
+            dist_idx = 1
+            for i in 1:layout.dist.dim
+                if !layout.local_flags[i]
+                    if dist_idx <= length(remote_coords)
+                        ext_c[i] = remote_coords[dist_idx]
+                        dist_idx += 1
+                    end
+                end
+            end
+        end
     end
 
     # Get chunks axis by axis
@@ -966,6 +1712,9 @@ end
 Construct Layout objects for all transform/distribution states, and
 the Transform/Transpose paths between them.
 
+With mesh producing R distributed axes, we get D+R+1 layouts
+connected by D transforms and R transposes.
+
 In serial mode with mesh=[1], R=0 (no distributed axes), so we get
 D+1 layouts (one per transform axis plus the initial coeff layout)
 connected by D transforms (one per axis).
@@ -977,7 +1726,7 @@ function _build_layouts!(dist::Distributor; dry_run::Bool=false)
 
     # First layout: full coefficient space
     local_flags = fill(true, D)
-    # In parallel mode, axes covered by mesh entries > 1 would be non-local
+    # In parallel mode, axes covered by mesh entries > 1 are non-local
     mesh_idx = 1
     for i in 1:length(dist.mesh)
         if i <= D && dist.mesh[i] > 1
@@ -998,6 +1747,9 @@ function _build_layouts!(dist::Distributor; dry_run::Bool=false)
     for i in 1:(R + D)
         # Iterate backwards over axes to find last coefficient-space axis
         found = false
+        local layout_i, path_i
+        layout_i = nothing
+        path_i = nothing
         for d in D:-1:1
             if !grid_space[d]
                 if local_flags[d]
@@ -1153,7 +1905,7 @@ function decrement_single(transform::DistTransform, field)
 end
 
 # ============================================================================
-# Transpose (placeholder for parallel mode)
+# Transpose (supports both serial no-op and MPI transpose)
 # ============================================================================
 
 """
@@ -1162,19 +1914,49 @@ end
 Directs distributed transposes between two layouts.
 
 In serial mode, transposes are no-ops since all data is local.
-This type exists for API completeness and future MPI support.
+In MPI mode, transposes use AlltoallvTranspose planners for actual
+data redistribution.
 
 # Fields
 - `layout0` -- source layout.
 - `layout1` -- destination layout.
 - `axis::Int` -- axis being transposed (1-based).
 - `comm_cart` -- Cartesian communicator.
+- `comm_sub` -- Sub-communicator for the transpose axis (MPI mode) or `nothing`.
+- `_plan_cache::Dict` -- cached transpose plans.
 """
-struct Transpose
+mutable struct Transpose
     layout0::Layout
     layout1::Layout
     axis::Int
     comm_cart::Any
+    comm_sub::Any
+    _plan_cache::Dict{Any, Any}
+
+    function Transpose(layout0, layout1, axis, comm_cart)
+        # Create subgrid communicator along the moving mesh axis
+        comm_sub = nothing
+        if !(comm_cart isa SerialCommCart) && MPI_ENABLED[]
+            mesh = layout0.dist.mesh
+            ndims_cart = count(m -> m > 1, mesh)
+            remain_dims = zeros(Bool, ndims_cart)
+            # Find the cart dimension corresponding to this axis
+            # comm_cart_axis = axis - count(mesh[1:axis] .== 1) when mesh entries
+            # before this axis are == 1 (those do not appear in the reduced cart)
+            n_trivial_before = 0
+            for i in 1:min(axis, length(mesh))
+                if mesh[i] == 1
+                    n_trivial_before += 1
+                end
+            end
+            comm_cart_axis = axis - n_trivial_before
+            if comm_cart_axis >= 1 && comm_cart_axis <= ndims_cart
+                remain_dims[comm_cart_axis] = true
+            end
+            comm_sub = cart_sub(comm_cart, remain_dims)
+        end
+        return new(layout0, layout1, axis, comm_cart, comm_sub, Dict{Any, Any}())
+    end
 end
 
 function Base.show(io::IO, t::Transpose)
@@ -1182,28 +1964,127 @@ function Base.show(io::IO, t::Transpose)
 end
 
 """
+    _sub_shape(transpose_obj::Transpose, domain, scales) -> Tuple
+
+Build global shape of data assigned to sub-communicator.
+Local shape along non-transposing axes, global shape along transposing axes.
+"""
+function _sub_shape(transpose_obj::Transpose, domain, scales)
+    ls = local_shape(transpose_obj.layout0, domain, scales)
+    gs = global_shape(transpose_obj.layout0, domain, scales)
+    ax = transpose_obj.axis
+    sub = collect(ls)
+    sub[ax] = gs[ax]
+    if ax + 1 <= length(sub)
+        sub[ax + 1] = gs[ax + 1]
+    end
+    return Tuple(sub)
+end
+
+"""
+    _get_plan(transpose_obj::Transpose, ncomp, sub_shape, chunk_shape_val, dtype)
+
+Build or retrieve a cached transpose plan. Returns `nothing` if no
+communication is needed (serial mode or identity shapes).
+"""
+function _get_plan(transpose_obj::Transpose, ncomp::Integer, sub_shape::Tuple,
+                   chunk_shape_val::Tuple, dtype)
+    cache_key = (ncomp, sub_shape, chunk_shape_val, dtype)
+    cached = get(transpose_obj._plan_cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+
+    ax = transpose_obj.axis
+    if prod(sub_shape) == 0
+        plan = nothing  # no data
+    elseif sub_shape[ax] == chunk_shape_val[ax] && (ax + 1 <= length(sub_shape) ? sub_shape[ax + 1] == chunk_shape_val[ax + 1] : true)
+        plan = nothing  # no change needed
+    elseif transpose_obj.comm_sub === nothing
+        plan = nothing  # serial mode
+    else
+        # Build AlltoallvTranspose plan
+        # Prepend ncomp to sub_shape (matching Python's (ncomp,) + sub_shape)
+        full_sub_shape = (ncomp, sub_shape...)
+        full_chunk_shape = (ncomp, chunk_shape_val...)
+        # axis+1 because we prepended ncomp dimension
+        plan = AlltoallvTranspose(full_sub_shape, dtype, ax + 1, transpose_obj.comm_sub)
+    end
+
+    transpose_obj._plan_cache[cache_key] = plan
+    return plan
+end
+
+"""
+    _single_plan(transpose_obj::Transpose, field)
+
+Build a transpose plan for a single field.
+"""
+function _single_plan(transpose_obj::Transpose, field)
+    ncomp = prod([get_dim(cs) for cs in field.tensorsig])
+    sub_shape_val = _sub_shape(transpose_obj, field.domain, field.scales)
+    chunk_shape_val = Tuple(chunk_shape(field.domain, transpose_obj.layout0))
+    return _get_plan(transpose_obj, ncomp, sub_shape_val, chunk_shape_val, field.dtype)
+end
+
+"""
+    _group_plans(transpose_obj::Transpose, fields)
+
+Build group transpose plans. Segments fields by sub_shapes and chunk_shapes,
+computing a combined plan for each group.
+"""
+function _group_plans(transpose_obj::Transpose, fields)
+    field_groups = OrderedDict{Any, Vector{Any}}()
+    for field in fields
+        sub_shape_val = _sub_shape(transpose_obj, field.domain, field.scales)
+        chunk_shape_val = Tuple(chunk_shape(field.domain, transpose_obj.layout0))
+        key = (sub_shape_val, chunk_shape_val)
+        if haskey(field_groups, key)
+            push!(field_groups[key], field)
+        else
+            field_groups[key] = Any[field]
+        end
+    end
+    plans = []
+    for ((sub_shape_val, chunk_shape_val), grp_fields) in field_groups
+        ncomp = 0
+        for f in grp_fields
+            ncomp += prod([get_dim(cs) for cs in f.tensorsig])
+        end
+        plan = _get_plan(transpose_obj, ncomp, sub_shape_val, chunk_shape_val,
+                         grp_fields[end].dtype)
+        push!(plans, (grp_fields, plan))
+    end
+    return plans
+end
+
+"""
     increment(transpose_obj::Transpose, fields)
 
-Backward transpose a list of fields.
-
-In serial mode, this is a no-op (just updates layout).
+Backward transpose a list of fields (coeff-side to grid-side).
 """
 function increment(transpose_obj::Transpose, fields)
-    for field in fields
-        increment_single(transpose_obj, field)
+    if length(fields) == 1
+        increment_single(transpose_obj, fields[1])
+    else
+        for field in fields
+            increment_single(transpose_obj, field)
+        end
     end
 end
 
 """
     decrement(transpose_obj::Transpose, fields)
 
-Forward transpose a list of fields.
-
-In serial mode, this is a no-op (just updates layout).
+Forward transpose a list of fields (grid-side to coeff-side).
 """
 function decrement(transpose_obj::Transpose, fields)
-    for field in fields
-        decrement_single(transpose_obj, field)
+    if length(fields) == 1
+        decrement_single(transpose_obj, fields[1])
+    else
+        for field in fields
+            decrement_single(transpose_obj, field)
+        end
     end
 end
 
@@ -1212,10 +2093,22 @@ end
 
 Backward transpose a single field.
 
-In serial mode, just updates the field layout.
+In serial mode (plan == nothing), just updates the field layout.
+In MPI mode, uses `localize_columns` to redistribute data.
 """
 function increment_single(transpose_obj::Transpose, field)
-    preset_layout!(field, transpose_obj.layout1)
+    plan = _single_plan(transpose_obj, field)
+    if plan !== nothing
+        # Reference views from both layouts
+        data0 = field.data
+        preset_layout!(field, transpose_obj.layout1)
+        data1 = field.data
+        # Transpose between data views (localize_columns: RL -> CL direction)
+        localize_columns(plan, data0, data1)
+    else
+        # No communication: just update field layout
+        preset_layout!(field, transpose_obj.layout1)
+    end
 end
 
 """
@@ -1223,10 +2116,22 @@ end
 
 Forward transpose a single field.
 
-In serial mode, just updates the field layout.
+In serial mode (plan == nothing), just updates the field layout.
+In MPI mode, uses `localize_rows` to redistribute data.
 """
 function decrement_single(transpose_obj::Transpose, field)
-    preset_layout!(field, transpose_obj.layout0)
+    plan = _single_plan(transpose_obj, field)
+    if plan !== nothing
+        # Reference views from both layouts
+        data1 = field.data
+        preset_layout!(field, transpose_obj.layout0)
+        data0 = field.data
+        # Transpose between data views (localize_rows: CL -> RL direction)
+        localize_rows(plan, data1, data0)
+    else
+        # No communication: just update field layout
+        preset_layout!(field, transpose_obj.layout0)
+    end
 end
 
 # backward_transform, forward_transform, elements_to_groups are defined in basis.jl
@@ -1243,6 +2148,10 @@ export Distributor,
        Transpose,
        SerialComm,
        SerialCommCart,
+       AbstractTransposePlanner,
+       AlltoallvTranspose,
+       ColDistributor,
+       RowDistributor,
        get_layout_object,
        get_transform_object,
        get_coordsystem,
@@ -1271,4 +2180,6 @@ export Distributor,
        decrement_single,
        backward_transform,
        forward_transform,
-       elements_to_groups
+       elements_to_groups,
+       localize_rows,
+       localize_columns
