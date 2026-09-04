@@ -22,7 +22,7 @@ Provides the abstract `Basis` and `IntervalBasis` types plus concrete bases:
 
 - Python `CachedClass` metaclass --> constructor-level `Dict`-based caching
   via `_basis_cache` dictionaries (one per concrete type).
-- Python `@CachedAttribute` --> mutable `_cache::Dict{Symbol,Any}` field
+- Python `@CachedAttribute` --> mutable `_cache::Dict{Any,Any}` field
   with accessor helpers.
 - Python `@CachedMethod` --> `Dict`-keyed memoisation inside each struct.
 - Python `@property` --> Julia accessor functions.
@@ -381,12 +381,12 @@ Used for discrete data without spectral representation.
 # Fields
 - `coord::CoordinateOrAzimuthal`
 - `_size::Int`
-- `_cache::Dict{Symbol,Any}`
+- `_cache::Dict{Any,Any}`
 """
 mutable struct CardinalBasis <: Basis
     coord::CoordinateOrAzimuthal
     _size::Int
-    _cache::Dict{Symbol,Any}
+    _cache::Dict{Any,Any}
 end
 
 # -- Constructor caching --
@@ -406,7 +406,7 @@ function CardinalBasis(coord::CoordinateOrAzimuthal, size::Integer)
             return inst::CardinalBasis
         end
     end
-    inst = CardinalBasis(coord, Int(size), Dict{Symbol,Any}())
+    inst = CardinalBasis(coord, Int(size), Dict{Any,Any}())
     _cardinal_basis_cache[key] = WeakRef(inst)
     return inst
 end
@@ -517,7 +517,7 @@ Concrete subtypes must have fields:
 - `bounds::Tuple{Float64,Float64}`
 - `_dealias::Tuple{Float64}`
 - `COV::AffineCOV`
-- `_cache::Dict{Symbol,Any}`
+- `_cache::Dict{Any,Any}`
 """
 abstract type IntervalBasis <: Basis end
 
@@ -676,7 +676,7 @@ Jacobi polynomial basis P^{(a,b)} on an interval.
 - `COV::AffineCOV` — change of variables
 - `grid_params::Tuple` — (coord, bounds, a0, b0, dealias, library)
 - `constant_mode_value::Float64` — value of constant mode
-- `_cache::Dict{Symbol,Any}`
+- `_cache::Dict{Any,Any}`
 - `_transform_cache::Dict{Any,Any}`
 - `_product_matrix_cache::Dict{Any,Any}`
 """
@@ -693,7 +693,7 @@ mutable struct JacobiBasis <: IntervalBasis
     COV::AffineCOV
     grid_params::Tuple
     constant_mode_value::Float64
-    _cache::Dict{Symbol,Any}
+    _cache::Dict{Any,Any}
     _transform_cache::Dict{Any,Any}
     _product_matrix_cache::Dict{Any,Any}
 end
@@ -778,7 +778,7 @@ function Jacobi(coord::CoordinateOrAzimuthal, size::Integer, bounds, a, b;
     inst = JacobiBasis(
         coord_p, size_p, bounds_p, a_p, b_p, a0_p, b0_p,
         dealias_p, library_p, cov, grid_params, cmv,
-        Dict{Symbol,Any}(), Dict{Any,Any}(), Dict{Any,Any}()
+        Dict{Any,Any}(), Dict{Any,Any}(), Dict{Any,Any}()
     )
     _jacobi_cache[cache_key] = WeakRef(inst)
     return inst
@@ -1035,7 +1035,7 @@ Concrete subtypes must have fields:
 - `constant_mode_value::Float64`
 - `forward_coeff_permutation::Union{Nothing,Vector{Int}}`
 - `backward_coeff_permutation::Union{Nothing,Vector{Int}}`
-- `_cache::Dict{Symbol,Any}`
+- `_cache::Dict{Any,Any}`
 - `_transform_cache::Dict{Any,Any}`
 - `_product_matrix_cache::Dict{Any,Any}`
 """
@@ -1191,7 +1191,7 @@ mutable struct ComplexFourierBasis <: FourierBase
     constant_mode_value::Float64
     forward_coeff_permutation::Union{Nothing,Vector{Int}}
     backward_coeff_permutation::Union{Nothing,Vector{Int}}
-    _cache::Dict{Symbol,Any}
+    _cache::Dict{Any,Any}
     _transform_cache::Dict{Any,Any}
     _product_matrix_cache::Dict{Any,Any}
 end
@@ -1248,7 +1248,7 @@ function ComplexFourier(coord::CoordinateOrAzimuthal, size::Integer, bounds;
     inst = ComplexFourierBasis(
         coord_p, size_p, bounds_p, dealias_p, library_p,
         cov, 1.0, nothing, nothing,
-        Dict{Symbol,Any}(), Dict{Any,Any}(), Dict{Any,Any}()
+        Dict{Any,Any}(), Dict{Any,Any}(), Dict{Any,Any}()
     )
     _complex_fourier_cache[cache_key] = WeakRef(inst)
     return inst
@@ -1338,7 +1338,7 @@ mutable struct RealFourierBasis <: FourierBase
     constant_mode_value::Float64
     forward_coeff_permutation::Union{Nothing,Vector{Int}}
     backward_coeff_permutation::Union{Nothing,Vector{Int}}
-    _cache::Dict{Symbol,Any}
+    _cache::Dict{Any,Any}
     _transform_cache::Dict{Any,Any}
     _product_matrix_cache::Dict{Any,Any}
 end
@@ -1370,7 +1370,7 @@ function RealFourier(coord::CoordinateOrAzimuthal, size::Integer, bounds;
     inst = RealFourierBasis(
         coord_p, size_p, bounds_p, dealias_p, library_p,
         cov, 1.0, nothing, nothing,
-        Dict{Symbol,Any}(), Dict{Any,Any}(), Dict{Any,Any}()
+        Dict{Any,Any}(), Dict{Any,Any}(), Dict{Any,Any}()
     )
     _real_fourier_cache[cache_key] = WeakRef(inst)
     return inst
@@ -2318,7 +2318,7 @@ Concrete subtypes must have fields:
 - `mmax::Int` — maximum azimuthal wavenumber = (shape[1] - 1) ÷ 2
 - `azimuth_basis` — a `ComplexFourierBasis` or `RealFourierBasis`
 - `azimuth_library` — library name for azimuth transforms
-- `_cache::Dict{Symbol,Any}` — for cached attributes/methods
+- `_cache::Dict{Any,Any}` — for cached attributes/methods
 
 ## Constructor logic (to be implemented in concrete subtypes)
 
@@ -2472,7 +2472,7 @@ Concrete subtypes must have fields:
 - `group_shape_val::Tuple{Int,Int}` — group shape
 - `forward_transforms::Vector` — transform callables per sub-axis
 - `backward_transforms::Vector` — transform callables per sub-axis
-- `_cache::Dict{Symbol,Any}`
+- `_cache::Dict{Any,Any}`
 
 ## m permutation arrays
 
@@ -3089,7 +3089,7 @@ mutable struct AnnulusBasis <: PolarBasis
     backward_m_perm::Union{Nothing,Vector{Int}}
     group_shape_val::Tuple{Int,Int}
     azimuth_basis
-    _cache::Dict{Symbol,Any}
+    _cache::Dict{Any,Any}
 end
 
 # -- Class constants --
@@ -3193,7 +3193,7 @@ function AnnulusBasis(coordsys::PolarCoordinates, shape, dtype;
         az_basis.backward_coeff_permutation = bwd_perm
     end
 
-    _cache = Dict{Symbol,Any}()
+    _cache = Dict{Any,Any}()
 
     # Placeholder: inner/outer edges will be set after construction
     inst = AnnulusBasis(
@@ -3667,7 +3667,7 @@ mutable struct DiskBasis <: PolarBasis
     backward_m_perm::Union{Nothing,Vector{Int}}
     group_shape_val::Tuple{Int,Int}
     azimuth_basis
-    _cache::Dict{Symbol,Any}
+    _cache::Dict{Any,Any}
 end
 
 # -- Class constants --
@@ -3763,7 +3763,7 @@ function DiskBasis(coordsys::PolarCoordinates, shape, dtype;
         az_basis.backward_coeff_permutation = bwd_perm
     end
 
-    _cache = Dict{Symbol,Any}()
+    _cache = Dict{Any,Any}()
 
     inst = DiskBasis(
         coordsys, shape, dtype, radius, k, alpha, dealias,
@@ -4175,7 +4175,7 @@ mutable struct SphereBasis <: SpinBasis
     group_shape_val::Tuple{Int,Int}
     mmax::Int
     azimuth_basis
-    _cache::Dict{Symbol,Any}
+    _cache::Dict{Any,Any}
 end
 
 # -- Class constants --
@@ -4309,7 +4309,7 @@ function SphereBasis(coordsys::Union{S2Coordinates, SphericalCoordinates},
         az_basis.backward_coeff_permutation = bwd_perm
     end
 
-    _cache = Dict{Symbol,Any}()
+    _cache = Dict{Any,Any}()
 
     inst = SphereBasis(
         coordsys, shape, dtype, radius, dealias,
