@@ -108,8 +108,14 @@ export Field, ScalarField, VectorField, TensorField, LockedField
 # Operators (constructor functions)
 export differentiate, interpolate, integrate, average, lift,
        gradient, divergence, curl, laplacian,
-       trace_op, transpose_components, grid_op, coeff_op,
-       time_derivative, convert_operand
+       trace_op, transpose_components, skew,
+       radial_component, angular_component, azimuthal_component,
+       grid_op, coeff_op, time_derivative, convert_operand
+
+# Basis types (1D from Milestone 1, 2D curvilinear from Milestone 2)
+export Jacobi, ChebyshevT, ChebyshevU, Legendre, Ultraspherical,
+       ComplexFourier, RealFourier, Fourier,
+       DiskBasis, AnnulusBasis, SphereBasis
 
 # Problems
 export IVP, EVP, LBVP, NLBVP
