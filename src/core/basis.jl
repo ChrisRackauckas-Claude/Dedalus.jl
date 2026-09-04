@@ -2146,7 +2146,7 @@ colatitude/radial direction).
 Uses `_cache` dict for memoization.
 """
 function spin_recombination_factors(basis, tensorsig)
-    cache_key = (:spin_recombination_factors, objectid(tensorsig))
+    cache_key = (:spin_recombination_factors, tensorsig)
     cached = get(basis._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -2398,7 +2398,7 @@ containing the total spin weight contribution from each tensor index.
 Uses `_cache` for memoization.
 """
 function spin_weights(basis::SpinBasis, tensorsig)
-    cache_key = (:spin_weights, objectid(tensorsig))
+    cache_key = (:spin_weights, tensorsig)
     cached = get(basis._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -2435,7 +2435,7 @@ Return the total spin for the given tensor signature at the given spin index.
 `spinindex` should be a tuple or CartesianIndex indexing into `spin_weights`.
 """
 function spintotal(basis::SpinBasis, tensorsig, spinindex)
-    cache_key = (:spintotal, objectid(tensorsig), spinindex)
+    cache_key = (:spintotal, tensorsig, spinindex)
     cached = get(basis._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -3148,7 +3148,7 @@ function AnnulusBasis(coordsys::PolarCoordinates, shape, dtype;
     end
 
     # Cache lookup
-    cache_key = (objectid(coordsys), shape, dtype, radii, k, alpha, dealias, azimuth_library, radius_library)
+    cache_key = (coordsys, shape, dtype, radii, k, alpha, dealias, azimuth_library, radius_library)
     wr = get(_annulus_cache, cache_key, nothing)
     if wr !== nothing
         inst = wr.value
@@ -3161,7 +3161,7 @@ function AnnulusBasis(coordsys::PolarCoordinates, shape, dtype;
     vol = pi * (radii[2]^2 - radii[1]^2)
     dR = radii[2] - radii[1]
     rho = (radii[2] + radii[1]) / dR
-    grid_params = (objectid(coordsys), dtype, radii, alpha, dealias, azimuth_library, radius_library)
+    grid_params = (coordsys, dtype, radii, alpha, dealias, azimuth_library, radius_library)
     Nmax = shape[2] - 1
     mmax = (shape[1] - 1) ÷ 2
 
@@ -3715,7 +3715,7 @@ function DiskBasis(coordsys::PolarCoordinates, shape, dtype;
     end
 
     # Cache lookup
-    cache_key = (objectid(coordsys), shape, dtype, radius, k, alpha, dealias, azimuth_library, radius_library)
+    cache_key = (coordsys, shape, dtype, radius, k, alpha, dealias, azimuth_library, radius_library)
     wr = get(_disk_cache, cache_key, nothing)
     if wr !== nothing
         inst = wr.value
@@ -3729,7 +3729,7 @@ function DiskBasis(coordsys::PolarCoordinates, shape, dtype;
     radial_cov = AffineCOV((0.0, 1.0), (0.0, radius))
     Nmax = shape[2] - 1
     mmax = (shape[1] - 1) ÷ 2
-    grid_params = (objectid(coordsys), dtype, radius, alpha, dealias, azimuth_library, radius_library)
+    grid_params = (coordsys, dtype, radius, alpha, dealias, azimuth_library, radius_library)
 
     if mmax > 2 * Nmax
         @warn "You are using more azimuthal modes than can be resolved with your current radial resolution"
@@ -4223,7 +4223,7 @@ function SphereBasis(coordsys::Union{S2Coordinates, SphericalCoordinates},
     end
 
     # Cache lookup
-    cache_key = (objectid(coordsys), shape, dtype, radius, dealias, azimuth_library, colatitude_library)
+    cache_key = (coordsys, shape, dtype, radius, dealias, azimuth_library, colatitude_library)
     wr = get(_sphere_cache, cache_key, nothing)
     if wr !== nothing
         inst = wr.value
@@ -4249,7 +4249,7 @@ function SphereBasis(coordsys::Union{S2Coordinates, SphericalCoordinates},
         @warn "You are using more azimuthal modes than can be resolved with your current colatitude resolution"
     end
 
-    grid_params = (objectid(coordsys), dtype, radius, dealias, azimuth_library, colatitude_library)
+    grid_params = (coordsys, dtype, radius, dealias, azimuth_library, colatitude_library)
 
     # Validate phi resolution
     if shape[1] > 1 && shape[1] % 2 != 0
