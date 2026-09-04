@@ -35,19 +35,21 @@ const OLD_CSR_MATVECS   = get_config_bool("linear_algebra", "OLD_CSR_MATVECS")
 View an n-dimensional `ComplexF64` array as an (n+1)-dimensional `Float64`
 array whose *first* axis (length 2) separates the real and imaginary parts.
 
-This is the Julia analogue of viewing the raw memory; it uses `reinterpret`
-so no data is copied.
+Returns an array of shape `(original_dims..., 2)` with the real/imaginary
+split on the last axis, matching the Python origin convention.
 
 # Examples
 ```julia
 z = ComplexF64[1+2im, 3+4im]
-iv = interleaved_view(z)  # 2x2 Float64 matrix: [1.0 3.0; 2.0 4.0]
+iv = interleaved_view(z)  # 2-element Vector of [1.0, 2.0] and [3.0, 4.0] along last axis
 ```
 """
 function interleaved_view(data::AbstractArray{ComplexF64})
-    # reinterpret gives a flat Float64 view; reshape to (2, original_shape...)
     flat = reinterpret(Float64, data)
-    return reshape(flat, 2, size(data)...)
+    first_axis_view = reshape(flat, 2, size(data)...)
+    nd = ndims(first_axis_view)
+    perm = ntuple(i -> i < nd ? i + 1 : 1, nd)
+    return permutedims(first_axis_view, perm)
 end
 
 # ---------------------------------------------------------------------------
