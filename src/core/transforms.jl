@@ -1555,6 +1555,306 @@ function transform_plan(b::DiskBasis, dist, grid_shape_val, axis::Int, s::Int)
 end
 
 # ============================================================================
+# BallRadialTransform
+# ============================================================================
+
+"""
+    BallRadialTransform <: NonSeparableTransform
+
+Ball radial transform using Zernike polynomials.
+
+Operates per spherical-harmonic degree *ell*, applying a dense matrix multiply
+along the radial axis to convert between grid values and spectral
+coefficients.  This is the 3D analogue of `DiskRadialTransform` (dimension 3
+instead of 2).
+
+Unlike `DiskRadialTransform`, the ball transform iterates over `ell_maps`
+(ell, m_ind, ell_ind) triples and uses `reduced_view_5` to expose the
+(azimuthal, colatitude, radial) axes simultaneously.
+
+Regularity enforcement: when `regindex` is non-empty, the `Intertwiner`
+spin-operator algebra is used to detect forbidden regularity components
+at each *ell*.  Forbidden components are zeroed out.
+
+# Fields
+- `N3g::Int` -- radial grid size.
+- `N3c::Int` -- radial coefficient size (Nmax + 1).
+- `ell_maps` -- tuple of `(ell, m_ind, ell_ind)` entries.
+- `regindex` -- regularity index (CartesianIndex or tuple).
+- `regtotal::Int` -- total regularity.
+- `k::Int` -- regularity parameter.
+- `alpha::Float64` -- Jacobi parameter for the radial quadrature.
+- `dealias_before_converting::Bool` -- whether to truncate before spectral conversion.
+- `_cache::Dict{Symbol,Any}` -- lazily-computed matrix cache.
+"""
+mutable struct BallRadialTransform <: NonSeparableTransform
+    N3g::Int
+    N3c::Int
+    ell_maps::Any   # tuple of (ell, m_ind, ell_ind) entries
+    regindex::Any    # CartesianIndex or tuple -- regularity index
+    regtotal::Int
+    k::Int
+    alpha::Float64
+    dealias_before_converting::Bool
+    _cache::Dict{Symbol,Any}
+end
+
+"""
+    BallRadialTransform(grid_shape, coeff_size, axis, ell_maps, regindex,
+                        regtotal, k, alpha;
+                        dtype=ComplexF64, dealias_before_converting=nothing)
+
+Construct a ball radial transform.
+
+# Arguments
+- `grid_shape` -- shape of the grid-space array.
+- `coeff_size` -- number of radial coefficients (Nmax + 1).
+- `axis` -- 1-based radial axis index.
+- `ell_maps` -- tuple of `(ell, m_ind, ell_ind)` entries.
+- `regindex` -- regularity index (from `pairs(regularity_classes(...))`).
+- `regtotal` -- total regularity value.
+- `k` -- regularity parameter.
+- `alpha` -- Jacobi parameter.
+- `dtype` -- element type (default `ComplexF64`).
+- `dealias_before_converting` -- if `nothing`, read from config.
+"""
+function BallRadialTransform(grid_shape, coeff_size::Int, axis::Int, ell_maps,
+                             regindex, regtotal, k, alpha;
+                             dtype::DataType=ComplexF64,
+                             dealias_before_converting::Union{Bool, Nothing}=nothing)
+    N3g = grid_shape[axis]
+    N3c = coeff_size
+    if dealias_before_converting === nothing
+        dealias_before_converting = _get_dealias_before_converting()
+    end
+    return BallRadialTransform(N3g, N3c, ell_maps, regindex, Int(regtotal),
+                               Int(k), Float64(alpha), dealias_before_converting,
+                               Dict{Symbol,Any}())
+end
+
+"""
+    _is_forbidden(t::BallRadialTransform, ell) -> Bool
+
+Check whether the regularity component for the given `ell` is forbidden
+by the Intertwiner spin-operator algebra.  Returns `false` for scalar
+fields (empty `regindex`).
+"""
+function _is_forbidden(t::BallRadialTransform, ell)
+    # Regularity basis ordering: index 1 -> -1, index 2 -> +1, index 3 -> 0
+    Rb = [-1, 1, 0]
+    reg_tuple = Tuple(t.regindex)
+    if length(reg_tuple) == 0
+        return false
+    end
+    Q = Intertwiner(ell; indexing=(-1, +1, 0))
+    reg_vals = Tuple(Rb[r] for r in reg_tuple)
+    return forbidden_regularity(Q, reg_vals)
+end
+
+"""
+    forward!(t::BallRadialTransform, gdata, cdata, axis)
+
+Apply the forward (grid --> coefficient) ball radial transform.
+Uses `reduced_view_5` to expose the 5D structure
+`(pre, azimuth, colatitude, radial, post)`, then delegates to
+`forward_reduced!`.
+"""
+function forward!(t::BallRadialTransform, gdata::AbstractArray,
+                  cdata::AbstractArray, axis::Int)
+    # In Python: reduced_view_5(data, axis-2) with 0-based axis
+    # In Julia: reduced_view_5(data, axis-2) with 1-based axis
+    # The radial axis is at position `axis`, colatitude at `axis-1`,
+    # azimuth at `axis-2`, so we reduce starting at `axis-2`.
+    gdata5 = reduced_view_5(gdata, axis - 2)
+    cdata5 = reduced_view_5(cdata, axis - 2)
+    forward_reduced!(t, gdata5, cdata5)
+    return cdata
+end
+
+"""
+    backward!(t::BallRadialTransform, cdata, gdata, axis)
+
+Apply the backward (coefficient --> grid) ball radial transform.
+"""
+function backward!(t::BallRadialTransform, cdata::AbstractArray,
+                   gdata::AbstractArray, axis::Int)
+    cdata5 = reduced_view_5(cdata, axis - 2)
+    gdata5 = reduced_view_5(gdata, axis - 2)
+    backward_reduced!(t, cdata5, gdata5)
+    return gdata
+end
+
+"""
+    _quadrature(t::BallRadialTransform)
+
+Cached Gauss quadrature `(z_grid, weights)` for the ball (dimension 3).
+"""
+function _quadrature(t::BallRadialTransform)
+    cached = get(t._cache, :quadrature, nothing)
+    if cached !== nothing
+        return cached
+    end
+    result = zernike_quadrature(3, t.N3g; k=Int(t.alpha))
+    t._cache[:quadrature] = result
+    return result
+end
+
+"""
+    _forward_matrices(t::BallRadialTransform)
+
+Cached dictionary of forward transform matrices, keyed by spherical-harmonic
+degree *ell*.  Each matrix maps grid values to spectral coefficients,
+incorporating quadrature weights and optional spectral conversion.
+
+When the regularity component is forbidden for a given `ell` (as determined
+by the `Intertwiner`), the matrix is set to all zeros.
+"""
+function _forward_matrices(t::BallRadialTransform)
+    cached = get(t._cache, :forward_matrices, nothing)
+    if cached !== nothing
+        return cached
+    end
+    z_grid, weights = _quadrature(t)
+    ell_list = Tuple(entry[1] for entry in t.ell_maps)
+    ell_matrices = Dict{Int, Matrix{Float64}}()
+    for ell in ell_list
+        if !haskey(ell_matrices, ell)
+            Nmin = zernike_min_degree(ell)
+            if _is_forbidden(t, ell)
+                # Forbidden regularity: zero matrix
+                ell_matrices[ell] = zeros(Float64, max(t.N3c - Nmin, 0), t.N3g)
+            else
+                # Gauss quadrature with base (k=0) polynomials
+                Nc = max(max(t.N3g, t.N3c) - Nmin, 0)
+                W = zernike_polynomials(3, Nc, t.alpha, ell + t.regtotal, z_grid)  # shape (Nc, Ng)
+                W = W .* weights'
+                # Zero higher coefficients than can be correctly computed with base Gauss quadrature
+                dN = fld(ell + t.regtotal, 2)
+                zero_start = max(t.N3g - dN, 0) + 1  # 1-based
+                if zero_start <= size(W, 1)
+                    W[zero_start:end, :] .= 0.0
+                end
+                if t.dealias_before_converting
+                    # Truncate to specified coeff_size
+                    trunc_rows = max(t.N3c - Nmin, 0)
+                    W = W[1:trunc_rows, :]
+                end
+                # Spectral conversion
+                if t.k > 0
+                    conversion_op = zernike_operator(3, "E")(+1)^t.k
+                    conv_matrix = conversion_op(size(W, 1), t.alpha, ell + t.regtotal)
+                    # conv_matrix may be InfiniteCSC or sparse; convert to dense for matmul
+                    W = Matrix{Float64}(sparse(conv_matrix)) * W
+                end
+                if !t.dealias_before_converting
+                    # Truncate to specified coeff_size
+                    trunc_rows = max(t.N3c - Nmin, 0)
+                    W = W[1:trunc_rows, :]
+                end
+                ell_matrices[ell] = Matrix{Float64}(W)
+            end
+        end
+    end
+    t._cache[:forward_matrices] = ell_matrices
+    return ell_matrices
+end
+
+"""
+    _backward_matrices(t::BallRadialTransform)
+
+Cached dictionary of backward transform matrices, keyed by spherical-harmonic
+degree *ell*.  Each matrix maps spectral coefficients to grid values.
+
+When the regularity component is forbidden for a given `ell`, the matrix
+is set to all zeros.
+"""
+function _backward_matrices(t::BallRadialTransform)
+    cached = get(t._cache, :backward_matrices, nothing)
+    if cached !== nothing
+        return cached
+    end
+    z_grid, weights = _quadrature(t)
+    ell_list = Tuple(entry[1] for entry in t.ell_maps)
+    ell_matrices = Dict{Int, Matrix{Float64}}()
+    for ell in ell_list
+        if !haskey(ell_matrices, ell)
+            Nmin = zernike_min_degree(ell)
+            if _is_forbidden(t, ell)
+                # Forbidden regularity: zero matrix
+                ell_matrices[ell] = zeros(Float64, t.N3g, max(t.N3c - Nmin, 0))
+            else
+                # Construct polynomials on the base grid
+                Nc = max(t.N3c - Nmin, 0)
+                W = zernike_polynomials(3, Nc, t.alpha + t.k, ell + t.regtotal, z_grid)
+                # Zero higher coefficients than can be correctly computed with base Gauss quadrature
+                dN = fld(ell + t.regtotal, 2)
+                zero_start = max(t.N3g - dN, 0) + 1  # 1-based
+                if zero_start <= size(W, 1)
+                    W[zero_start:end, :] .= 0.0
+                end
+                # Transpose for Julia's column-major layout
+                ell_matrices[ell] = Matrix{Float64}(W')
+            end
+        end
+    end
+    t._cache[:backward_matrices] = ell_matrices
+    return ell_matrices
+end
+
+"""
+    forward_reduced!(t::BallRadialTransform, gdata, cdata)
+
+Forward ball radial transform on 5D reduced arrays.
+For each `(ell, m_ind, ell_ind)` in `ell_maps`, applies the forward matrix
+along axis 4 (the radial axis in the reduced 5D view).
+
+The coefficient data is indexed with `Nmin+1:end` along the radial axis
+(1-based) to account for the ell-dependent minimum Zernike degree.
+"""
+function forward_reduced!(t::BallRadialTransform,
+                          gdata::AbstractArray, cdata::AbstractArray)
+    ell_matrices = _forward_matrices(t)
+    for (ell, m_ind, ell_ind) in t.ell_maps
+        Nmin = zernike_min_degree(ell)
+        # In the 5D reduced view: (pre, azimuth, colatitude, radial, post)
+        # m_ind indexes the azimuth axis (dim 2)
+        # ell_ind indexes the colatitude axis (dim 3)
+        # radial is dim 4
+        grm = @view gdata[:, m_ind, ell_ind, :, :]
+        # Nmin+1 for 1-based indexing (Python Nmin: maps to Julia Nmin+1)
+        crm = @view cdata[:, m_ind, ell_ind, Nmin+1:end, :]
+        apply_matrix(ell_matrices[ell], grm, 2; out=crm)
+    end
+    return nothing
+end
+
+"""
+    backward_reduced!(t::BallRadialTransform, cdata, gdata)
+
+Backward ball radial transform on 5D reduced arrays.
+"""
+function backward_reduced!(t::BallRadialTransform,
+                           cdata::AbstractArray, gdata::AbstractArray)
+    ell_matrices = _backward_matrices(t)
+    for (ell, m_ind, ell_ind) in t.ell_maps
+        Nmin = zernike_min_degree(ell)
+        grm = @view gdata[:, m_ind, ell_ind, :, :]
+        crm = @view cdata[:, m_ind, ell_ind, Nmin+1:end, :]
+        apply_matrix(ell_matrices[ell], crm, 2; out=grm)
+    end
+    return nothing
+end
+
+# ============================================================================
+# transform_plan methods for BallRadialBasis and BallBasis
+# ============================================================================
+
+# Register BallRadialTransform in both _ball_radial_transforms and
+# _ball_basis_transforms under the "matrix" key.
+_ball_radial_transforms["matrix"] = BallRadialTransform
+_ball_basis_transforms["matrix"] = BallRadialTransform
+
+# ============================================================================
 # Exports
 # ============================================================================
 
@@ -1575,6 +1875,7 @@ export Transform,
        CosineTransform,
        SWSHColatitudeTransform,
        DiskRadialTransform,
+       BallRadialTransform,
        forward!,
        backward!,
        forward_matrix,
