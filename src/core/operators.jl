@@ -2800,8 +2800,8 @@ function operate(op::PolarMOperator, out)::Nothing
     for si_in in CartesianIndices(size(S_in))
         spintotal_in = S_in[si_in]
         for si_out_tuple in spinindex_out(op, Tuple(si_in))
-            comp_in = operand.data[Tuple(si_in)...]
-            comp_out = out.data[si_out_tuple...]
+            @inbounds comp_in = operand.data[Tuple(si_in)...]
+            @inbounds comp_out = out.data[si_out_tuple...]
             for (m, mg_slice, mc_slice, n_slice_val) in m_maps(basis, op.dist)
                 # Build slice tuple: all colons except axis-1 gets mc_slice,
                 # axis gets n_slice_val (1-based indexing)
@@ -2952,7 +2952,7 @@ function operate(op::SphericalTrace, out)::Nothing
     out.data .= 0
     for i in 1:d
         spatial_idx = ntuple(_ -> Colon(), ndims(arg.data) - 2)
-        out.data .+= arg.data[i, i, spatial_idx...]
+        @inbounds out.data .+= arg.data[i, i, spatial_idx...]
     end
     return nothing
 end
@@ -3065,7 +3065,7 @@ function operate(op::PolarTrace, out)::Nothing
     out.data .= 0
     for i in 1:d
         spatial_idx = ntuple(_ -> Colon(), ndims(arg.data) - 2)
-        out.data .+= arg.data[i, i, spatial_idx...]
+        @inbounds out.data .+= arg.data[i, i, spatial_idx...]
     end
     return nothing
 end
@@ -3145,7 +3145,7 @@ function operate(op::DirectProductTrace, out)::Nothing
     out.data .= 0
     for i in 1:d
         spatial_idx = ntuple(_ -> Colon(), ndims(arg.data) - 2)
-        out.data .+= arg.data[i, i, spatial_idx...]
+        @inbounds out.data .+= arg.data[i, i, spatial_idx...]
     end
     return nothing
 end
@@ -4962,8 +4962,8 @@ function operate(op::SphericalEllOperator, out)::Nothing
     for idx_in in CartesianIndices(size(R_in))
         regindex_in = Tuple(idx_in)
         for regindex_out_val in regindex_out(op, regindex_in)
-            comp_in = operand.data[regindex_in...]
-            comp_out = out.data[regindex_out_val...]
+            @inbounds comp_in = operand.data[regindex_in...]
+            @inbounds comp_out = out.data[regindex_out_val...]
             for (ell, m_ind, ell_ind) in ell_maps(basis, op.dist)
                 allowed_in = regularity_allowed(radial_basis, ell, regindex_in)
                 allowed_out = regularity_allowed(radial_basis, ell, regindex_out_val)
@@ -5565,8 +5565,8 @@ function operate(op::SphericalCurl, out)::Nothing
     for idx_in in CartesianIndices(size(R_in))
         regindex_in = Tuple(idx_in)
         for regindex_out_val in regindex_out(op, regindex_in)
-            comp_in = operand.data[regindex_in...]
-            comp_out = out.data[regindex_out_val...]
+            @inbounds comp_in = operand.data[regindex_in...]
+            @inbounds comp_out = out.data[regindex_out_val...]
             for (ell, m_ind, ell_ind) in ell_maps(input_basis, op.dist)
                 allowed_in = regularity_allowed(radial_basis, ell, regindex_in)
                 allowed_out = regularity_allowed(radial_basis, ell, regindex_out_val)
