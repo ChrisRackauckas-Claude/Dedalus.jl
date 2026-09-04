@@ -51,12 +51,12 @@ using Dedalus
         @test isdefined(Dedalus, :SphericalEllProduct)
         @test isdefined(Dedalus, :CrossProduct)
         @test isdefined(Dedalus, :DotProduct)
-        @test isdefined(Dedalus, :TransposeComponents)
-        @test isdefined(Dedalus, :Trace)
+        @test isdefined(Dedalus, :CartesianTransposeComponents)
+        @test isdefined(Dedalus, :CartesianTrace)
         @test isdefined(Dedalus, :RadialComponent)
         @test isdefined(Dedalus, :AngularComponent)
         @test isdefined(Dedalus, :S2_basis)
-        @test isdefined(Dedalus, :S2coordsys)
+        @test hasfield(SphericalCoordinates, :S2coordsys)
     end
 
     # Individual test files (test_transforms.jl, test_lbvp.jl, etc.) are
