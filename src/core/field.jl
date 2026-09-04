@@ -1163,7 +1163,8 @@ Set local data from global data using layout elements.
 """
 function set_global_data!(f::Field, global_data)
     elements = local_elements(f.layout, f.domain, f.scales)
-    local_data = global_data[elements...]
+    elements_1based = Tuple(e .+ 1 for e in elements)
+    local_data = global_data[elements_1based...]
     dedalus_copyto!(f.data, local_data)
     return nothing
 end
