@@ -754,13 +754,6 @@ function build_cartesian_ncc_matrix(op::Product, subproblem; ncc_cutoff=1e-6, ma
                 mode_matrix = cartesian_mode_matrix(subproblem_shape,
                     ncc.domain, arg.domain, out.domain, ncc_mode_tuple)
                 ncc_coeffs_flat = vec(ncc_coeffs)
-                gamma_ncc = G * ncc_coeffs_flat  # matrix-vector product (contracts NCC index)
-                # gamma_ncc is now shaped (out_dim, arg_dim), needs flattening for kron
-                mode_matrix = kron(reshape(gamma_ncc, :, 1) * reshape(ones(Int, 1), 1, :),
-                                   mode_matrix)
-                # Actually: kron(Gamma . ncc_coeffs, mode_matrix)
-                # G is (out_dim, arg_dim, ncc_dim), ncc_coeffs is (ncc_dim,)
-                # Result should be (out_dim, arg_dim) matrix, then kron with mode_matrix
                 G_contracted = reshape(G, :, size(G, 3)) * ncc_coeffs_flat
                 G_matrix = reshape(G_contracted, size(G, 1), size(G, 2))
                 mode_matrix = kron(G_matrix, mode_matrix)
@@ -1629,8 +1622,6 @@ end
 Precompute NCC matrices for number-field multiplication.
 """
 function build_ncc_matrices(op::MultiplyNumberField, separability, vars; kw...)
-    nccs, operand_idx = require_linearity(op, vars...)
-    # Continue NCC matrix construction on the field operand
     build_ncc_matrices(op.args[2], separability, vars; kw...)
 end
 
