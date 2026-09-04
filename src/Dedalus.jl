@@ -57,6 +57,11 @@ include("core/arithmetic.jl")
 include("core/operators.jl")
 
 # ============================================================
+# Layer 4b: dedalus_sphere library (used by bases and operators)
+# ============================================================
+include("libraries/dedalus_sphere/DedalusSphere.jl")
+
+# ============================================================
 # Layer 5: Spectral bases and transforms
 # ============================================================
 include("core/basis.jl")
@@ -103,8 +108,14 @@ export Field, ScalarField, VectorField, TensorField, LockedField
 # Operators (constructor functions)
 export differentiate, interpolate, integrate, average, lift,
        gradient, divergence, curl, laplacian,
-       trace_op, transpose_components, grid_op, coeff_op,
-       time_derivative, convert_operand
+       trace_op, transpose_components, skew,
+       radial_component, angular_component, azimuthal_component,
+       grid_op, coeff_op, time_derivative, convert_operand
+
+# Basis types (1D from Milestone 1, 2D curvilinear from Milestone 2)
+export Jacobi, ChebyshevT, ChebyshevU, Legendre, Ultraspherical,
+       ComplexFourier, RealFourier, Fourier,
+       DiskBasis, AnnulusBasis, SphereBasis
 
 # Problems
 export IVP, EVP, LBVP, NLBVP
@@ -114,7 +125,7 @@ export LinearBoundaryValueSolver, EigenvalueSolver,
        InitialValueSolver, NonlinearBoundaryValueSolver
 
 # Timesteppers
-export CNAB1, CNAB2, SBDF1, SBDF2, SBDF3, SBDF4,
+export CNAB1, CNAB2, MCNAB2, CNLF2, SBDF1, SBDF2, SBDF3, SBDF4,
        RK111, RK222, RK443, RKSMR, RKGFY
 
 # Extras

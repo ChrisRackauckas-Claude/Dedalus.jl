@@ -1066,6 +1066,495 @@ function subspace_matrix(op::Lift, layout)
 end
 
 # ============================================================================
+# NonSeparableTransform
+# ============================================================================
+
+"""
+    NonSeparableTransform <: Transform
+
+Abstract base for transforms that couple multiple axes (e.g. colatitude
+transforms on the sphere that depend on azimuthal mode number *m*).
+
+Concrete subtypes must implement:
+
+- `forward_reduced!(t, gdata, cdata)` -- forward transform on 4D reduced arrays.
+- `backward_reduced!(t, cdata, gdata)` -- backward transform on 4D reduced arrays.
+"""
+abstract type NonSeparableTransform <: Transform end
+
+"""
+    forward!(t::NonSeparableTransform, gdata, cdata, axis)
+
+Apply the forward (grid --> coefficient) non-separable transform.
+Reduces the input to a 4D view centred on `axis` and `axis+1`, then
+delegates to `forward_reduced!`.
+"""
+function forward!(t::NonSeparableTransform, gdata::AbstractArray,
+                  cdata::AbstractArray, axis::Int)
+    gdata4 = reduced_view_4(gdata, axis)
+    cdata4 = reduced_view_4(cdata, axis)
+    forward_reduced!(t, gdata4, cdata4)
+    return cdata
+end
+
+"""
+    backward!(t::NonSeparableTransform, cdata, gdata, axis)
+
+Apply the backward (coefficient --> grid) non-separable transform.
+Reduces the input to a 4D view centred on `axis` and `axis+1`, then
+delegates to `backward_reduced!`.
+"""
+function backward!(t::NonSeparableTransform, cdata::AbstractArray,
+                   gdata::AbstractArray, axis::Int)
+    cdata4 = reduced_view_4(cdata, axis)
+    gdata4 = reduced_view_4(gdata, axis)
+    backward_reduced!(t, cdata4, gdata4)
+    return gdata
+end
+
+# ============================================================================
+# SWSHColatitudeTransform
+# ============================================================================
+
+"""
+    SWSHColatitudeTransform <: NonSeparableTransform
+
+Spin-weighted spherical harmonic (SWSH) colatitude transform.
+
+Operates per azimuthal mode number *m*, applying a dense matrix multiply
+along the colatitude axis to convert between grid values and spectral
+coefficients.
+
+# Fields
+- `Ntheta::Int` -- number of colatitude grid points.
+- `Lmax::Int` -- maximum spherical-harmonic degree.
+- `m_maps` -- tuple of `(m, mg_slice, mc_slice, ell_slice)` entries.
+- `s::Int` -- spin weight.
+- `_cache::Dict{Symbol,Any}` -- lazily-computed matrix cache.
+"""
+mutable struct SWSHColatitudeTransform <: NonSeparableTransform
+    Ntheta::Int
+    Lmax::Int
+    m_maps::Any   # tuple of (m, mg_slice, mc_slice, ell_slice) entries
+    s::Int
+    _cache::Dict{Symbol,Any}
+end
+
+"""
+    SWSHColatitudeTransform(Ntheta, Lmax, m_maps, s)
+
+Construct a SWSH colatitude transform.
+"""
+function SWSHColatitudeTransform(Ntheta::Int, Lmax::Int, m_maps, s::Int)
+    return SWSHColatitudeTransform(Ntheta, Lmax, m_maps, s, Dict{Symbol,Any}())
+end
+
+"""
+    _quadrature(t::SWSHColatitudeTransform)
+
+Cached Gauss quadrature `(cos_grid, weights)` for the sphere.
+"""
+function _quadrature(t::SWSHColatitudeTransform)
+    cached = get(t._cache, :quadrature, nothing)
+    if cached !== nothing
+        return cached
+    end
+    result = sphere_quadrature(t.Ntheta - 1)
+    t._cache[:quadrature] = result
+    return result
+end
+
+"""
+    _forward_SWSH_matrices(t::SWSHColatitudeTransform)
+
+Cached dictionary of forward transform matrices, keyed by azimuthal
+mode number *m*.  Each matrix has shape `(Lmax+1-|m|, Ntheta)` and
+includes quadrature weights so that the transform is:
+
+    coefficients = matrix * grid_values
+"""
+function _forward_SWSH_matrices(t::SWSHColatitudeTransform)
+    cached = get(t._cache, :forward_SWSH_matrices, nothing)
+    if cached !== nothing
+        return cached
+    end
+    cos_grid, weights = _quadrature(t)
+    Lmax = t.Lmax
+    m_matrices = Dict{Int, Union{Nothing, Matrix{Float64}}}()
+    for (m, _, _, _) in t.m_maps
+        if haskey(m_matrices, m)
+            continue
+        end
+        if m > Lmax
+            # Don't make matrices for m's that will be dropped after transform
+            m_matrices[m] = nothing
+        else
+            Y = sphere_harmonics(Lmax, m, t.s, cos_grid)  # shape (Lmax-Lmin+1, Ntheta)
+            # Pad to shape (Lmax+1-|m|, Ntheta) so transforms don't depend on Lmin
+            Lmin = max(abs(m), abs(t.s))
+            Yfull = zeros(Float64, Lmax + 1 - abs(m), t.Ntheta)
+            # Y rows map to ell = Lmin:Lmax, which in padded array start at row Lmin-|m|+1
+            pad_start = Lmin - abs(m) + 1  # 1-based
+            n_Y_rows = size(Y, 1)
+            Yfull[pad_start:pad_start + n_Y_rows - 1, :] .= Float64.(Y .* weights')
+            # Zero higher coefficients than can be correctly computed with base Gauss quadrature
+            max_valid = t.Ntheta - abs(m)  # 1-based count of valid rows
+            if max_valid + 1 <= size(Yfull, 1)
+                Yfull[max_valid + 1:end, :] .= 0.0
+            end
+            m_matrices[m] = copy(Yfull)
+        end
+    end
+    t._cache[:forward_SWSH_matrices] = m_matrices
+    return m_matrices
+end
+
+"""
+    _backward_SWSH_matrices(t::SWSHColatitudeTransform)
+
+Cached dictionary of backward transform matrices, keyed by azimuthal
+mode number *m*.  Each matrix has shape `(Ntheta, Lmax+1-|m|)`:
+
+    grid_values = matrix * coefficients
+"""
+function _backward_SWSH_matrices(t::SWSHColatitudeTransform)
+    cached = get(t._cache, :backward_SWSH_matrices, nothing)
+    if cached !== nothing
+        return cached
+    end
+    cos_grid, weights = _quadrature(t)
+    Lmax = t.Lmax
+    m_matrices = Dict{Int, Union{Nothing, Matrix{Float64}}}()
+    for (m, _, _, _) in t.m_maps
+        if haskey(m_matrices, m)
+            continue
+        end
+        if m > Lmax
+            m_matrices[m] = nothing
+        else
+            Y = sphere_harmonics(Lmax, m, t.s, cos_grid)  # shape (Lmax-Lmin+1, Ntheta)
+            # Pad to shape (Ntheta, Lmax+1-|m|) so transforms don't depend on Lmin
+            Lmin = max(abs(m), abs(t.s))
+            Yfull = zeros(Float64, t.Ntheta, Lmax + 1 - abs(m))
+            pad_start = Lmin - abs(m) + 1  # 1-based
+            n_Y_rows = size(Y, 1)
+            Yfull[:, pad_start:pad_start + n_Y_rows - 1] .= Float64.(Y')
+            # Zero higher coefficients than can be correctly computed with base Gauss quadrature
+            max_valid = t.Ntheta - abs(m)
+            if max_valid + 1 <= size(Yfull, 2)
+                Yfull[:, max_valid + 1:end] .= 0.0
+            end
+            m_matrices[m] = copy(Yfull)
+        end
+    end
+    t._cache[:backward_SWSH_matrices] = m_matrices
+    return m_matrices
+end
+
+"""
+    forward_reduced!(t::SWSHColatitudeTransform, gdata, cdata)
+
+Forward SWSH colatitude transform on 4D reduced arrays.
+For each `(m, mg_slice, mc_slice, ell_slice)` in `m_maps`, applies the
+forward matrix along axis 3 (the colatitude axis in the reduced view).
+"""
+function forward_reduced!(t::SWSHColatitudeTransform,
+                          gdata::AbstractArray, cdata::AbstractArray)
+    m_matrices = _forward_SWSH_matrices(t)
+    Lmax = t.Lmax
+    for (m, mg_slice, mc_slice, ell_slice) in t.m_maps
+        # Skip transforms when |m| > Lmax
+        if abs(m) <= Lmax
+            grm = @view gdata[:, mg_slice, :, :]
+            crm = @view cdata[:, mc_slice, ell_slice, :]
+            apply_matrix(m_matrices[m], grm, 2; out=crm)
+        end
+    end
+    return nothing
+end
+
+"""
+    backward_reduced!(t::SWSHColatitudeTransform, cdata, gdata)
+
+Backward SWSH colatitude transform on 4D reduced arrays.
+"""
+function backward_reduced!(t::SWSHColatitudeTransform,
+                           cdata::AbstractArray, gdata::AbstractArray)
+    m_matrices = _backward_SWSH_matrices(t)
+    Lmax = t.Lmax
+    for (m, mg_slice, mc_slice, ell_slice) in t.m_maps
+        if abs(m) > Lmax
+            # Write zeros because they'll be used by the inverse azimuthal transform
+            gdata[:, mg_slice, :, :] .= 0
+        else
+            grm = @view gdata[:, mg_slice, :, :]
+            crm = @view cdata[:, mc_slice, ell_slice, :]
+            apply_matrix(m_matrices[m], crm, 2; out=grm)
+        end
+    end
+    return nothing
+end
+
+# ============================================================================
+# DiskRadialTransform
+# ============================================================================
+
+"""
+    DiskRadialTransform <: NonSeparableTransform
+
+Disk radial transform using Zernike polynomials.
+
+Operates per azimuthal mode number *m*, applying a dense matrix multiply
+along the radial axis to convert between grid values and spectral
+coefficients.
+
+# Fields
+- `Nphi::Int` -- number of azimuthal grid points.
+- `Nmax::Int` -- maximum radial polynomial degree.
+- `N2g::Int` -- radial grid size (grid_shape along radial axis).
+- `N2c::Int` -- radial coefficient size (Nmax + 1).
+- `m_maps` -- tuple of `(m, mg_slice, mc_slice, n_slice)` entries.
+- `s::Int` -- spin weight.
+- `k::Int` -- regularity parameter.
+- `alpha::Float64` -- Jacobi parameter for the radial quadrature.
+- `dtype::DataType` -- element type.
+- `dealias_before_converting::Bool` -- whether to truncate before spectral conversion.
+- `_cache::Dict{Symbol,Any}` -- lazily-computed matrix cache.
+"""
+mutable struct DiskRadialTransform <: NonSeparableTransform
+    Nphi::Int
+    Nmax::Int
+    N2g::Int
+    N2c::Int
+    m_maps::Any   # tuple of (m, mg_slice, mc_slice, n_slice) entries
+    s::Int
+    k::Int
+    alpha::Float64
+    dtype::DataType
+    dealias_before_converting::Bool
+    _cache::Dict{Symbol,Any}
+end
+
+"""
+    DiskRadialTransform(grid_shape, basis_shape, axis, m_maps, s, k, alpha;
+                        dtype=ComplexF64, dealias_before_converting=nothing)
+
+Construct a disk radial transform.
+
+# Arguments
+- `grid_shape` -- shape of the grid-space array.
+- `basis_shape` -- `(Nphi, Nmax+1)`.
+- `axis` -- 1-based radial axis index.
+- `m_maps` -- tuple of `(m, mg_slice, mc_slice, n_slice)`.
+- `s` -- spin weight.
+- `k` -- regularity parameter.
+- `alpha` -- Jacobi parameter.
+- `dtype` -- element type (default `ComplexF64`).
+- `dealias_before_converting` -- if `nothing`, read from config.
+"""
+function DiskRadialTransform(grid_shape, basis_shape, axis::Int, m_maps, s::Int,
+                             k::Int, alpha;
+                             dtype::DataType=ComplexF64,
+                             dealias_before_converting::Union{Bool, Nothing}=nothing)
+    Nphi = basis_shape[1]
+    Nmax = basis_shape[2] - 1
+    N2g = grid_shape[axis]
+    N2c = Nmax + 1
+    if dealias_before_converting === nothing
+        dealias_before_converting = _get_dealias_before_converting()
+    end
+    return DiskRadialTransform(Nphi, Nmax, N2g, N2c, m_maps, s, k, Float64(alpha),
+                               dtype, dealias_before_converting, Dict{Symbol,Any}())
+end
+
+"""
+    _quadrature(t::DiskRadialTransform)
+
+Cached Gauss quadrature `(z_grid, weights)` for the disk.
+"""
+function _quadrature(t::DiskRadialTransform)
+    cached = get(t._cache, :quadrature, nothing)
+    if cached !== nothing
+        return cached
+    end
+    result = zernike_quadrature(2, t.N2g; k=Int(t.alpha))
+    t._cache[:quadrature] = result
+    return result
+end
+
+"""
+    _forward_matrices(t::DiskRadialTransform)
+
+Cached dictionary of forward transform matrices, keyed by azimuthal
+mode number *m*.  Each matrix maps grid values to spectral coefficients,
+incorporating quadrature weights and optional spectral conversion.
+"""
+function _forward_matrices(t::DiskRadialTransform)
+    cached = get(t._cache, :forward_matrices, nothing)
+    if cached !== nothing
+        return cached
+    end
+    z_grid, weights = _quadrature(t)
+    m_list = Tuple(entry[1] for entry in t.m_maps)
+    m_matrices = Dict{Int, Matrix{Float64}}()
+    for m in m_list
+        if !haskey(m_matrices, m)
+            # Gauss quadrature with base (k=0) polynomials
+            Nmin = zernike_min_degree(abs(m))
+            Nc = max(max(t.N2g, t.N2c) - Nmin, 0)
+            W = zernike_polynomials(2, Nc, t.alpha, abs(m + t.s), z_grid)  # shape (Nc, Ng)
+            W = W .* weights'
+            # Zero higher coefficients than can be correctly computed with base Gauss quadrature
+            dN = abs(m + t.s) ÷ 2
+            zero_start = max(t.N2g - dN, 0) + 1  # 1-based
+            if zero_start <= size(W, 1)
+                W[zero_start:end, :] .= 0.0
+            end
+            if t.dealias_before_converting
+                # Truncate to specified coeff_size
+                trunc_rows = max(t.N2c - Nmin, 0)
+                W = W[1:trunc_rows, :]
+            end
+            # Spectral conversion
+            if t.k > 0
+                conversion_op = zernike_operator(2, "E")(+1)^t.k
+                conv_matrix = conversion_op(size(W, 1), t.alpha, abs(m + t.s))
+                # conv_matrix may be InfiniteCSC or sparse; convert to dense for matmul
+                W = Matrix{Float64}(sparse(conv_matrix)) * W
+            end
+            if !t.dealias_before_converting
+                # Truncate to specified coeff_size
+                trunc_rows = max(t.N2c - Nmin, 0)
+                W = W[1:trunc_rows, :]
+            end
+            m_matrices[m] = Matrix{Float64}(W)
+        end
+    end
+    t._cache[:forward_matrices] = m_matrices
+    return m_matrices
+end
+
+"""
+    _backward_matrices(t::DiskRadialTransform)
+
+Cached dictionary of backward transform matrices, keyed by azimuthal
+mode number *m*.  Each matrix maps spectral coefficients to grid values.
+"""
+function _backward_matrices(t::DiskRadialTransform)
+    cached = get(t._cache, :backward_matrices, nothing)
+    if cached !== nothing
+        return cached
+    end
+    z_grid, weights = _quadrature(t)
+    m_list = Tuple(entry[1] for entry in t.m_maps)
+    m_matrices = Dict{Int, Matrix{Float64}}()
+    for m in m_list
+        if !haskey(m_matrices, m)
+            # Construct polynomials on the base grid
+            Nmin = zernike_min_degree(abs(m))
+            Nc = max(t.N2c - Nmin, 0)
+            W = zernike_polynomials(2, Nc, t.k + t.alpha, abs(m + t.s), z_grid)
+            # Zero higher coefficients than can be correctly computed with base Gauss quadrature
+            dN = abs(m + t.s) ÷ 2
+            zero_start = max(t.N2g - dN, 0) + 1  # 1-based
+            if zero_start <= size(W, 1)
+                W[zero_start:end, :] .= 0.0
+            end
+            # Transpose for Julia's column-major layout
+            m_matrices[m] = Matrix{Float64}(W')
+        end
+    end
+    t._cache[:backward_matrices] = m_matrices
+    return m_matrices
+end
+
+"""
+    forward_reduced!(t::DiskRadialTransform, gdata, cdata)
+
+Forward disk radial transform on 4D reduced arrays.
+For each `(m, mg_slice, mc_slice, n_slice)` in `m_maps`, applies the
+forward matrix along axis 3 (the radial axis in the reduced view).
+"""
+function forward_reduced!(t::DiskRadialTransform,
+                          gdata::AbstractArray, cdata::AbstractArray)
+    m_matrices = _forward_matrices(t)
+    Nmax = t.Nmax
+    for (m, mg_slice, mc_slice, n_slice) in t.m_maps
+        # Skip transforms when |m| > 2*Nmax
+        if abs(m) <= 2 * Nmax
+            grm = @view gdata[:, mg_slice, :, :]
+            crm = @view cdata[:, mc_slice, n_slice, :]
+            apply_matrix(m_matrices[m], grm, 2; out=crm)
+        end
+    end
+    return nothing
+end
+
+"""
+    backward_reduced!(t::DiskRadialTransform, cdata, gdata)
+
+Backward disk radial transform on 4D reduced arrays.
+"""
+function backward_reduced!(t::DiskRadialTransform,
+                           cdata::AbstractArray, gdata::AbstractArray)
+    m_matrices = _backward_matrices(t)
+    Nmax = t.Nmax
+    for (m, mg_slice, mc_slice, n_slice) in t.m_maps
+        if abs(m) > 2 * Nmax
+            # Write zeros because they'll be used by the inverse azimuthal transform
+            gdata[:, mg_slice, :, :] .= 0
+        else
+            grm = @view gdata[:, mg_slice, :, :]
+            crm = @view cdata[:, mc_slice, n_slice, :]
+            apply_matrix(m_matrices[m], crm, 2; out=grm)
+        end
+    end
+    return nothing
+end
+
+# ============================================================================
+# transform_plan methods for non-separable bases
+# ============================================================================
+
+"""
+    transform_plan(b::SphereBasis, dist, Ntheta, s)
+
+Build (or retrieve cached) a SWSHColatitudeTransform plan for the sphere
+basis colatitude direction.
+"""
+function transform_plan(b::SphereBasis, dist, Ntheta::Int, s::Int)
+    cache_key = (:transform_plan, objectid(dist), Ntheta, s)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    maps = m_maps(b, dist)
+    plan = SWSHColatitudeTransform(Ntheta, b.Lmax, maps, s)
+    b._cache[cache_key] = plan
+    return plan
+end
+
+"""
+    transform_plan(b::DiskBasis, dist, grid_shape_val, axis, s)
+
+Build (or retrieve cached) a DiskRadialTransform plan for the disk basis
+radial direction.
+"""
+function transform_plan(b::DiskBasis, dist, grid_shape_val, axis::Int, s::Int)
+    cache_key = (:transform_plan, objectid(dist), grid_shape_val, axis, s)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    maps = m_maps(b, dist)
+    basis_shape = b.shape
+    plan = DiskRadialTransform(grid_shape_val, basis_shape, axis, maps, s,
+                               b.k, b.alpha; dtype=b.dtype)
+    b._cache[cache_key] = plan
+    return plan
+end
+
+# ============================================================================
 # Exports
 # ============================================================================
 
@@ -1073,6 +1562,7 @@ const FourierTransform = Union{ComplexFourierTransform, RealFourierTransform}
 
 export Transform,
        SeparableTransform,
+       NonSeparableTransform,
        JacobiTransform,
        JacobiMMT,
        FourierTransform,
@@ -1083,6 +1573,8 @@ export Transform,
        RealFourierMMT,
        FFTWRealFFT,
        CosineTransform,
+       SWSHColatitudeTransform,
+       DiskRadialTransform,
        forward!,
        backward!,
        forward_matrix,
