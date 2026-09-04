@@ -202,7 +202,7 @@ function _zernike_D_method(dimension, radius)
             D_op = jacobi_operator(dl > 0 ? "D" : "C")(+1)
             return (2 / radius) * D_op(n, k, _zernike_b(dimension, l))
         end
-        return D, ZernikeCodomain(-(1 + dl) ÷ 2, 1, dl)
+        return D, ZernikeCodomain(fld(-(1 + dl), 2), 1, dl)
     end
     return _D
 end
@@ -213,7 +213,7 @@ function _zernike_E_method(dimension, _radius)
             E_op = jacobi_operator("A")(dk)
             return sqrt(0.5) * E_op(n, k, _zernike_b(dimension, l))
         end
-        return E, ZernikeCodomain((1 - dk) ÷ 2, dk, 0)
+        return E, ZernikeCodomain(fld(1 - dk, 2), dk, 0)
     end
     return _E
 end
@@ -224,7 +224,7 @@ function _zernike_R_method(dimension, radius)
             R_op = jacobi_operator("B")(dl)
             return (sqrt(0.5) * radius) * R_op(n, k, _zernike_b(dimension, l))
         end
-        return R, ZernikeCodomain((1 - dl) ÷ 2, 0, dl)
+        return R, ZernikeCodomain(fld(1 - dl, 2), 0, dl)
     end
     return _R
 end
