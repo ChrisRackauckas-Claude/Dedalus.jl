@@ -1016,7 +1016,7 @@ end
 
 Return the total number of axes.
 """
-get_dim(dist::Distributor) = dist.dim
+@inline get_dim(dist::Distributor) = dist.dim
 
 """
     get_axis(dist::Distributor, coord) -> Int
@@ -1050,7 +1050,7 @@ end
 
 Return the first axis (1-based) of `basis`.
 """
-function first_axis(dist::Distributor, basis)
+@inline function first_axis(dist::Distributor, basis)
     return get_basis_axis(dist, basis)
 end
 
@@ -1059,7 +1059,7 @@ end
 
 Return the last axis (1-based) of `basis`.
 """
-function last_axis(dist::Distributor, basis)
+@inline function last_axis(dist::Distributor, basis)
     return first_axis(dist, basis) + get_dim(basis) - 1
 end
 
@@ -1068,21 +1068,21 @@ end
 
 Return all coordinates managed by this distributor.
 """
-get_coords(dist::Distributor) = dist.coords
+@inline get_coords(dist::Distributor) = dist.coords
 
 """
     coeff_layout(dist::Distributor)
 
 Return the coefficient-space layout.
 """
-coeff_layout(dist::Distributor) = dist.coeff_layout
+@inline coeff_layout(dist::Distributor) = dist.coeff_layout
 
 """
     grid_layout(dist::Distributor)
 
 Return the grid-space layout.
 """
-grid_layout(dist::Distributor) = dist.grid_layout
+@inline grid_layout(dist::Distributor) = dist.grid_layout
 
 # ============================================================================
 # Distributor - get_layout_object
@@ -1096,7 +1096,7 @@ Dereference layout identifiers.
 - If `input` is already a `Layout`, return it directly.
 - If `input` is a string (`"c"` or `"g"`), return the corresponding layout.
 """
-function get_layout_object(dist::Distributor, input)::Layout
+@inline function get_layout_object(dist::Distributor, input)::Layout
     if input isa Layout
         return input
     else
@@ -1113,7 +1113,7 @@ end
 
 Return the Transform object for the given axis (1-based).
 """
-function get_transform_object(dist::Distributor, axis::Integer)
+@inline function get_transform_object(dist::Distributor, axis::Integer)
     return dist.transforms[axis]
 end
 
@@ -1131,7 +1131,7 @@ Canonicalize scale inputs into a tuple of length `dist.dim`.
 - A tuple/vector -> converted to tuple
 - Zero scales are rejected.
 """
-function remedy_scales(dist::Distributor, scales)
+@inline function remedy_scales(dist::Distributor, scales)
     if scales === nothing
         scales = 1
     end

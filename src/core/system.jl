@@ -61,7 +61,7 @@ end
 
 Return view of coefficient data for the given subproblem and subsystem.
 """
-function get_subdata(cs::CoeffSystem, sp; ss=nothing)
+@inline function get_subdata(cs::CoeffSystem, sp; ss=nothing)
     return cs.views[sp][ss]
 end
 
