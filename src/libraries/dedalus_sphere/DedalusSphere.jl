@@ -32,3 +32,4 @@ include("clenshaw.jl")
 
 # Layer 5: High-level wrappers (depend on sphere, spin_operators)
 include("sphere_wrapper.jl")
+include("ball_wrapper.jl")
