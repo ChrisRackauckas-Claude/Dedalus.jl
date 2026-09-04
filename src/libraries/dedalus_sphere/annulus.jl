@@ -144,11 +144,13 @@ function annulus_operator(dimension, op::String, Nmax, k, ell, radii; pad::Int=0
     D_mat = _annulus_jacobi_op("D+", N + 2, a, b) * Z
 
     # derivatives
+    # Use + with negated scalar for InfiniteCSC row-padding compatibility (no - defined).
+    # Use (1/gapwidth) * instead of / gapwidth (no / defined for InfiniteCSC).
     if op == "D+"
-        return (D_mat - (ell + k + 1) * E_mat)[1:(N+2), 1:(N+2)] / gapwidth
+        return (1.0 / gapwidth) * (D_mat + (-(ell + k + 1)) * E_mat)[1:(N+2), 1:(N+2)]
     end
     if op == "D-"
-        return (D_mat + (ell - k + dimension - 3) * E_mat)[1:(N+2), 1:(N+2)] / gapwidth
+        return (1.0 / gapwidth) * (D_mat + (ell - k + dimension - 3) * E_mat)[1:(N+2), 1:(N+2)]
     end
 
     # restriction

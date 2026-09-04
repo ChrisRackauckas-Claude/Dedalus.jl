@@ -122,48 +122,72 @@ For "D", returns a callable that takes (dl, l) and returns an Operator.
 """
 function shell_operator(dimension, radii, name::String; alpha=shell_alpha)
     width = radii[2] - radii[1]
+    aspectratio = (radii[2] + radii[1]) / width
+
+    # Jacobi operator handles for reuse
+    _J_Id = jacobi_operator("Id")
+    _J_Z = jacobi_operator("Z")
+    _A_plus = jacobi_operator("A")(+1)
+    _B_plus = jacobi_operator("B")(+1)
+    _D_plus = jacobi_operator("D")(+1)
+
+    # Z_shell(n, a, b) = aspectratio * I(n, a, b) + Z(n, a, b)
+    # Built at the matrix level to avoid codomain compatibility issues:
+    # JacobiCodomain == only checks (da, db, pi), but base Codomain == checks all elements.
+    # The Jacobi Z operator has codomain (1,0,0,0) which is incompatible with (0,0,0,0)
+    # under the base Codomain equality check used by the + operator on Operators.
+    function _Z_shell(n, a, b)
+        return aspectratio * _J_Id(n, a, b) + _J_Z(n, a, b)
+    end
+
+    # AB_compose(n, a, b) = A(+1)(B_cod(n,a,b)) * B(+1)(n,a,b)
+    # B(+1) codomain = (0, 0, +1), so shifted = (n, a, b+1)
+    function _AB_compose(n, a, b)
+        B_mat = _B_plus(n, a, b)
+        A_mat = _A_plus(n, a, b + 1)
+        return A_mat * B_mat
+    end
 
     if name == "Z"
         function Z_func(n, k)
-            return jacobi_operator("Z")(n, k + alpha[1], k + alpha[2])
+            return _J_Z(n, k + alpha[1], k + alpha[2])
         end
         return Operator(Z_func, _shell_to_codomain(ShellCodomain(0, 0)); Output=Operator)
     end
 
-    # Compose Z = (radii[2] + radii[1]) / width + jacobi_operator("Z")
-    # This is: aspectratio * Id + Jacobi_Z
-    # As a lazy Operator composition:
-    Z_op = (radii[2] + radii[1]) / width + jacobi_operator("Z")
-
     if name == "Id"
         function I_func(n, k)
-            return jacobi_operator("Id")(n, k + alpha[1], k + alpha[2])
+            return _J_Id(n, k + alpha[1], k + alpha[2])
         end
         return Operator(I_func, _shell_to_codomain(ShellCodomain(0, 0)); Output=Operator)
     end
 
     if name == "R"
         function R_func(n, k)
-            return (0.5 * width) * Z_op(n, k + alpha[1], k + alpha[2])
+            return (0.5 * width) * _Z_shell(n, k + alpha[1], k + alpha[2])
         end
         return Operator(R_func, _shell_to_codomain(ShellCodomain(1, 0)); Output=Operator)
     end
 
-    # AB = A(+1) @ B(+1) — composed Jacobi operators
-    AB_op = compose(jacobi_operator("A")(+1), jacobi_operator("B")(+1))
-
     if name == "AB"
         function AB_func(n, k)
-            return AB_op(n, k + alpha[1], k + alpha[2])
+            return _AB_compose(n, k + alpha[1], k + alpha[2])
         end
         return Operator(AB_func, _shell_to_codomain(ShellCodomain(0, 1)); Output=Operator)
     end
 
     if name == "E"
-        # E = 0.5 * (AB @ Z) — compose AB with Z_op
-        E_comp = compose(AB_op, Z_op)
         function E_func(n, k)
-            return 0.5 * E_comp(n, k + alpha[1], k + alpha[2])
+            a_k = k + alpha[1]
+            b_k = k + alpha[2]
+            # E = 0.5 * (AB @ Z_shell)
+            # compose(AB, Z_shell)(n, a, b):
+            #   Z_mat = Z_shell(n, a, b)
+            #   Z_shell codomain = (1, 0, 0) (dn=1 from Jacobi Z dominating)
+            #   AB evaluated at shifted point (n+1, a, b)
+            Z_mat = _Z_shell(n, a_k, b_k)
+            AB_mat = _AB_compose(n + 1, a_k, b_k)
+            return 0.5 * (AB_mat * Z_mat)
         end
         return Operator(E_func, _shell_to_codomain(ShellCodomain(1, 1)); Output=Operator)
     end
@@ -171,18 +195,32 @@ function shell_operator(dimension, radii, name::String; alpha=shell_alpha)
     if name == "D"
         function D_factory(dl, l)
             function D_func(n, k)
-                # D = D(+1) @ Z
-                D_composed = compose(jacobi_operator("D")(+1), Z_op)
+                a_k = k + alpha[1]
+                b_k = k + alpha[2]
 
-                # K = A(0) - alpha[1]
-                # K += dl*l + (dl == -1)*(2-dimension)
-                K_op = jacobi_operator("A")(0) - alpha[1]
-                K_op = K_op + (dl * l + (dl == -1 ? 1 : 0) * (2 - dimension))
+                # D_composed = D(+1) @ Z_shell
+                # compose(D(+1), Z_shell)(n, a, b):
+                #   Z_mat = Z_shell(n, a, b)
+                #   Z_shell codomain = (1, 0, 0), shifted = (n+1, a, b)
+                #   D(+1) evaluated at (n+1, a, b)
+                Z_mat = _Z_shell(n, a_k, b_k)
+                D_mat = _D_plus(n + 1, a_k, b_k) * Z_mat
 
-                # D = (D - K @ AB) / width
-                D_result = (D_composed - compose(K_op, AB_op)) / width
+                # K = A(0) - alpha[1] + dl*l + (dl==-1)*(2-dimension)
+                # K @ AB = compose(K, AB)(n, a, b)
+                # AB codomain = (0, 1, 1), so K evaluated at (n, a+1, b+1)
+                # A(0) at (n, a+1, b+1) gives (a+1)*I where a is the first Jacobi param
+                # a = a_k, so A(0) gives (a_k+1)*I
+                # K value = (a_k+1) - alpha[1] + dl*l + (dl==-1)*(2-dimension)
+                K_val = (a_k + 1) - alpha[1] + dl * l + (dl == -1 ? 1 : 0) * (2 - dimension)
 
-                return D_result(n, k + alpha[1], k + alpha[2])
+                # K @ AB: K is scalar * I, so K_val * AB_mat
+                # Use + with negation for InfiniteCSC row-padding compatibility
+                # Use (1/width) * instead of / width since InfiniteCSC lacks / Number
+                AB_mat = _AB_compose(n, a_k, b_k)
+                result = (1 / width) * (D_mat + (-K_val) * AB_mat)
+
+                return result
             end
             return Operator(D_func, _shell_to_codomain(ShellCodomain(0, 1)); Output=Operator)
         end
