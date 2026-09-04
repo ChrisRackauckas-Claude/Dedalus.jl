@@ -125,7 +125,7 @@ export LinearBoundaryValueSolver, EigenvalueSolver,
        InitialValueSolver, NonlinearBoundaryValueSolver
 
 # Timesteppers
-export CNAB1, CNAB2, SBDF1, SBDF2, SBDF3, SBDF4,
+export CNAB1, CNAB2, MCNAB2, CNLF2, SBDF1, SBDF2, SBDF3, SBDF4,
        RK111, RK222, RK443, RKSMR, RKGFY
 
 # Extras
