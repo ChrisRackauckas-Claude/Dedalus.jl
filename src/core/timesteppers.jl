@@ -123,6 +123,7 @@ Mutable data container for multistep IMEX methods.
 mutable struct MultistepIMEXData{T}
     solver::Any
     RHS::CoeffSystem{T}
+    solve_buffer::CoeffSystem{T}
     dt_history::Vector{Float64}
     MX::Vector{CoeffSystem{T}}
     LX::Vector{CoeffSystem{T}}
@@ -141,12 +142,13 @@ function _init_multistep(solver, amax::Int, bmax::Int, cmax::Int, steps::Int;
                          dtype::DataType=Float64)
     subproblems = solver.subproblems
     RHS = CoeffSystem(subproblems; dtype=dtype)
+    solve_buf = CoeffSystem(subproblems; dtype=dtype)
     dt_history = zeros(Float64, steps)
     MX = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:amax]
     LX = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:bmax]
     F_sys = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:cmax]
     nonempty = Any[sp for sp in subproblems if subproblem_size(sp) > 0]
-    return MultistepIMEXData{dtype}(solver, RHS, dt_history, MX, LX, F_sys, 0, nothing, nonempty)
+    return MultistepIMEXData{dtype}(solver, RHS, solve_buf, dt_history, MX, LX, F_sys, 0, nothing, nonempty)
 end
 
 """
@@ -253,7 +255,8 @@ function _multistep_step!(data::MultistepIMEXData, stepper::MultistepIMEX,
             sp.LHS_solver = solver.matsolver(sp.LHS, solver)
         end
         spRHS = get_subdata(RHS, sp)
-        spX = solve(sp.LHS_solver, spRHS)
+        spX = get_subdata(data.solve_buffer, sp)
+        solve!(spX, sp.LHS_solver, spRHS)
         scatter_inputs!(sp, spX, state_fields)
     end
 
@@ -829,6 +832,7 @@ Mutable data container for Runge-Kutta IMEX methods.
 mutable struct RungeKuttaIMEXData{T}
     solver::Any
     RHS::CoeffSystem{T}
+    solve_buffer::CoeffSystem{T}
     MX0::CoeffSystem{T}
     LX::Vector{CoeffSystem{T}}
     F::Vector{CoeffSystem{T}}
@@ -844,11 +848,12 @@ Initialize the Runge-Kutta IMEX data structures.
 function _init_rk(solver, num_stages::Int; dtype::DataType=Float64)
     subproblems = solver.subproblems
     RHS = CoeffSystem(subproblems; dtype=dtype)
+    solve_buf = CoeffSystem(subproblems; dtype=dtype)
     MX0 = CoeffSystem(subproblems; dtype=dtype)
     LX = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:num_stages]
     F_sys = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:num_stages]
     nonempty = Any[sp for sp in subproblems if subproblem_size(sp) > 0]
-    return RungeKuttaIMEXData{dtype}(solver, RHS, MX0, LX, F_sys, nothing, nonempty)
+    return RungeKuttaIMEXData{dtype}(solver, RHS, solve_buf, MX0, LX, F_sys, nothing, nonempty)
 end
 
 """
@@ -954,7 +959,8 @@ function _rk_step!(data::RungeKuttaIMEXData, stepper::RungeKuttaIMEX,
                 sp.LHS_solvers[i] = solver.matsolver(sp.LHS, solver)
             end
             spRHS = get_subdata(RHS, sp)
-            spX = solve(sp.LHS_solvers[i], spRHS)
+            spX = get_subdata(data.solve_buffer, sp)
+            solve!(spX, sp.LHS_solvers[i], spRHS)
             scatter_inputs!(sp, spX, state_fields)
         end
         solver.sim_time = sim_time_0 + k * c_tab[i]

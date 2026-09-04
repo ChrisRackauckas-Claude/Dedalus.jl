@@ -888,4 +888,6 @@ end
 
 export AbstractMatSolver,
        MATSOLVER_REGISTRY,
-       get_solver
+       get_solver,
+       solve!,
+       solve
