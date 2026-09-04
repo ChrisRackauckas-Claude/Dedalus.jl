@@ -1,6 +1,7 @@
 using Test
 using Dedalus
 using TOML
+using LinearAlgebra
 
 const REFDIR = joinpath(@__DIR__, "reference_values")
 
@@ -89,8 +90,11 @@ const REFDIR = joinpath(@__DIR__, "reference_values")
         @test !all(ug .== 0)
         @test all(isfinite.(ug))
 
-        # The solve should succeed without error — that itself validates correctness
-        @test true
+        # Compute residual: lap(u) - f should be near zero
+        residual = laplacian(u) - f |> evaluate
+        res_data = allgather_data(residual, "g")
+        res_norm = sqrt(sum(abs2, res_data)) / length(res_data)
+        @test res_norm < tol
     end
 
     @testset "IVP: KdV-Burgers (initial condition and early evolution)" begin
@@ -122,11 +126,10 @@ const REFDIR = joinpath(@__DIR__, "reference_values")
         n = n_ic
         u["g"] = @. log(1 + cosh(n)^2 / cosh(n * (x - 0.2 * Lx))^2) / (2 * n)
 
-        # Check initial condition peak value
+        # Record initial condition field for comparison after time-stepping
+        u_initial = copy(vec(u["g"]))
         u_peak_ref = ref["reference"]["u_peak_t0"]
-        u_data = u["g"]
-        u_max_initial = maximum(u_data)
-        @test isapprox(u_max_initial, u_peak_ref; rtol=rtol)
+        @test isapprox(maximum(u_initial), u_peak_ref; rtol=rtol)
 
         # Time-step a few iterations
         solver = build_solver(problem, SBDF2)
@@ -135,11 +138,17 @@ const REFDIR = joinpath(@__DIR__, "reference_values")
             step!(solver, dt)
         end
 
-        # After a few steps, solution should remain bounded and smooth
-        u_data_final = u["g"]
+        # After a few steps at very small dt, solution should remain close to IC
+        u_data_final = vec(u["g"])
         max_bound = ref["reference"]["max_u_upper_bound"]
         @test maximum(abs.(u_data_final)) < max_bound
         @test all(isfinite.(u_data_final))
+
+        # Verify the solution has not drifted far from the initial condition
+        # (at t=0.02 with small viscosity and dispersion, the soliton should
+        # only have shifted slightly)
+        relative_change = norm(u_data_final - u_initial) / norm(u_initial)
+        @test relative_change < 0.1
     end
 
     @testset "NLBVP: Lane-Emden n=3 (R against Boyd reference)" begin

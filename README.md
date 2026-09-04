@@ -31,22 +31,33 @@ Solve a 1D Poisson equation with Dirichlet boundary conditions:
 using Dedalus
 
 # Build a 1D Chebyshev domain
-coord = Dedalus.Coordinate("x")
-dist = Dedalus.Distributor(coord)
-basis = Dedalus.Chebyshev(coord, size=32, bounds=(0, 1))
+coord = Coordinate("x")
+dist = Distributor(coord; dtype=Float64)
+basis = ChebyshevT(coord, 32; bounds=(0, 1))
 
 # Set up fields
-u = dist.Field(bases=basis)
-tau = dist.Field()  # lifting parameter for boundary condition
+u = Field(dist; name="u", bases=(basis,))
+tau_1 = Field(dist; name="tau_1")
+tau_2 = Field(dist; name="tau_2")
 
-# Define the problem: d2(u)/dx2 = -1, u(0) = 0, u(1) = 0
-problem = Dedalus.LBVP([u, tau])
-problem.add_equation((Dedalus.d(u, 2) + tau, -1))
-problem.add_equation((u(x=0), 0))
+# Forcing
+f = Field(dist; bases=(basis,))
+f["g"] .= -1.0
+
+# Substitutions
+dx = A -> Differentiate(A, coord)
+lift_basis = derivative_basis(basis, 2)
+lift = (A, n) -> Lift(A, lift_basis, n)
+
+# Define the problem: lap(u) = f, u(0) = 0, u(1) = 0
+problem = LBVP([u, tau_1, tau_2]; namespace=@locals)
+add_equation!(problem, "dx(dx(u)) + lift(tau_1,-1) + lift(tau_2,-2) = f")
+add_equation!(problem, "u(x=0) = 0")
+add_equation!(problem, "u(x=1) = 0")
 
 # Solve
-solver = problem.build_solver()
-solver.solve()
+solver = build_solver(problem)
+solve!(solver)
 ```
 
 ## Building Documentation
