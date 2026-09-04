@@ -468,20 +468,11 @@ basis to spin (-1,+1) basis.
 If adjoint=true, returns the conjugate transpose.
 """
 function sphere_unitary(; rank::Int=1, adjoint::Bool=false)
-    # The unitary matrix for 2D spin operations uses a 2-element indexing (-1, +1)
-    indexing = (-1, 1)
-    n = length(indexing)^rank
-    Q = zeros(ComplexF64, n, n)
-
     # For rank 0, it's just [1]
     if rank == 0
         return ones(Float64, 1, 1)
     end
 
-    # Build the unitary from the Intertwiner evaluated at L=1 (minimum nontrivial L)
-    # The Intertwiner Q(L) maps from regularity to spin basis
-    # For the sphere wrapper, the 2D indexing is (-1, +1)
-    # We use a fixed L value that gives a well-defined rotation
     Q_mat = 1.0 / sqrt(2.0) * [1.0 1.0; -1.0im 1.0im]
 
     if rank == 1
