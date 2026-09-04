@@ -9,6 +9,8 @@ This module defines:
 - JacobiCodomain: tracks (dn, da, db, pi) parameter shifts with parity support
 - JacobiOperator: factory for primary Jacobi recurrence operators (A, B, C, D, etc.)
 - Quadrature, polynomial evaluation, measure, mass, norm_ratio, etc.
+
+Note: This module is self-contained and does NOT depend on tools/jacobi.jl.
 """
 
 using SparseArrays
@@ -62,7 +64,6 @@ function Base.show(io::IO, c::JacobiCodomain)
 end
 
 function Base.:+(a::JacobiCodomain, b::JacobiCodomain)
-    # Compose: apply a's arrow to b's (n,a,b) part, then XOR parities
     n, alpha, beta = _jc_call(a, b[1], b[2], b[3]; evaluate=false)
     return a.Output(n, alpha, beta, xor(a[4], b[4]); Output=a.Output)
 end
@@ -94,7 +95,6 @@ function Base.:-(c::JacobiCodomain)
 end
 
 function Base.:(==)(a::JacobiCodomain, b::JacobiCodomain)
-    # Compare (da, db, pi), i.e. indices 2,3,4 (all but dn)
     return a[2] == b[2] && a[3] == b[3] && a[4] == b[4]
 end
 
@@ -117,7 +117,6 @@ function Base.:*(c::JacobiCodomain, other::Int)
     if other < 0
         return -c + (other + 1) * c
     end
-    # other >= 1: compose c with itself (other-1) more times
     result = c
     for _ in 2:other
         result = result + c
@@ -132,15 +131,9 @@ function Base.:-(a::JacobiCodomain, b::JacobiCodomain)
 end
 
 # ============================================================================
-# Bridge: make JacobiCodomain usable where Codomain is expected
+# Bridge
 # ============================================================================
 
-# The Operator type from operators.jl stores a Codomain. We need to make
-# Operator work with JacobiCodomain. Since Julia operators.jl uses Codomain
-# in the struct, we create Operators that hold a Codomain but wrap our
-# JacobiCodomain arrow. We define a converter.
-
-"""Convert a JacobiCodomain to a base Codomain for use with Operator."""
 function _to_codomain(jc::JacobiCodomain)
     Codomain(jc.arrow...; Output=Codomain)
 end
@@ -149,16 +142,6 @@ end
 # Helper: build banded sparse matrix from diagonals
 # ============================================================================
 
-"""
-    _spdiag(bands, offsets, rows, cols)
-
-Build a sparse matrix from diagonal bands, analogous to
-scipy.sparse.dia_matrix((data, offsets), shape=(rows, cols)).
-
-`bands` is a Vector of Vectors (or a Matrix where each row is a diagonal band).
-`offsets` is a Vector of Int diagonal offsets (0=main, +k=super, -k=sub).
-Each band vector has length `cols` and is placed on the corresponding diagonal.
-"""
 function _spdiag(bands::Vector{Vector{T}}, offsets::Vector{Int}, rows::Int, cols::Int) where {T}
     if rows == 0 || cols == 0
         return sparse(Int[], Int[], T[], rows, cols)
@@ -168,17 +151,13 @@ function _spdiag(bands::Vector{Vector{T}}, offsets::Vector{Int}, rows::Int, cols
     V_val = T[]
     for (band, offset) in zip(bands, offsets)
         for j in 1:cols
-            i = j - offset  # row index (1-based)
-            if i >= 1 && i <= rows
-                # In scipy dia_matrix, data[k, j] is at position (j - offsets[k], j)
-                # band is 0-indexed in Python; we index with j (1-based)
-                if j <= length(band)
-                    val = band[j]
-                    if val != zero(T)
-                        push!(I_idx, i)
-                        push!(J_idx, j)
-                        push!(V_val, val)
-                    end
+            i = j - offset
+            if i >= 1 && i <= rows && j <= length(band)
+                val = band[j]
+                if val != zero(T)
+                    push!(I_idx, i)
+                    push!(J_idx, j)
+                    push!(V_val, val)
                 end
             end
         end
@@ -186,7 +165,6 @@ function _spdiag(bands::Vector{Vector{T}}, offsets::Vector{Int}, rows::Int, cols
     return sparse(I_idx, J_idx, V_val, rows, cols)
 end
 
-# Convenience: single diagonal (band is a vector, offset is a scalar)
 function _spdiag(band::Vector{T}, offset::Int, rows::Int, cols::Int) where {T}
     _spdiag([band], [offset], rows, cols)
 end
@@ -199,8 +177,6 @@ end
     jacobi_mass(a, b; log=false)
 
 Compute 2^(a+b+1) * Beta(a+1, b+1) = integral from -1 to 1 of (1-z)^a * (1+z)^b dz.
-
-Parameters: a, b > -1.
 """
 function jacobi_mass(a, b; log::Bool=false)
     if !log
@@ -218,14 +194,9 @@ end
 
 Ratio of classical Jacobi normalisation:
     sqrt(N(n+dn, a+da, b+db) / N(n, a, b))
-
-where N(n,a,b) = 2^(a+b+1) * Gamma(n+a+1)*Gamma(n+b+1) / ((2n+a+b+1)*Gamma(n+a+b+1)*n!)
-
-Parameters: dn, da, db are integers; n can be a number or array; a, b > -1.
 """
 function jacobi_norm_ratio(dn::Int, da::Int, db::Int, n, a, b; squared::Bool=false)
     function tricky(n_val, a_val, b_val)
-        # 0/0 = 1
         if a_val + b_val != -1
             return (2 * n_val + a_val + b_val + 1) / (n_val + a_val + b_val + 1)
         end
@@ -277,9 +248,6 @@ end
     jacobi_measure(a, b, z; probability=true, log=false)
 
 Compute the Jacobi measure mu(a,b,z) = (1-z)^a * (1+z)^b.
-
-If probability=true, normalise by mass(a,b).
-If log=true, return log of the measure.
 """
 function jacobi_measure(a, b, z; probability::Bool=true, log::Bool=false)
     if !log
@@ -313,18 +281,8 @@ end
 # JacobiOperator
 # ============================================================================
 
-"""
-    JacobiOperator
-
-Factory for primary operators acting on finite row vectors of Jacobi polynomials.
-Each operator takes the form:
-
-    L(a,b,z,d/dz) <n,a,b,z| = <n+dn,a+da,b+db,z| R(n,a,b)
-
-Supported names: A, B, C, D.
-"""
 struct JacobiOperator
-    _func::Function   # maps p -> (matrix_constructor, JacobiCodomain)
+    _func::Function
     normalised::Bool
     dtype::Type
 end
@@ -340,7 +298,7 @@ function (jo::JacobiOperator)(p::Int)
 end
 
 # ============================================================================
-# Internal operator methods: __A, __B, __C, __D
+# Internal operator methods
 # ============================================================================
 
 function _get_jacobi_method(name::String, normalised::Bool, dtype::Type)
@@ -357,6 +315,15 @@ function _get_jacobi_method(name::String, normalised::Bool, dtype::Type)
     end
 end
 
+function _nan_to_zero!(arr)
+    for i in eachindex(arr)
+        if isnan(arr[i])
+            arr[i] = zero(eltype(arr))
+        end
+    end
+    return arr
+end
+
 function _jacobi_A(p::Int, normalised::Bool, dtype::Type)
     if p == 0
         function A0(n, a, b)
@@ -368,19 +335,16 @@ function _jacobi_A(p::Int, normalised::Bool, dtype::Type)
     end
 
     function A_pm(n, a, b)
-        N_arr = collect(dtype.(0:(n - 1)))  # 0-based mode indices
+        N_arr = collect(dtype.(0:(n - 1)))
 
         if p == 1
-            band0 = N_arr .+ (a + b + 1)   # diagonal
-            band1 = -(N_arr .+ b)           # superdiagonal (+1)
-        else  # p == -1
-            band0 = 2 .* (N_arr .+ a)      # diagonal
-            band1 = -2 .* (N_arr .+ 1)     # subdiagonal (-1)
+            band0 = N_arr .+ (a + b + 1)
+            band1 = -(N_arr .+ b)
+        else
+            band0 = 2 .* (N_arr .+ a)
+            band1 = -2 .* (N_arr .+ 1)
         end
 
-        # Special handling for first column (Python bands[:,0])
-        # In Python: bands[:,0] = 1 if a+b==-1 else bands[:,0]/(a+b+1)
-        # This applies to ALL bands at index 0
         if a + b == -1
             band0[1] = 1.0
             band1[1] = 1.0
@@ -389,7 +353,6 @@ function _jacobi_A(p::Int, normalised::Bool, dtype::Type)
             band1[1] /= (a + b + 1)
         end
 
-        # Remaining elements: bands[:,1:] /= 2*N[1:]+a+b+1
         for k in 2:n
             denom = 2 * N_arr[k] + a + b + 1
             band0[k] /= denom
@@ -397,28 +360,21 @@ function _jacobi_A(p::Int, normalised::Bool, dtype::Type)
         end
 
         if normalised
-            # band0 *= norm_ratio(0, p, 0, N, a, b)
             nr0 = jacobi_norm_ratio(0, p, 0, N_arr, a, b)
             band0 .*= nr0
-            # band1[(1+p)//2:] *= norm_ratio(-p, p, 0, N[(1+p)//2:], a, b)
-            start_idx = div(1 + p, 2) + 1  # Python 0-based to Julia 1-based
+            start_idx = div(1 + p, 2) + 1
             if start_idx >= 1 && start_idx <= n
                 nr1 = jacobi_norm_ratio(-p, p, 0, N_arr[start_idx:end], a, b)
                 band1[start_idx:end] .*= nr1
             end
         end
 
-        # Clean up NaN from 0*Inf products (occurs at boundary modes
-        # where coefficient is 0 but norm_ratio is Inf)
-        replace!(x -> isnan(x) ? zero(x) : x, band0)
-        replace!(x -> isnan(x) ? zero(x) : x, band1)
+        _nan_to_zero!(band0)
+        _nan_to_zero!(band1)
 
         nrows = max(n + div(1 - p, 2), 0)
         ncols = max(n, 0)
-
-        bands = [band0, band1]
-        offsets = [0, p]
-        mat = _spdiag(bands, offsets, nrows, ncols)
+        mat = _spdiag([band0, band1], [0, p], nrows, ncols)
         return InfiniteCSC(mat)
     end
 
@@ -427,17 +383,12 @@ end
 
 function _jacobi_B(p::Int, normalised::Bool, dtype::Type)
     function B_func(n, a, b)
-        # B(p)(n,a,b) = Pi * A(p)(n,b,a) * Pi
-        # Direct computation avoids the compose/codomain system which doesn't
-        # handle JacobiCodomain parity with the base Codomain type.
         N_arr = collect(dtype.(0:(n - 1)))
         parity_vec = (-1.0) .^ N_arr
 
-        # Get A(p) operator function and evaluate at (n, b, a) (swapped parameters)
         A_func, _ = _jacobi_A(p, normalised, dtype)
         A_mat = sparse(A_func(n, b, a))
 
-        # Build Pi matrices of appropriate sizes
         a_rows = size(A_mat, 1)
         Pi_left_vec = (-1.0) .^ collect(dtype.(0:(a_rows - 1)))
         Pi_left = _spdiag(Pi_left_vec, 0, a_rows, a_rows)
@@ -452,19 +403,14 @@ end
 function _jacobi_C(p::Int, normalised::Bool, dtype::Type)
     function C_func(n, a, b)
         N_arr = collect(dtype.(0:(n - 1)))
-        if p == 1
-            band0 = N_arr .+ b
-        else  # p == -1
-            band0 = N_arr .+ a
-        end
+        band0 = p == 1 ? (N_arr .+ b) : (N_arr .+ a)
 
         if normalised
             nr = jacobi_norm_ratio(0, p, -p, N_arr, a, b)
             band0 .*= nr
         end
 
-        # Clean up NaN from 0*Inf products
-        replace!(x -> isnan(x) ? zero(x) : x, band0)
+        _nan_to_zero!(band0)
 
         nrows = max(n, 0)
         ncols = max(n, 0)
@@ -477,23 +423,18 @@ end
 function _jacobi_D(p::Int, normalised::Bool, dtype::Type)
     function D_func(n, a, b)
         N_arr = collect(dtype.(0:(n - 1)))
-        if p == 1
-            coeff = N_arr .+ (a + b + 1)
-        else  # p == -1
-            coeff = N_arr .+ 1
-        end
+        coeff = p == 1 ? (N_arr .+ (a + b + 1)) : (N_arr .+ 1)
         band0 = coeff .* 2.0^(-p)
 
         if normalised
-            start_idx = div(1 + p, 2) + 1  # Python 0-based to Julia 1-based
+            start_idx = div(1 + p, 2) + 1
             if start_idx >= 1 && start_idx <= n
                 nr = jacobi_norm_ratio(-p, p, p, N_arr[start_idx:end], a, b)
                 band0[start_idx:end] .*= nr
             end
         end
 
-        # Clean up NaN from 0*Inf products
-        replace!(x -> isnan(x) ? zero(x) : x, band0)
+        _nan_to_zero!(band0)
 
         nrows = max(n - p, 0)
         ncols = max(n, 0)
@@ -548,9 +489,6 @@ Parameters:
 - name: "A", "B", "C", "D", "Id", "Pi", "N", "Z" (Jacobi matrix)
 - normalised: true -> unit-integral, false -> classical
 - dtype: output dtype
-
-For "A", "B", "C", "D": returns a JacobiOperator callable with (p) to get an Operator.
-For "Id", "Pi", "N", "Z": returns an Operator directly.
 """
 function jacobi_operator(name::String; normalised::Bool=true, dtype::Type=Float64)
     if name == "Id"
@@ -570,11 +508,36 @@ function jacobi_operator(name::String; normalised::Bool=true, dtype::Type=Float6
     return JacobiOperator(name; normalised=normalised, dtype=dtype)
 end
 
-# Make JacobiOperator callable with string name and p to produce Operator directly
-# (used by the B operator internally)
-function _jacobi_make_A_operator(p::Int; normalised::Bool=true, dtype::Type=Float64)
-    jo = JacobiOperator("A"; normalised=normalised, dtype=dtype)
-    return jo(p)
+# ============================================================================
+# _extract_z_bands: Extract dia_matrix band data from Z operator
+# ============================================================================
+
+function _extract_z_bands(n::Int, a, b; normalised::Bool=true, dtype::Type=Float64)
+    Z_op = jacobi_operator("Z"; normalised=normalised, dtype=dtype)
+    Z_icsc = Z_op(n + 1, a, b)
+    Z_orig = Matrix(sparse(Z_icsc))
+    Z_t = collect(transpose(Z_orig))
+
+    nrows_t, ncols_t = size(Z_t)
+
+    band_sub = zeros(Float64, ncols_t)
+    band_main = zeros(Float64, ncols_t)
+    band_sup = zeros(Float64, ncols_t)
+
+    for j in 1:ncols_t
+        if j + 1 >= 1 && j + 1 <= nrows_t
+            band_sub[j] = Z_t[j + 1, j]
+        end
+        if j >= 1 && j <= nrows_t
+            band_main[j] = Z_t[j, j]
+        end
+        if j - 1 >= 1 && j - 1 <= nrows_t
+            band_sup[j] = Z_t[j - 1, j]
+        end
+    end
+
+    has_main = any(x -> abs(x) > 1e-15, band_main)
+    return band_sub, band_main, band_sup, has_main
 end
 
 # ============================================================================
@@ -595,6 +558,7 @@ function jacobi_polynomials(n::Int, a, b, z;
                             Newton::Bool=false,
                             normalised::Bool=true,
                             dtype::Type=Float64)
+
     z_arr = z isa AbstractVector ? Float64.(z) : Float64.([z])
     nz = length(z_arr)
 
@@ -608,31 +572,30 @@ function jacobi_polynomials(n::Int, a, b, z;
             init_vec ./= sqrt(jacobi_mass(a, b))
         end
     else
-        init_vec = init isa AbstractVector ? Float64.(init) : Float64.(init) .+ zeros(Float64, nz)
+        init_vec = init isa AbstractVector ? Float64.(init) : Float64.(init .+ 0 .* z_arr)
     end
 
-    # Use the Jacobi tridiagonal matrix for the three-term recurrence
-    J = jacobi_matrix(n + 1, Float64(a), Float64(b))
-    Jd = Matrix(J)
+    band_sub, band_main, band_sup, has_main = _extract_z_bands(n, a, b; normalised=normalised, dtype=Float64)
 
     P = zeros(Float64, n + 1, nz)
     P[1, :] .= init_vec
 
-    if n >= 2
-        if abs(Jd[1, 2]) > 1e-30
-            P[2, :] .= (z_arr .- Jd[1, 1]) .* P[1, :] ./ Jd[1, 2]
+    if !has_main
+        P[2, :] .= z_arr .* P[1, :] ./ band_sup[2]
+        for k in 2:n
+            P[k + 1, :] .= (z_arr .* P[k, :] .- band_sub[k - 1] .* P[k - 1, :]) ./ band_sup[k + 1]
         end
-    end
-    for k in 2:n
-        if abs(Jd[k, k + 1]) > 1e-30
-            P[k + 1, :] .= ((z_arr .- Jd[k, k]) .* P[k, :] .- Jd[k, k - 1] .* P[k - 1, :]) ./ Jd[k, k + 1]
+    else
+        P[2, :] .= (z_arr .- band_main[1]) .* P[1, :] ./ band_sup[2]
+        for k in 2:n
+            P[k + 1, :] .= ((z_arr .- band_main[k]) .* P[k, :] .- band_sub[k - 1] .* P[k - 1, :]) ./ band_sup[k + 1]
         end
     end
 
-    if Newton && n >= 2
+    if Newton
         L = n + (a + b) / 2
         z_new = z_arr .+ (1 .- z_arr .^ 2) .* P[n, :] ./
-                (L .* Jd[n, n + 1] .* P[n + 1, :] .- (L - 1) .* Jd[n, n - 1] .* P[n - 1, :])
+                (L .* band_sup[n + 1] .* P[n + 1, :] .- (L - 1) .* band_sub[n - 1] .* P[n - 1, :])
         return z_new, P[1:n-1, :]
     end
 
@@ -649,7 +612,28 @@ end
 Approximate solution to P(n, a, b, z) = 0.
 """
 function jacobi_grid_guess(n::Int, a, b; dtype::Type=Float64, quick::Bool=false)
-    return dtype.(build_grid(n, Float64(a), Float64(b)))
+    if a == b == -0.5
+        quick = true
+    end
+
+    if n == 1
+        Z_op = jacobi_operator("Z")
+        Z_mat = Matrix(sparse(Z_op(n, a, b)))
+        return dtype.([Z_mat[1, 1]])
+    end
+
+    if quick
+        indices = collect(range(4 * n - 1, stop=3, step=-4))
+        return dtype.(cos.(Float64(pi) .* (indices .+ 2 * a) ./ (4 * n + 2 * (a + b + 1))))
+    end
+
+    Z_op = jacobi_operator("Z")
+    Z_mat = Matrix(sparse(Z_op(n, a, b)))
+    Z_sq = Z_mat[1:n, 1:n]
+    d = diag(Z_sq, 0)
+    e = diag(Z_sq, 1)
+    eigenvalues = eigvals(SymTridiagonal(d, e))
+    return dtype.(eigenvalues)
 end
 
 # ============================================================================
@@ -667,15 +651,6 @@ sum(w .* f.(z)) approximates integral from -1 to 1 of (1-z)^a (1+z)^b f(z) dz,
 exactly for degree(f) <= 2n - 1.
 """
 function jacobi_quadrature(n::Int, a, b; days::Int=3, probability::Bool=false, dtype::Type=Float64)
-    z = dtype.(build_grid(n, Float64(a), Float64(b)))
-    w = dtype.(build_weights(n, Float64(a), Float64(b)))
-    if probability
-        w ./= sum(w)
-    end
-    return z, w
-end
-
-function _jacobi_quadrature_unused(n::Int, a, b; days::Int=3, probability::Bool=false, dtype::Type=Float64)
     z = jacobi_grid_guess(n, a, b; dtype=Float64)
 
     if probability
@@ -686,16 +661,17 @@ function _jacobi_quadrature_unused(n::Int, a, b; days::Int=3, probability::Bool=
 
     if a == b == -0.5
         return dtype.(z), dtype.(w_scale / n .+ 0 .* z)
-    elseif a == b == 0.5
+    end
+
+    local P
+    if a == b == 0.5
         P = jacobi_polynomials(n + 1, a, b, z; dtype=Float64)[1:n, :]
     else
-        local P
         for _ in 1:days
             z, P = jacobi_polynomials(n + 1, a, b, z; Newton=true)
         end
     end
 
-    # Normalize P[1,:] (the zeroth-degree polynomial row)
     col_norms = sqrt.(sum(P .^ 2; dims=1))
     P[1, :] ./= vec(col_norms)
     w = w_scale .* P[1, :] .^ 2
