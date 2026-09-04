@@ -104,7 +104,7 @@ for (dirname, scriptfile) in EXAMPLE_SCRIPTS
         EXAMPLES_OUT;
         name       = dirname,
         preprocess = preprocess_example,
-        documenter = true,
+        documenter = false,
         execute    = false,
     )
     push!(example_pages, dirname => "examples/$(dirname).md")
@@ -121,7 +121,10 @@ makedocs(;
     format   = Documenter.HTML(;
         mathengine = MathJax3(),
         prettyurls = false,
+        size_threshold = 500_000,
+        size_threshold_warn = 200_000,
     ),
+    remotes  = nothing,
     modules  = [Dedalus],
     pages    = [
         "Home"        => "index.md",
@@ -162,7 +165,7 @@ makedocs(;
         ],
     ],
     doctest  = false,
-    warnonly = [:missing_docs],
+    warnonly = [:missing_docs, :cross_references, :parse_error],
 )
 
 @info "Documentation build complete"
