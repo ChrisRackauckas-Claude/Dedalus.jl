@@ -192,6 +192,19 @@ function expand_operand(op::NonlinearOperator, vars...)
     return op
 end
 
+split(op::AbstractOperator, vars...) = split_op(op, vars...)
+expand(op::NonlinearOperator, vars...) = expand_operand(op, vars...)
+
+function expand(op::AbstractLinearOperator, vars...)
+    operand = operator_operand(op)
+    e = expand(operand, vars...)
+    if isa(e, Add)
+        return sum(new_operand(op, a) for a in e.args)
+    else
+        return new_operand(op, e)
+    end
+end
+
 # ============================================================================
 # Power operator
 # ============================================================================
