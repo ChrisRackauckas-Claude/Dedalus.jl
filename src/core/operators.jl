@@ -1873,12 +1873,9 @@ function DirectProductCurl(operand; index=1, out=nothing)
     if get_dim(coordsys) != 3
         throw(ArgumentError("DirectProductCurl only implemented for 3D vector fields"))
     end
-    # Simplified: delegate to the inner arg computation
-    # Full implementation would decompose into horizontal/vertical curl components
-    inner_arg = operand  # placeholder
-    DirectProductCurl(Any[inner_arg], (inner_arg,), out, operand.dist, operand.domain,
-                      operand.tensorsig, operand.dtype, "Curl", operand, coordsys, index,
-                      nothing, nothing, false, 1)
+    throw(ArgumentError("DirectProductCurl requires Skew and IdentityTensor operators " *
+                         "from Milestone 2 (Polar/Disk geometry). Use CartesianCurl for " *
+                         "Cartesian coordinate systems."))
 end
 
 check_conditions(::DirectProductCurl) = true
