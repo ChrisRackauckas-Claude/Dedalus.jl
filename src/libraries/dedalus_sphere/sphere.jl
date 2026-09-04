@@ -408,25 +408,31 @@ For compound operators like "k+" and "k-" (spin raising/lowering),
 constructs the appropriate combination.
 """
 function sphere_op(name::String, Lmax::Int, m::Int, s::Int; dtype::Type=Float64)
-    if name == "k+"
-        # k+ = D(+1) + Sin(+1), spin raising
+    if name == "k+" || name == "k-"
+        ds = name == "k+" ? +1 : -1
+        # k+/k- = D(ds) + Sin(ds), spin raising/lowering
         # Evaluate each operator separately and add the resulting InfiniteCSC matrices.
         # Cannot use Operator algebra (+) because D and Sin have different codomains
         # (different dL), but their matrices can be added via InfiniteCSC.
-        D_op = sphere_operator("D"; dtype=dtype)(+1)
-        Sin_op = sphere_operator("Sin"; dtype=dtype)(+1)
+        D_op = sphere_operator("D"; dtype=dtype)(ds)
+        Sin_op = sphere_operator("Sin"; dtype=dtype)(ds)
         D_mat = D_op(Lmax, m, s)
         Sin_mat = Sin_op(Lmax, m, s)
         result = D_mat + Sin_mat
-        return sparse(Float64.(result))
-    elseif name == "k-"
-        # k- = D(-1) + Sin(-1), spin lowering
-        D_op = sphere_operator("D"; dtype=dtype)(-1)
-        Sin_op = sphere_operator("Sin"; dtype=dtype)(-1)
-        D_mat = D_op(Lmax, m, s)
-        Sin_mat = Sin_op(Lmax, m, s)
-        result = D_mat + Sin_mat
-        return sparse(Float64.(result))
+        # Resize to the correct output dimensions:
+        # Input dimension: n_in = Lmax + 1 - max(|m|, |s|)
+        # Output dimension: n_out = Lmax + 1 - max(|m|, |s + ds|)
+        n_in = spin2Jacobi(Lmax, m, s)[1]
+        n_out = spin2Jacobi(Lmax, m, s + ds)[1]
+        n_in = max(n_in, 0)
+        n_out = max(n_out, 0)
+        result_sp = sparse(Float64.(result))
+        # Truncate or pad to (n_out, n_in)
+        r, c = size(result_sp)
+        if r == n_out && c == n_in
+            return result_sp
+        end
+        return resize_matrix(result_sp, n_out, n_in)
     else
         op_obj = sphere_operator(name; dtype=dtype)
         if op_obj isa Operator
