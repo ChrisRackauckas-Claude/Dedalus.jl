@@ -1069,10 +1069,13 @@ end
 # Exports
 # ============================================================================
 
+const FourierTransform = Union{ComplexFourierTransform, RealFourierTransform}
+
 export Transform,
        SeparableTransform,
        JacobiTransform,
        JacobiMMT,
+       FourierTransform,
        ComplexFourierTransform,
        ComplexFourierMMT,
        FFTWComplexFFT,

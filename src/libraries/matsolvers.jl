@@ -789,3 +789,7 @@ function get_solver(name::AbstractString)
     haskey(MATSOLVER_REGISTRY, key) || error("Unknown matsolver: $name. Available: $(join(sort(collect(keys(MATSOLVER_REGISTRY))), ", "))")
     return MATSOLVER_REGISTRY[key]
 end
+
+export AbstractMatSolver,
+       MATSOLVER_REGISTRY,
+       get_solver

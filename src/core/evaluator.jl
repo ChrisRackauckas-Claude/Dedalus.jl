@@ -1299,8 +1299,12 @@ end
 
 const add_system_handler! = add_system_handler
 const evaluate_group! = evaluate_group
+const FileHandler = H5FileHandlerBase
 
-
+export Evaluator,
+       FileHandler,
+       H5FileHandlerBase,
+       AbstractHandler
 
 
 # Evaluator-specific dispatches for require_coeff/grid_space!
