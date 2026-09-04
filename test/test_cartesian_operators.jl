@@ -1,0 +1,367 @@
+"""Tests for Cartesian skew, trace, transpose, curl, gradient, divergence, laplacian."""
+
+using Test
+using Dedalus
+
+@testset "Cartesian Operators" begin
+
+    N_range = [16]
+    dealias_range = [1]
+    dtype_range = [Float64, ComplexF64]
+    Lx = 1.3
+    Ly = 2.4
+    Lz = 1.9
+
+    # ---- Builder functions ----
+
+    function build_FF(N, dealias, dtype)
+        c = CartesianCoordinates("x", "y")
+        d = Distributor(c, dtype=dtype)
+        if dtype == ComplexF64
+            xb = ComplexFourier(c.coords[1], size=N, bounds=(0, Lx), dealias=dealias)
+            yb = ComplexFourier(c.coords[2], size=N, bounds=(0, Ly), dealias=dealias)
+        else
+            xb = RealFourier(c.coords[1], size=N, bounds=(0, Lx), dealias=dealias)
+            yb = RealFourier(c.coords[2], size=N, bounds=(0, Ly), dealias=dealias)
+        end
+        b = (xb, yb)
+        x, y = local_grids(d, xb, yb, scales=dealias)
+        r = (x, y)
+        return c, d, b, r
+    end
+
+    function build_FC(N, dealias, dtype)
+        c = CartesianCoordinates("x", "y")
+        d = Distributor(c, dtype=dtype)
+        if dtype == ComplexF64
+            xb = ComplexFourier(c.coords[1], size=N, bounds=(0, Lx), dealias=dealias)
+        else
+            xb = RealFourier(c.coords[1], size=N, bounds=(0, Lx), dealias=dealias)
+        end
+        yb = Chebyshev(c.coords[2], size=N, bounds=(0, Ly), dealias=dealias)
+        b = (xb, yb)
+        x, y = local_grids(d, xb, yb, scales=dealias)
+        r = (x, y)
+        return c, d, b, r
+    end
+
+    function build_CC(N, dealias, dtype)
+        c = CartesianCoordinates("x", "y")
+        d = Distributor(c, dtype=dtype)
+        xb = Chebyshev(c.coords[1], size=N, bounds=(0, Lx), dealias=dealias)
+        yb = Chebyshev(c.coords[2], size=N, bounds=(0, Ly), dealias=dealias)
+        b = (xb, yb)
+        x, y = local_grids(d, xb, yb, scales=dealias)
+        r = (x, y)
+        return c, d, b, r
+    end
+
+    function build_FFF(N, dealias, dtype)
+        c = CartesianCoordinates("x", "y", "z")
+        d = Distributor(c, dtype=dtype)
+        if dtype == ComplexF64
+            xb = ComplexFourier(c.coords[1], size=N, bounds=(0, Lx), dealias=dealias)
+            yb = ComplexFourier(c.coords[2], size=N, bounds=(0, Ly), dealias=dealias)
+            zb = ComplexFourier(c.coords[3], size=N, bounds=(0, Lz), dealias=dealias)
+        else
+            xb = RealFourier(c.coords[1], size=N, bounds=(0, Lx), dealias=dealias)
+            yb = RealFourier(c.coords[2], size=N, bounds=(0, Ly), dealias=dealias)
+            zb = RealFourier(c.coords[3], size=N, bounds=(0, Lz), dealias=dealias)
+        end
+        b = (xb, yb, zb)
+        x, y, z = local_grids(d, xb, yb, zb, scales=dealias)
+        r = (x, y, z)
+        return c, d, b, r
+    end
+
+    function build_FFC(N, dealias, dtype)
+        c = CartesianCoordinates("x", "y", "z")
+        d = Distributor(c, dtype=dtype)
+        if dtype == ComplexF64
+            xb = ComplexFourier(c.coords[1], size=N, bounds=(0, Lx), dealias=dealias)
+            yb = ComplexFourier(c.coords[2], size=N, bounds=(0, Ly), dealias=dealias)
+        else
+            xb = RealFourier(c.coords[1], size=N, bounds=(0, Lx), dealias=dealias)
+            yb = RealFourier(c.coords[2], size=N, bounds=(0, Ly), dealias=dealias)
+        end
+        zb = ChebyshevT(c.coords[3], size=N, bounds=(0, Lz), dealias=dealias)
+        b = (xb, yb, zb)
+        x, y, z = local_grids(d, xb, yb, zb, scales=dealias)
+        r = (x, y, z)
+        return c, d, b, r
+    end
+
+    # ---- Skew tests ----
+
+    @testset "skew explicit $bname N=$N dealias=$dealias T=$T layout=$layout" for
+            (bname, basis_fn) in [("FF", build_FF), ("FC", build_FC), ("CC", build_CC)],
+            N in N_range,
+            dealias in dealias_range,
+            T in dtype_range,
+            layout in ["c", "g"]
+        c, d, b, r = basis_fn(N, dealias, T)
+        f = VectorField(d, c, bases=b)
+        fill_random!(f, layout="g")
+        change_layout!(f, layout)
+        g = evaluate(skew(f))
+        @test isapprox(g[layout][1, :], -f[layout][2, :], atol=1e-12)
+        @test isapprox(g[layout][2, :], f[layout][1, :], atol=1e-12)
+    end
+
+    @testset "skew implicit $bname N=$N dealias=$dealias T=$T" for
+            (bname, basis_fn) in [("FF", build_FF), ("FC", build_FC), ("CC", build_CC)],
+            N in N_range,
+            dealias in dealias_range,
+            T in dtype_range
+        c, d, b, r = basis_fn(N, dealias, T)
+        f = VectorField(d, c, bases=b)
+        fill_random!(f, layout="g")
+        u = VectorField(d, c, bases=b)
+        problem = LBVP([u], namespace=Dict("u" => u, "f" => f, "skew" => skew))
+        add_equation!(problem, "skew(u) = skew(f)")
+        solver = build_solver(problem)
+        solve!(solver)
+        @test isapprox(u["c"], f["c"], atol=1e-10)
+    end
+
+    # ---- Trace tests ----
+
+    @testset "trace explicit $bname N=$N dealias=$dealias T=$T layout=$layout" for
+            (bname, basis_fn) in [("FF", build_FF), ("FC", build_FC), ("CC", build_CC),
+                                   ("FFF", build_FFF), ("FFC", build_FFC)],
+            N in N_range,
+            dealias in dealias_range,
+            T in dtype_range,
+            layout in ["c", "g"]
+        c, d, b, r = basis_fn(N, dealias, T)
+        f = TensorField(d, (c, c), bases=b)
+        fill_random!(f, layout="g")
+        change_layout!(f, layout)
+        g = evaluate(trace(f))
+        # Trace is sum of diagonal elements
+        dim = length(r)
+        expected = sum(f[layout][i, i, :] for i in 1:dim)
+        @test isapprox(g[layout], expected, atol=1e-12)
+    end
+
+    @testset "trace rank3 explicit $bname N=$N dealias=$dealias T=$T layout=$layout" for
+            (bname, basis_fn) in [("FF", build_FF), ("FC", build_FC), ("CC", build_CC),
+                                   ("FFF", build_FFF), ("FFC", build_FFC)],
+            N in N_range,
+            dealias in dealias_range,
+            T in dtype_range,
+            layout in ["c", "g"]
+        c, d, b, r = basis_fn(N, dealias, T)
+        f = TensorField(d, (c, c, c), bases=b)
+        fill_random!(f, layout="g")
+        change_layout!(f, layout)
+        g = evaluate(trace(f))
+        dim = length(r)
+        # trace over last two indices: g[i,...] = sum_j f[i,j,j,...]
+        expected = sum(f[layout][i, j, j, :] for j in 1:dim for i in 1:dim)  # simplified
+        # The actual numpy trace sums over first two axes
+        expected2 = sum(f[layout][i, i, :] for i in 1:dim)
+        @test isapprox(g[layout], expected2, atol=1e-12)
+    end
+
+    @testset "trace implicit $bname N=$N dealias=$dealias T=$T" for
+            (bname, basis_fn) in [("FF", build_FF), ("FC", build_FC), ("CC", build_CC),
+                                   ("FFF", build_FFF), ("FFC", build_FFC)],
+            N in N_range,
+            dealias in dealias_range,
+            T in dtype_range
+        c, d, b, r = basis_fn(N, dealias, T)
+        f = Field(d, bases=b)
+        fill_random!(f, layout="g")
+        u = Field(d, bases=b)
+        I_tensor = TensorField(d, (c, c))
+        dim = length(r)
+        for i in 1:dim
+            I_tensor["g"][i, i, :] .= 1
+        end
+        problem = LBVP([u], namespace=Dict("u" => u, "f" => f, "I" => I_tensor,
+                                           "dim" => dim, "trace" => trace))
+        add_equation!(problem, "trace(I*u) = dim*f")
+        solver = build_solver(problem)
+        solve!(solver)
+        @test isapprox(u["c"], f["c"], atol=1e-10)
+    end
+
+    # ---- Transpose tests ----
+
+    @testset "transpose explicit $bname N=$N dealias=$dealias T=$T layout=$layout" for
+            (bname, basis_fn) in [("FF", build_FF), ("FC", build_FC), ("CC", build_CC),
+                                   ("FFF", build_FFF), ("FFC", build_FFC)],
+            N in N_range,
+            dealias in dealias_range,
+            T in dtype_range,
+            layout in ["c", "g"]
+        c, d, b, r = basis_fn(N, dealias, T)
+        f = TensorField(d, (c, c), bases=b)
+        fill_random!(f, layout="g")
+        change_layout!(f, layout)
+        g = evaluate(tensor_transpose(f))
+        dim = length(r)
+        # Transposed: g[i,j,...] = f[j,i,...]
+        for i in 1:dim, j in 1:dim
+            @test isapprox(g[layout][i, j, :], f[layout][j, i, :], atol=1e-12)
+        end
+    end
+
+    @testset "transpose implicit $bname N=$N dealias=$dealias T=$T" for
+            (bname, basis_fn) in [("FF", build_FF), ("FC", build_FC), ("CC", build_CC),
+                                   ("FFF", build_FFF), ("FFC", build_FFC)],
+            N in N_range,
+            dealias in dealias_range,
+            T in dtype_range
+        c, d, b, r = basis_fn(N, dealias, T)
+        f = TensorField(d, (c, c), bases=b)
+        fill_random!(f, layout="g")
+        u = TensorField(d, (c, c), bases=b)
+        problem = LBVP([u], namespace=Dict("u" => u, "f" => f,
+                                           "transpose" => tensor_transpose))
+        add_equation!(problem, "transpose(u) = transpose(f)")
+        solver = build_solver(problem)
+        solve!(solver)
+        @test isapprox(u["c"], f["c"], atol=1e-10)
+    end
+
+    # ---- 2D curl tests ----
+
+    @testset "2D curl explicit vector $bname N=$N dealias=$dealias T=$T" for
+            (bname, basis_fn) in [("FF", build_FF), ("FC", build_FC), ("CC", build_CC)],
+            N in N_range,
+            dealias in dealias_range,
+            T in dtype_range
+        c, d, b, (x, y) = basis_fn(N, dealias, T)
+        kx = 2 * pi / Lx
+        ky = 2 * pi / Ly
+        f = VectorField(d, c, bases=b)
+        preset_scales!(f, dealias)
+        f["g"][1, :] = @. (sin(2 * kx * x) + sin(kx * x)) * cos(ky * y)
+        f["g"][2, :] = @. sin(kx * x) * cos(ky * y)
+        # z-component of curl: -div(skew(f))
+        g_op = -div(skew(f))
+        g = Field(d, bases=b)
+        preset_scales!(g, dealias)
+        g["g"] = @. kx * cos(kx * x) * cos(ky * y) + ky * (sin(2 * kx * x) + sin(kx * x)) * sin(ky * y)
+        @test isapprox(evaluate(g_op)["g"], g["g"], atol=1e-10)
+    end
+
+    @testset "2D curl explicit scalar $bname N=$N dealias=$dealias T=$T" for
+            (bname, basis_fn) in [("FF", build_FF), ("FC", build_FC), ("CC", build_CC)],
+            N in N_range,
+            dealias in dealias_range,
+            T in dtype_range
+        c, d, b, (x, y) = basis_fn(2 * N, dealias, T)
+        kx = 2 * pi / Lx
+        ky = 2 * pi / Ly
+        f = Field(d, bases=b)
+        preset_scales!(f, dealias)
+        f["g"] = @. (sin(2 * kx * x) + sin(kx * x)) * cos(ky * y)
+        # curl(f*ez) = -skew(grad(f))
+        g_op = -skew(grad(f))
+        g = VectorField(d, c, bases=b)
+        preset_scales!(g, dealias)
+        g["g"][1, :] = @. -ky * (sin(2 * kx * x) + sin(kx * x)) * sin(ky * y)
+        g["g"][2, :] = @. -(2 * kx * cos(2 * kx * x) + kx * cos(kx * x)) * cos(ky * y)
+        @test isapprox(evaluate(g_op)["g"], g["g"], atol=1e-10)
+    end
+
+    # ---- 3D curl tests ----
+
+    @testset "3D curl explicit $bname N=$N dealias=$dealias T=$T" for
+            (bname, basis_fn) in [("FFF", build_FFF), ("FFC", build_FFC)],
+            N in N_range,
+            dealias in dealias_range,
+            T in dtype_range
+        c, d, b, r = basis_fn(N, dealias, T)
+        k = 2 * pi * [1 / Lx, 1 / Ly, 1 / Lz]
+        f = VectorField(d, c, bases=b)
+        preset_scales!(f, dealias)
+        f["g"][1, :] = @. sin(k[3] * r[3]) + cos(k[2] * r[2])
+        f["g"][2, :] = @. sin(k[1] * r[1]) + cos(k[3] * r[3])
+        f["g"][3, :] = @. sin(k[2] * r[2]) + cos(k[1] * r[1])
+        g = VectorField(d, c, bases=b)
+        preset_scales!(g, dealias)
+        g["g"][1, :] = @. k[3] * sin(k[3] * r[3]) + k[2] * cos(k[2] * r[2])
+        g["g"][2, :] = @. k[1] * sin(k[1] * r[1]) + k[3] * cos(k[3] * r[3])
+        g["g"][3, :] = @. k[2] * sin(k[2] * r[2]) + k[1] * cos(k[1] * r[1])
+        @test isapprox(evaluate(Curl(f))["g"], g["g"], atol=1e-10)
+    end
+
+    @testset "3D curl implicit FFF N=$N dealias=$dealias T=$T" for
+            N in N_range,
+            dealias in dealias_range,
+            T in dtype_range
+        c, d, b, r = build_FFF(N, dealias, T)
+        k = 2 * pi * [1 / Lx, 1 / Ly, 1 / Lz]
+        f = VectorField(d, c, bases=b)
+        preset_scales!(f, dealias)
+        f["g"][1, :] = @. sin(k[3] * r[3]) + cos(k[2] * r[2])
+        f["g"][2, :] = @. sin(k[1] * r[1]) + cos(k[3] * r[3])
+        f["g"][3, :] = @. sin(k[2] * r[2]) + cos(k[1] * r[1])
+        g = VectorField(d, c, bases=b)
+        preset_scales!(g, dealias)
+        g["g"][1, :] = @. k[3] * sin(k[3] * r[3]) + k[2] * cos(k[2] * r[2])
+        g["g"][2, :] = @. k[1] * sin(k[1] * r[1]) + k[3] * cos(k[3] * r[3])
+        g["g"][3, :] = @. k[2] * sin(k[2] * r[2]) + k[1] * cos(k[1] * r[1])
+        # Helmholtz LBVP
+        u = VectorField(d, c, name="u", bases=b)
+        phi = Field(d, name="phi", bases=b)
+        tau1 = VectorField(d, c, name="tau1")
+        tau2 = Field(d, name="tau2")
+        problem = LBVP([u, phi, tau1, tau2], namespace=Dict(
+            "u" => u, "phi" => phi, "tau1" => tau1, "tau2" => tau2,
+            "g" => g, "c" => c,
+            "curl" => curl, "grad" => grad, "div" => div,
+            "integ" => A -> Integrate(A), "comp" => comp))
+        add_equation!(problem, "curl(u) + grad(phi) + tau1 = g")
+        add_equation!(problem, "div(u) + tau2 = 0")
+        add_equation!(problem, "integ(phi) = 0")
+        add_equation!(problem, "integ(comp(u,index=0,comp=c[\"x\"])) = 0")
+        add_equation!(problem, "integ(comp(u,index=0,comp=c[\"y\"])) = 0")
+        add_equation!(problem, "integ(comp(u,index=0,comp=c[\"z\"])) = 0")
+        solver = build_solver(problem)
+        solve!(solver)
+        @test isapprox(u["c"], f["c"], atol=1e-10)
+    end
+
+    @testset "3D curl implicit FFC N=$N dealias=$dealias T=$T" for
+            N in N_range,
+            dealias in dealias_range,
+            T in dtype_range
+        c, d, b, r = build_FFC(N, dealias, T)
+        k = 2 * pi * [1 / Lx, 1 / Ly, 1 / Lz]
+        f = VectorField(d, c, bases=b)
+        preset_scales!(f, dealias)
+        f["g"][1, :] = @. sin(k[3] * r[3]) + cos(k[2] * r[2])
+        f["g"][2, :] = @. sin(k[1] * r[1]) + cos(k[3] * r[3])
+        f["g"][3, :] = @. sin(k[2] * r[2]) + cos(k[1] * r[1])
+        g = VectorField(d, c, bases=b)
+        preset_scales!(g, dealias)
+        g["g"][1, :] = @. k[3] * sin(k[3] * r[3]) + k[2] * cos(k[2] * r[2])
+        g["g"][2, :] = @. k[1] * sin(k[1] * r[1]) + k[3] * cos(k[3] * r[3])
+        g["g"][3, :] = @. k[2] * sin(k[2] * r[2]) + k[1] * cos(k[1] * r[1])
+        # Helmholtz LBVP
+        u = VectorField(d, c, name="u", bases=b)
+        phi = Field(d, name="phi", bases=b)
+        tau1 = VectorField(d, c, name="tau1", bases=b[1:2])
+        tau2 = Field(d, name="tau2", bases=b[1:2])
+        lift_basis = derivative_basis(b[3], 1)
+        lift_fn = (A, n) -> Lift(A, lift_basis, n)
+        problem = LBVP([u, phi, tau1, tau2], namespace=Dict(
+            "u" => u, "phi" => phi, "tau1" => tau1, "tau2" => tau2,
+            "g" => g, "f" => f,
+            "curl" => curl, "grad" => grad, "div" => div,
+            "lift" => lift_fn))
+        add_equation!(problem, "curl(u) + grad(phi) + lift(tau1,-1) = g")
+        add_equation!(problem, "div(u) + lift(tau2,-1) = 0")
+        add_equation!(problem, "u(z=0) = f(z=0)")
+        add_equation!(problem, "phi(z=0) = 0")
+        solver = build_solver(problem)
+        solve!(solver)
+        @test isapprox(u["c"], f["c"], atol=1e-10)
+    end
+
+end
