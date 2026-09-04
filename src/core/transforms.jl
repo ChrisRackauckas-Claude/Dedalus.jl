@@ -962,8 +962,7 @@ function subspace_matrix(op::Differentiate, layout)
         end
         return mat
     else
-        n = basis_size(basis)
-        return sparse(I, n, n)
+        error("subspace_matrix(::Differentiate) not implemented for basis type $(typeof(basis))")
     end
 end
 
@@ -985,8 +984,7 @@ function subspace_matrix(op::Convert, layout)
         if input_basis isa JacobiBasis && output_basis isa JacobiBasis
             return convert_jacobi_matrix(input_basis, output_basis)
         else
-            N = basis_size(input_basis)
-            return sparse(I, N, N)
+            error("subspace_matrix(::Convert) not implemented for input_basis $(typeof(input_basis)) and output_basis $(typeof(output_basis))")
         end
     else
         return sparse(I, 1, 1)

@@ -1186,6 +1186,8 @@ function write_file_metadata(h::H5FileHandlerBase, file; kw...)
         _write_file_metadata_virtual(h, file; kw...)
     elseif h._parallel_mode == :mpio
         _write_file_metadata_base(h, file; kw...)
+    else
+        error("Unrecognized _parallel_mode: $(h._parallel_mode)")
     end
 end
 
@@ -1985,6 +1987,8 @@ function open_h5file(h::H5FileHandlerBase; mode="r+")
         return _virtual_open_file(h; mode=mode)
     elseif h._parallel_mode == :mpio
         return _mpio_open_file(h; mode=mode)
+    else
+        error("Unrecognized _parallel_mode: $(h._parallel_mode)")
     end
 end
 
@@ -2000,6 +2004,8 @@ function close_h5file(h::H5FileHandlerBase, file)
         _virtual_close_file(h, file)
     elseif h._parallel_mode == :mpio
         _mpio_close_file(h, file)
+    else
+        error("Unrecognized _parallel_mode: $(h._parallel_mode)")
     end
 end
 
@@ -2015,6 +2021,8 @@ function write_task(h::H5FileHandlerBase, file, task)
         _virtual_write_task(h, file, task)
     elseif h._parallel_mode == :mpio
         _mpio_write_task(h, file, task)
+    else
+        error("Unrecognized _parallel_mode: $(h._parallel_mode)")
     end
 end
 
@@ -2030,6 +2038,8 @@ function create_current_file(h::H5FileHandlerBase)
         _virtual_create_current_file(h)
     elseif h._parallel_mode == :mpio
         _mpio_create_current_file(h)
+    else
+        error("Unrecognized _parallel_mode: $(h._parallel_mode)")
     end
 end
 
