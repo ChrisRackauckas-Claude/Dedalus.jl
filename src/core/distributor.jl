@@ -1096,7 +1096,7 @@ Dereference layout identifiers.
 - If `input` is already a `Layout`, return it directly.
 - If `input` is a string (`"c"` or `"g"`), return the corresponding layout.
 """
-function get_layout_object(dist::Distributor, input)
+function get_layout_object(dist::Distributor, input)::Layout
     if input isa Layout
         return input
     else

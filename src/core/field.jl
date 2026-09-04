@@ -713,7 +713,7 @@ end
 Set new transform scales, reallocating the buffer if necessary.
 Does not transform data -- use `change_scales!` for that.
 """
-function preset_scales!(f::Field, scales)
+function preset_scales!(f::Field, scales)::Nothing
     new_scales = remedy_scales(f.dist, scales)
     old_scales = f.scales
     # Return if scales are unchanged
@@ -743,7 +743,7 @@ end
 
 Interpret the buffer as data in the specified layout. Rebuilds the data view.
 """
-function preset_layout!(f::Field, layout)
+function preset_layout!(f::Field, layout)::Nothing
     layout = get_layout_object(f.dist, layout)
     f.layout = layout
     tens_shape = [get_dim(vs) for vs in f.tensorsig]
@@ -765,7 +765,7 @@ end
 
 Change data to specified scales, preserving data via transforms if needed.
 """
-function change_scales!(f::Field, scales)
+function change_scales!(f::Field, scales)::Nothing
     new_scales = remedy_scales(f.dist, scales)
     old_scales = f.scales
     # Quit if new scales aren't new
@@ -795,7 +795,7 @@ end
 
 Change data to the specified layout via sequential transforms.
 """
-function change_layout!(f::Field, layout)
+function change_layout!(f::Field, layout)::Nothing
     layout = get_layout_object(f.dist, layout)
     if f.layout.index < layout.index
         while f.layout.index < layout.index
@@ -814,7 +814,7 @@ end
 
 Change to the next layout towards grid space.
 """
-function towards_grid_space!(f::Field)
+function towards_grid_space!(f::Field)::Nothing
     index = f.layout.index
     increment(f.dist.paths[index], [f])
     return nothing
@@ -825,7 +825,7 @@ end
 
 Change to the next layout towards coefficient space.
 """
-function towards_coeff_space!(f::Field)
+function towards_coeff_space!(f::Field)::Nothing
     index = f.layout.index
     decrement(f.dist.paths[index - 1], [f])
     return nothing
@@ -836,7 +836,7 @@ end
 
 Require one axis (default: all axes) to be in grid space.
 """
-function require_grid_space!(f::Field, axis=nothing)
+function require_grid_space!(f::Field, axis=nothing)::Nothing
     if axis === nothing
         while !all(f.layout.grid_space)
             towards_grid_space!(f)
@@ -854,7 +854,7 @@ end
 
 Require one axis (default: all axes) to be in coefficient space.
 """
-function require_coeff_space!(f::Field, axis=nothing)
+function require_coeff_space!(f::Field, axis=nothing)::Nothing
     if axis === nothing
         while any(f.layout.grid_space)
             towards_coeff_space!(f)
@@ -1296,7 +1296,7 @@ end
 
 Override: locked fields cannot change scales.
 """
-function change_scales!(f::LockedField, scales)
+function change_scales!(f::LockedField, scales)::Nothing
     sc = remedy_scales(f.dist, scales)
     if sc != f.scales
         throw(ArgumentError("Cannot change locked scales."))
@@ -1309,7 +1309,7 @@ end
 
 Override: only allowed if the target layout is in `allowed_layouts`.
 """
-function towards_grid_space!(f::LockedField)
+function towards_grid_space!(f::LockedField)::Nothing
     index = f.layout.index
     new_index = index + 1
     new_layout = f.dist.layouts[new_index]
@@ -1327,7 +1327,7 @@ end
 
 Override: only allowed if the target layout is in `allowed_layouts`.
 """
-function towards_coeff_space!(f::LockedField)
+function towards_coeff_space!(f::LockedField)::Nothing
     index = f.layout.index
     new_index = index - 1
     new_layout = f.dist.layouts[new_index]
@@ -1404,7 +1404,7 @@ function Base.setindex!(f::LockedField, data, key)
 end
 
 # preset_scales!/preset_layout! for LockedField (delegate to the Field versions)
-function preset_scales!(f::LockedField, scales)
+function preset_scales!(f::LockedField, scales)::Nothing
     new_scales = remedy_scales(f.dist, scales)
     old_scales = f.scales
     if new_scales == old_scales
@@ -1425,7 +1425,7 @@ function preset_scales!(f::LockedField, scales)
     return nothing
 end
 
-function preset_layout!(f::LockedField, layout)
+function preset_layout!(f::LockedField, layout)::Nothing
     layout = get_layout_object(f.dist, layout)
     f.layout = layout
     tens_shape = [get_dim(vs) for vs in f.tensorsig]
@@ -1441,7 +1441,7 @@ function preset_layout!(f::LockedField, layout)
     return nothing
 end
 
-function change_layout!(f::LockedField, layout)
+function change_layout!(f::LockedField, layout)::Nothing
     layout = get_layout_object(f.dist, layout)
     if f.layout.index < layout.index
         while f.layout.index < layout.index
