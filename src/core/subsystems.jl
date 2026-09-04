@@ -1004,8 +1004,7 @@ Expand a sparse matrix to match the sparsity pattern of `target`,
 placing source values at matching positions.
 """
 function _expand_pattern(source, target)
-    # Simply return the source -- in Julia sparse algebra handles this naturally
-    return copy(source)
+    return expand_pattern(source, target)
 end
 
 # gather_ncc_coeffs, expression_matrices, local_groupsets, local_groupset_slices
