@@ -619,30 +619,210 @@ function try_runtime_analysis(stats::AuditStats)
 end
 
 """
+    _is_broad_union(T) -> Bool
+
+Check whether a type is a broad Union that indicates type instability.
+A Union is considered "broad" if it contains `Any`, has more than 3 members,
+or contains both value types (Int, Float64) and reference types (Array, Field).
+"""
+function _is_broad_union(@nospecialize(T))
+    if T === Any
+        return true
+    end
+    if T isa Union
+        members = Base.uniontypes(T)
+        # Any appearing anywhere in the union
+        if Any in members
+            return true
+        end
+        # Unions with many alternatives suggest the compiler couldn't narrow the type
+        if length(members) > 3
+            return true
+        end
+        return false
+    end
+    return false
+end
+
+"""
+    _extract_arg_types(sig) -> Union{Nothing, Type{<:Tuple}}
+
+Extract argument types from a method signature, skipping the first element
+(the function type itself). Returns `nothing` if the types cannot be extracted
+or contain TypeVar parameters that prevent concrete instantiation.
+"""
+function _extract_arg_types(sig)
+    try
+        params = sig.parameters
+        if length(params) < 2
+            # No arguments beyond the function itself
+            return Tuple{}
+        end
+        arg_types = params[2:end]
+        # Check for uninstantiable type variables
+        for t in arg_types
+            if t isa TypeVar
+                return nothing
+            end
+        end
+        return Tuple{arg_types...}
+    catch
+        return nothing
+    end
+end
+
+"""
+    _check_function_stability(stats, func_name, func, source_file)
+
+Analyze all methods of `func` using `Base.return_types()` and report any
+methods whose inferred return type includes `Any` or a broad `Union`.
+"""
+function _check_function_stability(stats::AuditStats, func_name::String, func, source_file::String)
+    local meths
+    try
+        meths = methods(func)
+    catch e
+        println("  [SKIP] Could not get methods for $(func_name): $(e)")
+        record!(stats, :SKIP, func_name, source_file, 0,
+                "Could not enumerate methods: $(sprint(showerror, e))")
+        return
+    end
+
+    n_methods = length(meths)
+    n_checked = 0
+    n_unstable = 0
+    n_skipped = 0
+
+    for m in meths
+        sig = m.sig
+        arg_tuple = _extract_arg_types(sig)
+
+        if arg_tuple === nothing
+            # Cannot construct concrete argument types (e.g., has TypeVar params)
+            n_skipped += 1
+            if VERBOSE
+                println("  [SKIP] $(func_name) method $(m) -- signature has unresolvable type parameters")
+            end
+            record!(stats, :SKIP, func_name, source_file, Int(m.line),
+                    "Skipped: signature $(sig) contains type variables that prevent concrete instantiation")
+            continue
+        end
+
+        local rtypes
+        try
+            rtypes = Base.return_types(func, arg_tuple)
+        catch e
+            # Some signatures may cause errors in the type inference engine
+            n_skipped += 1
+            if VERBOSE
+                println("  [SKIP] $(func_name) method at $(m.file):$(m.line) -- Base.return_types failed: $(e)")
+            end
+            record!(stats, :SKIP, func_name, source_file, Int(m.line),
+                    "Base.return_types() failed for $(arg_tuple): $(sprint(showerror, e))")
+            continue
+        end
+
+        n_checked += 1
+
+        for rt in rtypes
+            if _is_broad_union(rt)
+                n_unstable += 1
+                println("  [UNSTABLE] $(func_name) method at $(m.file):$(m.line)")
+                println("             Signature: $(arg_tuple)")
+                println("             Inferred return type: $(rt)")
+                println()
+                record!(stats, :UNSTABLE, func_name, source_file, Int(m.line),
+                        "Runtime inference: return type is $(rt) for args $(arg_tuple)")
+            else
+                if VERBOSE
+                    println("  [STABLE]   $(func_name) method at $(m.file):$(m.line) -> $(rt)")
+                end
+                record!(stats, :STABLE, func_name, source_file, Int(m.line),
+                        "Runtime inference: return type is $(rt) for args $(arg_tuple)")
+            end
+        end
+    end
+
+    println("  $(func_name): $(n_methods) methods total, $(n_checked) checked, $(n_unstable) unstable, $(n_skipped) skipped")
+end
+
+"""
     _check_return_types(stats)
 
-Check inferred return types for key functions after module loading.
+Check inferred return types for priority functions after module loading.
+
+Uses `Base.return_types()` to perform runtime type-inference analysis on
+key functions identified in the type-stability audit specification:
+  - Timestepper inner loops (_multistep_step!, _rk_step!)
+  - Layout lookup (get_layout_object)
+  - Coefficient system access (get_subdata)
+  - Sparse matrix application (_apply_sparse_to_subdata!)
+  - Expression tree evaluation (evaluate_future)
+  - Cache lookup (get_cached!)
 """
 function _check_return_types(stats::AuditStats)
-    # This function would be populated with actual type checks if the module loads.
-    # The checks use Base.return_types() to verify that specific method signatures
-    # infer concrete types.
-    #
-    # Example pattern (commented because module may not load):
-    #
-    #   rtypes = Base.return_types(get_cached!, (CachedAttribute{Matrix{Float64}},))
-    #   for rt in rtypes
-    #       if rt === Any || rt isa Union
-    #           record!(stats, :UNSTABLE, "get_cached!", "tools/cache.jl", 66,
-    #                   "Inferred return type: $rt")
-    #       else
-    #           record!(stats, :STABLE, "get_cached!", "tools/cache.jl", 66,
-    #                   "Inferred return type: $rt")
-    #       end
-    #   end
+    # Priority functions to analyze, in order of hot-path impact.
+    # Each entry: (display_name, module-qualified accessor expression, source file)
+    priority_targets = [
+        ("Dedalus._multistep_step!",      "core/timesteppers.jl"),
+        ("Dedalus._rk_step!",             "core/timesteppers.jl"),
+        ("Dedalus.get_layout_object",     "core/distributor.jl"),
+        ("Dedalus.get_subdata",           "core/system.jl"),
+        ("Dedalus._apply_sparse_to_subdata!", "core/timesteppers.jl"),
+        ("Dedalus.evaluate_future",       "core/future.jl"),
+        ("Dedalus.get_cached!",           "tools/cache.jl"),
+    ]
 
-    println("Runtime return-type checks are available when the module is loadable.")
-    println("Use: julia --project benchmark/typestability_audit.jl --runtime")
+    println("Checking inferred return types for $(length(priority_targets)) priority functions...\n")
+
+    runtime_unstable = 0
+    runtime_checked = 0
+
+    for (qualified_name, source_file) in priority_targets
+        # Resolve the function object from its qualified name
+        local func
+        try
+            func = @eval $(Meta.parse(qualified_name))
+        catch e
+            println("  [SKIP] $(qualified_name) -- function not found: $(e)")
+            record!(stats, :SKIP, qualified_name, source_file, 0,
+                    "Function not found in loaded module: $(sprint(showerror, e))")
+            println()
+            continue
+        end
+
+        if !isa(func, Function)
+            println("  [SKIP] $(qualified_name) -- resolved to $(typeof(func)), not a Function")
+            record!(stats, :SKIP, qualified_name, source_file, 0,
+                    "Resolved to $(typeof(func)), not a Function")
+            println()
+            continue
+        end
+
+        _check_function_stability(stats, qualified_name, func, source_file)
+        println()
+    end
+
+    # Print runtime analysis summary
+    rt_findings = filter(f -> startswith(f.detail, "Runtime inference:"), stats.findings)
+    rt_unstable = count(f -> f.status == :UNSTABLE, rt_findings)
+    rt_stable = count(f -> f.status == :STABLE, rt_findings)
+    rt_skip = count(f -> f.status == :SKIP && occursin("type variables", f.detail), stats.findings)
+
+    println("-"^60)
+    println("Runtime inference summary:")
+    println("  Methods with stable return types:   $(rt_stable)")
+    println("  Methods with unstable return types:  $(rt_unstable)")
+    println("  Methods skipped (type variables):    $(rt_skip)")
+    println()
+    if rt_unstable > 0
+        println("  $(rt_unstable) method(s) inferred as returning Any or a broad Union type.")
+        println("  These are candidates for type annotations or refactoring.")
+    else
+        println("  All checked methods have concrete inferred return types.")
+        println("  Note: methods with type parameters were skipped; they may still")
+        println("  be unstable for specific type combinations.")
+    end
 end
 
 # ============================================================================
