@@ -423,6 +423,8 @@ function tensor_getindex(op::TensorProduct, sigma::Tuple, tau::Tuple)
         return sigma == (op._element..., tau...) ? 1 : 0
     elseif op._action == "right"
         return sigma == (tau..., op._element...) ? 1 : 0
+    else
+        error("TensorProduct: unrecognized action '$(op._action)'; expected \"left\" or \"right\".")
     end
 end
 
@@ -568,6 +570,8 @@ function tensor_getindex(op::Intertwiner, sigma::Tuple, tau::Tuple)
         return s * R / sqrt(J * (J + 1))
     elseif a == 1
         return (Q * (J + 1) + R) / sqrt((J + 1) * (2 * J + 1))
+    else
+        error("Intertwiner: unrecognized regularity index a=$a; expected -1, 0, or 1.")
     end
 end
 
