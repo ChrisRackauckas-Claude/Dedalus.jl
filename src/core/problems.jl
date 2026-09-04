@@ -82,7 +82,16 @@ mutable struct ProblemData
     dist::Any
     equations::Vector{Dict{String, Any}}
     local_namespace::Dict{String, Any}
-    namespace::Dict{String, Any}
+    external_namespace::Union{Dict{String, Any}, Nothing}
+end
+
+function get_namespace(data::ProblemData)
+    merged = copy(PARSEABLE_NAMESPACE)
+    if data.external_namespace !== nothing
+        merge!(merged, data.external_namespace)
+    end
+    merge!(merged, data.local_namespace)
+    return merged
 end
 
 """
@@ -100,19 +109,13 @@ function _make_problem_data(variables; namespace=nothing)
             local_ns[name] = var
         end
     end
-    # Build merged namespace (local has highest priority, then external, then parseables)
-    merged = copy(PARSEABLE_NAMESPACE)
-    if namespace !== nothing
-        merge!(merged, namespace)
-    end
-    merge!(merged, local_ns)
     return ProblemData(
         collect(Any, variables),
         collect(Any, variables),
         dist,
         Dict{String, Any}[],
         local_ns,
-        merged,
+        namespace,
     )
 end
 
@@ -229,7 +232,7 @@ function add_equation!(problem::ProblemBase, equation; condition::String="True")
     @debug "Adding equation $(length(data.equations))"
     # Split equation into LHS and RHS
     if equation isa AbstractString
-        namespace = copy(data.namespace)
+        namespace = get_namespace(data)
         lhs_str, rhs_str = split_equation(equation)
         LHS = _eval_in_namespace(lhs_str, namespace)
         RHS = _eval_in_namespace(rhs_str, namespace)
