@@ -3598,6 +3598,38 @@ function _last_axis_component_ncc_matrix(::Type{AnnulusBasis}, subproblem, ncc_b
     error("AnnulusBasis _last_axis_component_ncc_matrix: requires subproblem infrastructure not yet available")
 end
 
+"""
+    interpolation(b::AnnulusBasis, m, spintotal, position)
+
+Build the interpolation matrix for the annulus at the given radial position.
+For the annulus, the result is independent of `m` and `spintotal`.
+"""
+function interpolation(b::AnnulusBasis, m, spintotal, position)
+    return _interpolation(b, position)
+end
+
+"""
+    _interpolation(b::AnnulusBasis, position)
+
+Internal cached interpolation computation for the annulus basis.
+Evaluates Jacobi polynomials at the native coordinate and applies the
+radial factor `(dR / position)^k`.
+"""
+function _interpolation(b::AnnulusBasis, position)
+    cache_key = (:_interpolation, position)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    native_position = position * 2 / b.dR - b.rho
+    a = b.alpha[1] + b.k
+    bp = b.alpha[2] + b.k
+    radial_factor = (b.dR / position)^b.k
+    result = radial_factor .* jacobi_polynomials(n_size(b, 0), a, bp, native_position)
+    b._cache[cache_key] = result
+    return result
+end
+
 function Base.show(io::IO, b::AnnulusBasis)
     print(io, "AnnulusBasis($(b.coordsys), shape=$(b.shape), radii=$(b.radii), k=$(b.k), alpha=$(b.alpha))")
 end

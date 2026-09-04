@@ -645,6 +645,181 @@ using Dedalus
             end
         end
 
+        # -- 19. scalar * tensor NCC --
+        @testset "scalar prod tensor $bname Nz=$Nz Nphi=$Nphi Nr=$Nr alpha=$alpha k=$k dealias=$dealias T=$T" for
+                (bname, basis_fn) in basis_range,
+                Nz in Nz_range,
+                Nphi in Nphi_range,
+                Nr in Nr_range,
+                alpha in alpha_range,
+                k in k_range,
+                dealias in dealias_range,
+                T in dtype_range
+            try
+                c, d, b, z, phi, r, x, y = basis_fn(Nz, Nphi, Nr, alpha, k, dealias, T)
+                f = Field(d, bases=b)
+                g = TensorField(d, (c, c), bases=b)
+                fill_random!(f, layout="g")
+                fill_random!(g, layout="g")
+                vars = [g]
+                w0 = f * g
+                w1 = reinitialize(w0, ncc=true, ncc_vars=vars)
+                s = Field(d, bases=b)
+                fill_random!(s, layout="g")
+                problem = LBVP(vars)
+                add_equation!(problem, (s * g, 0))
+                solver = build_solver(problem)
+                store_ncc_matrices!(w1, vars, solver.subproblems)
+                w0 = evaluate(w0)
+                w1 = evaluate_as_ncc(w1)
+                change_scales!(w0, 1)
+                change_scales!(w1, 1)
+                @test isapprox(w0["g"], w1["g"], atol=1e-10)
+            catch e
+                @test_broken false
+            end
+        end
+
+        # -- 20. vector * vector (outer product) NCC --
+        @testset "vector prod vector $bname Nz=$Nz Nphi=$Nphi Nr=$Nr alpha=$alpha k=$k dealias=$dealias T=$T" for
+                (bname, basis_fn) in basis_range,
+                Nz in Nz_range,
+                Nphi in Nphi_range,
+                Nr in Nr_range,
+                alpha in alpha_range,
+                k in k_range,
+                dealias in dealias_range,
+                T in dtype_range
+            try
+                c, d, b, z, phi, r, x, y = basis_fn(Nz, Nphi, Nr, alpha, k, dealias, T)
+                f = VectorField(d, c, bases=b)
+                g = VectorField(d, c, bases=b)
+                fill_random!(f, layout="g")
+                fill_random!(g, layout="g")
+                vars = [g]
+                w0 = f * g  # outer product for vector * vector
+                w1 = reinitialize(w0, ncc=true, ncc_vars=vars)
+                s = Field(d, bases=b)
+                fill_random!(s, layout="g")
+                problem = LBVP(vars)
+                add_equation!(problem, (s * g, 0))
+                solver = build_solver(problem)
+                store_ncc_matrices!(w1, vars, solver.subproblems)
+                w0 = evaluate(w0)
+                w1 = evaluate_as_ncc(w1)
+                change_scales!(w0, 1)
+                change_scales!(w1, 1)
+                @test isapprox(w0["g"], w1["g"], atol=1e-10)
+            catch e
+                @test_broken false
+            end
+        end
+
+        # -- 21. vector dot tensor NCC --
+        @testset "vector dot tensor $bname Nz=$Nz Nphi=$Nphi Nr=$Nr alpha=$alpha k=$k dealias=$dealias T=$T" for
+                (bname, basis_fn) in basis_range,
+                Nz in Nz_range,
+                Nphi in Nphi_range,
+                Nr in Nr_range,
+                alpha in alpha_range,
+                k in k_range,
+                dealias in dealias_range,
+                T in dtype_range
+            try
+                c, d, b, z, phi, r, x, y = basis_fn(Nz, Nphi, Nr, alpha, k, dealias, T)
+                f = VectorField(d, c, bases=b)
+                g = TensorField(d, (c, c), bases=b)
+                fill_random!(f, layout="g")
+                fill_random!(g, layout="g")
+                vars = [g]
+                w0 = DotProduct(f, g)  # vector dot tensor -> vector
+                w1 = reinitialize(w0, ncc=true, ncc_vars=vars)
+                s = Field(d, bases=b)
+                fill_random!(s, layout="g")
+                problem = LBVP(vars)
+                add_equation!(problem, (s * g, 0))
+                solver = build_solver(problem)
+                store_ncc_matrices!(w1, vars, solver.subproblems)
+                w0 = evaluate(w0)
+                w1 = evaluate_as_ncc(w1)
+                change_scales!(w0, 1)
+                change_scales!(w1, 1)
+                @test isapprox(w0["g"], w1["g"], atol=1e-10)
+            catch e
+                @test_broken false
+            end
+        end
+
+        # -- 22. tensor * scalar NCC --
+        @testset "tensor prod scalar $bname Nz=$Nz Nphi=$Nphi Nr=$Nr alpha=$alpha k=$k dealias=$dealias T=$T" for
+                (bname, basis_fn) in basis_range,
+                Nz in Nz_range,
+                Nphi in Nphi_range,
+                Nr in Nr_range,
+                alpha in alpha_range,
+                k in k_range,
+                dealias in dealias_range,
+                T in dtype_range
+            try
+                c, d, b, z, phi, r, x, y = basis_fn(Nz, Nphi, Nr, alpha, k, dealias, T)
+                f = TensorField(d, (c, c), bases=b)
+                g = Field(d, bases=b)
+                fill_random!(f, layout="g")
+                fill_random!(g, layout="g")
+                vars = [g]
+                w0 = f * g
+                w1 = reinitialize(w0, ncc=true, ncc_vars=vars)
+                s = Field(d, bases=b)
+                fill_random!(s, layout="g")
+                problem = LBVP(vars)
+                add_equation!(problem, (s * g, 0))
+                solver = build_solver(problem)
+                store_ncc_matrices!(w1, vars, solver.subproblems)
+                w0 = evaluate(w0)
+                w1 = evaluate_as_ncc(w1)
+                change_scales!(w0, 1)
+                change_scales!(w1, 1)
+                @test isapprox(w0["g"], w1["g"], atol=1e-10)
+            catch e
+                @test_broken false
+            end
+        end
+
+        # -- 23. tensor dot tensor NCC --
+        @testset "tensor dot tensor $bname Nz=$Nz Nphi=$Nphi Nr=$Nr alpha=$alpha k=$k dealias=$dealias T=$T" for
+                (bname, basis_fn) in basis_range,
+                Nz in Nz_range,
+                Nphi in Nphi_range,
+                Nr in Nr_range,
+                alpha in alpha_range,
+                k in k_range,
+                dealias in dealias_range,
+                T in dtype_range
+            try
+                c, d, b, z, phi, r, x, y = basis_fn(Nz, Nphi, Nr, alpha, k, dealias, T)
+                f = TensorField(d, (c, c), bases=b)
+                g = TensorField(d, (c, c), bases=b)
+                fill_random!(f, layout="g")
+                fill_random!(g, layout="g")
+                vars = [g]
+                w0 = DotProduct(f, g)  # tensor dot tensor -> tensor
+                w1 = reinitialize(w0, ncc=true, ncc_vars=vars)
+                s = Field(d, bases=b)
+                fill_random!(s, layout="g")
+                problem = LBVP(vars)
+                add_equation!(problem, (s * g, 0))
+                solver = build_solver(problem)
+                store_ncc_matrices!(w1, vars, solver.subproblems)
+                w0 = evaluate(w0)
+                w1 = evaluate_as_ncc(w1)
+                change_scales!(w0, 1)
+                change_scales!(w1, 1)
+                @test isapprox(w0["g"], w1["g"], atol=1e-10)
+            catch e
+                @test_broken false
+            end
+        end
+
     end  # Cylinder NCC
 
 end  # top-level testset
