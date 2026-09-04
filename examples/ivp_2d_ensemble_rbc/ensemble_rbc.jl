@@ -64,10 +64,10 @@ x, z = local_grids(dist, xbasis, zbasis)
 ex, ez = unit_vector_fields(coords, dist)
 lift_basis = derivative_basis(zbasis, 1)
 lift = A -> Lift(A, lift_basis, -1)
-grad_func = A -> gradient(A, coords)
-grad_u = grad_func(u) + ez * lift(tau_u1)  # First-order reduction
-grad_b = grad_func(b) + ez * lift(tau_b1)  # First-order reduction
-integ_func = A -> integrate(A, coords)
+grad = A -> gradient(A, coords)
+grad_u = grad(u) + ez * lift(tau_u1)
+grad_b = grad(b) + ez * lift(tau_b1)
+integ = A -> integrate(A, coords)
 
 # Problem
 # First-order form: "div(f)" becomes "trace(grad_f)"
@@ -106,7 +106,7 @@ add_velocity!(cfl, u)
 
 # Flow properties
 flow = GlobalFlowProperty(solver; cadence=10)
-add_property!(flow, sqrt(u * u) / nu; name="Re")
+add_property!(flow, sqrt(DotProduct(u, u)) / nu; name="Re")
 
 # Main loop
 try

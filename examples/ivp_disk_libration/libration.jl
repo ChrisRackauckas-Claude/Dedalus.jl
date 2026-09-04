@@ -81,11 +81,11 @@ low_pass_filter!(u; scales=0.25)  # Keep only lower fourth of the modes
 snapshots = add_file_handler(solver.evaluator, "snapshots"; sim_dt=0.1, max_writes=20)
 add_task!(snapshots, -divergence(skew(u)); scales=(4, 1), name="vorticity")
 scalars = add_file_handler(solver.evaluator, "scalars"; sim_dt=0.01)
-add_task!(scalars, integrate(0.5 * u * u); name="KE")
+add_task!(scalars, integrate(0.5 * DotProduct(u, u)); name="KE")
 
 # Flow properties
 flow = GlobalFlowProperty(solver; cadence=100)
-add_property!(flow, u * u; name="u2")
+add_property!(flow, DotProduct(u, u); name="u2")
 
 # Main loop
 try

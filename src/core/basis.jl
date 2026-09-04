@@ -5524,8 +5524,8 @@ function forward_regularity_recombination(b::AbstractRegularityBasis, tensorsig,
             # axis is 1-based in Julia (the basis axis within the non-tensor part)
             # With 1 prepended tensor axis after flattening:
             slices_copy = copy(slices)
-            slices_copy[axis - 2 + 1 + 1] = m_ind    # +1 for flattened tensor axis
-            slices_copy[axis - 1 + 1 + 1] = ell_ind  # +1 for flattened tensor axis
+            slices_copy[axis - 1] = m_ind
+            slices_copy[axis] = ell_ind
             temp_ell = view(temp, slices_copy...)
             apply_matrix(transpose(Q[ell]), temp_ell, 1; out=temp_ell)
         end
@@ -5551,8 +5551,8 @@ function backward_regularity_recombination(b::AbstractRegularityBasis, tensorsig
         # Apply Q^T transformations for each ell to flattened tensor data
         for (ell, m_ind, ell_ind) in ell_maps
             slices_copy = copy(slices)
-            slices_copy[axis - 2 + 1 + 1] = m_ind    # +1 for flattened tensor axis
-            slices_copy[axis - 1 + 1 + 1] = ell_ind  # +1 for flattened tensor axis
+            slices_copy[axis - 1] = m_ind
+            slices_copy[axis] = ell_ind
             temp_ell = view(temp, slices_copy...)
             apply_matrix(Q[ell], temp_ell, 1; out=temp_ell)
         end

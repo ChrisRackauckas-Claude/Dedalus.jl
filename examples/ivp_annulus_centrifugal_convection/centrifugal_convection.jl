@@ -101,7 +101,7 @@ snapshots = add_file_handler(solver.evaluator, "snapshots"; sim_dt=0.1, max_writ
 add_task!(snapshots, -divergence(skew(u)); name="vorticity")
 add_task!(snapshots, b; name="buoyancy")
 scalars = add_file_handler(solver.evaluator, "scalars"; sim_dt=0.01)
-add_task!(scalars, integrate(0.5 * u * u); name="KE")
+add_task!(scalars, integrate(0.5 * DotProduct(u, u)); name="KE")
 
 # CFL
 cfl = CFL(solver; initial_dt=max_timestep, max_dt=max_timestep, safety=safety,
@@ -110,7 +110,7 @@ add_velocity!(cfl, u)
 
 # Flow properties
 flow = GlobalFlowProperty(solver; cadence=10)
-add_property!(flow, sqrt(u * u) / nu; name="Re")
+add_property!(flow, sqrt(DotProduct(u, u)) / nu; name="Re")
 
 # Main loop
 try

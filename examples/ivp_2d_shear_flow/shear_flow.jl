@@ -86,7 +86,7 @@ add_velocity!(cfl, u)
 
 # Flow properties
 flow = GlobalFlowProperty(solver; cadence=10)
-add_property!(flow, (u * ez)^2; name="w2")
+add_property!(flow, DotProduct(u, ez)^2; name="w2")
 
 # Main loop
 try
