@@ -3884,16 +3884,12 @@ end
 """
     transform_plan(b::DiskBasis, dist, grid_shape_val, axis, s)
 
-Build (or retrieve cached) a transform plan for the disk radial direction.
+Build (or retrieve cached) a DiskRadialTransform plan for the disk
+radial direction.  The concrete implementation is in `transforms.jl`;
+this method dispatches to the typed variant defined there.
 """
 function transform_plan(b::DiskBasis, dist, grid_shape_val, axis, s)
-    cache_key = (:transform_plan, objectid(dist), grid_shape_val, axis, s)
-    cached = get(b._cache, cache_key, nothing)
-    if cached !== nothing
-        return cached
-    end
-    # Stub: full disk transforms require m_maps distribution infrastructure
-    error("DiskBasis transform_plan: requires m_maps distribution infrastructure not yet available")
+    return transform_plan(b, dist, grid_shape_val, Int(axis), Int(s))
 end
 
 """
@@ -4663,16 +4659,12 @@ end
 """
     transform_plan(b::SphereBasis, dist, Ntheta, s)
 
-Build (or retrieve cached) a colatitude transform plan.
+Build (or retrieve cached) a SWSHColatitudeTransform plan for the sphere
+basis colatitude direction.  The concrete implementation is in
+`transforms.jl`; this method dispatches to the typed variant defined there.
 """
 function transform_plan(b::SphereBasis, dist, Ntheta, s)
-    cache_key = (:transform_plan, objectid(dist), Ntheta, s)
-    cached = get(b._cache, cache_key, nothing)
-    if cached !== nothing
-        return cached
-    end
-    # Stub: full sphere transforms require m_maps infrastructure
-    error("SphereBasis transform_plan: requires m_maps distribution infrastructure not yet available")
+    return transform_plan(b, dist, Int(Ntheta), Int(s))
 end
 
 """
