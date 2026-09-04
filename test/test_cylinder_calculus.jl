@@ -11,15 +11,15 @@ using Dedalus
     # Constants and builder helpers
     # ================================================================
 
-    const cyl_length = 1.88
-    const cyl_radius_disk = 1.5
-    const cyl_radii_annulus = (0.5, 3.0)
+    cyl_length = 1.88
+    cyl_radius_disk = 1.5
+    cyl_radii_annulus = (0.5, 3.0)
 
     function build_periodic_cylinder(Nz, Nphi, Nr, alpha, k, dealias, T)
         cz = Coordinate("z")
         cp = PolarCoordinates("phi", "r")
         c = DirectProduct(cz, cp)
-        d = Distributor(c, dtype=T)
+        d = Distributor(c, T)
         bz = Fourier(cz, Nz, (0, cyl_length); dealias=dealias, dtype=T)
         bp = DiskBasis(cp, (Nphi, Nr), T; radius=cyl_radius_disk, alpha=alpha, k=k, dealias=dealias)
         z, phi, r = local_grids(d, bz, bp, scales=dealias)
@@ -31,7 +31,7 @@ using Dedalus
         cz = Coordinate("z")
         cp = PolarCoordinates("phi", "r")
         c = DirectProduct(cz, cp)
-        d = Distributor(c, dtype=T)
+        d = Distributor(c, T)
         bz = Fourier(cz, Nz, (0, cyl_length); dealias=dealias, dtype=T)
         bp = AnnulusBasis(cp, (Nphi, Nr), T; radii=cyl_radii_annulus, k=k, dealias=dealias)
         z, phi, r = local_grids(d, bz, bp, scales=dealias)

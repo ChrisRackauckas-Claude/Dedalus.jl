@@ -16,7 +16,7 @@ using Dedalus
 
     function build_disk(Nphi, Nr, dealias, T)
         c = PolarCoordinates("phi", "r")
-        d = Distributor(c, dtype=T)
+        d = Distributor(c, T)
         b = DiskBasis(c, (Nphi, Nr), T; radius=radius_disk, dealias=(dealias, dealias))
         phi, r = local_grids(d, b, scales=dealias)
         x, y = cartesian(PolarCoordinates, phi, r)
@@ -25,7 +25,7 @@ using Dedalus
 
     function build_annulus(Nphi, Nr, dealias, T)
         c = PolarCoordinates("phi", "r")
-        d = Distributor(c, dtype=T)
+        d = Distributor(c, T)
         b = AnnulusBasis(c, (Nphi, Nr), T; radii=radii_annulus, dealias=(dealias, dealias))
         phi, r = local_grids(d, b, scales=dealias)
         x, y = cartesian(PolarCoordinates, phi, r)

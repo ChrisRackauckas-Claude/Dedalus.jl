@@ -40,9 +40,16 @@ using Dedalus
         @test isdefined(Dedalus, :Intertwiner)
     end
 
+    # Individual test files (test_transforms.jl, test_lbvp.jl, etc.) are
+    # present in test/ but require full operator/basis wiring to run.
+    # They will be enabled as the operator framework matures.
+
+    # Milestone 2 test files: dedalus_sphere, polar, sphere, cylinder
     include("test_dedalus_sphere.jl")
     include("test_polar_calculus.jl")
+    include("test_polar_operators.jl")
     include("test_polar_ncc.jl")
     include("test_sphere_calculus.jl")
+    include("test_sphere_ncc.jl")
     include("test_cylinder_calculus.jl")
 end

@@ -19,7 +19,7 @@ using Dedalus
 
     function build_sphere(Nphi, Ntheta, dealias, T)
         c = S2Coordinates("phi", "theta")
-        d = Distributor(c, dtype=T)
+        d = Distributor(c, T)
         b = SphereBasis(c, (Nphi, Ntheta), radius=radius, dealias=(dealias, dealias), dtype=T)
         phi, theta = local_grids(d, b, scales=dealias)
         return c, d, b, phi, theta
