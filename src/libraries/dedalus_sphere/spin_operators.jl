@@ -173,6 +173,10 @@ function Base.getindex(op::AbstractTensorOperator, sigma, tau)
     return tensor_getindex(op, s, t)
 end
 
+function Base.getindex(op::AbstractTensorOperator, args::Tuple{Tuple, Tuple})
+    return Base.getindex(op, args[1], args[2])
+end
+
 # ============================================================================
 # TensorOperatorGeneric — wraps a function (used for composed/added operators)
 # ============================================================================
