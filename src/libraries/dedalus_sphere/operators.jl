@@ -69,7 +69,11 @@ function Base.:*(c::Codomain, other::Int)
     if other < 0
         return -c + (other + 1) * c
     end
-    return c
+    result = c
+    for _ in 2:other
+        result = result + c
+    end
+    return result
 end
 
 Base.:*(other::Int, c::Codomain) = c * other
