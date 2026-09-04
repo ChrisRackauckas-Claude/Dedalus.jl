@@ -2068,20 +2068,7 @@ gradient(field, cs::CartesianCoordinates) = CartesianGradient(field, cs)
 gradient(field, cs::DirectProduct) = DirectProductGradient(field, cs)
 gradient(field, cs) = CartesianGradient(field, cs)  # fallback
 
-"""Divergence dispatch: selects CartesianDivergence or DirectProductDivergence."""
-function divergence(field; index=1)
-    if isa(field, Number) || field == 0
-        return 0
-    end
-    cs = field.tensorsig[index]
-    if isa(cs, CartesianCoordinates) || isa(cs, Coordinate)
-        return CartesianDivergence(field; index=index)
-    elseif isa(cs, DirectProduct)
-        return DirectProductDivergence(field; index=index)
-    else
-        return CartesianDivergence(field; index=index)  # fallback
-    end
-end
+# Divergence dispatch moved to end of file (after all operator types defined)
 
 """Curl dispatch: selects CartesianCurl or DirectProductCurl."""
 function curl(field; index=1)
@@ -2098,19 +2085,7 @@ function curl(field; index=1)
     end
 end
 
-"""Laplacian dispatch: selects CartesianLaplacian or DirectProductLaplacian."""
-function laplacian(field, cs)
-    if isa(field, Number) || field == 0
-        return 0
-    end
-    if isa(cs, CartesianCoordinates) || isa(cs, Coordinate)
-        return CartesianLaplacian(field, cs)
-    elseif isa(cs, DirectProduct)
-        return DirectProductLaplacian(field, cs)
-    else
-        return CartesianLaplacian(field, cs)  # fallback
-    end
-end
+# Laplacian dispatch moved to end of file (after all operator types defined)
 
 """Trace of tensor field (contracts first two indices)."""
 trace_op(field) = CartesianTrace(field)
@@ -2134,7 +2109,6 @@ end
 
 # Aliases for equation namespace
 const dt = time_derivative
-const lap = laplacian
 
 # ============================================================================
 # Display methods for all operator types
@@ -4868,13 +4842,7 @@ end
 
 # Stub for sphere_operator (delegates to dedalus_sphere)
 function sphere_operator(name, dtype, Lmax, m, spintotal_val)
-    # Delegate to DedalusSphere if available
-    if isdefined(@__MODULE__, :DedalusSphere)
-        return DedalusSphere.sphere_operator(name, dtype)(Lmax, m, spintotal_val).square
-    end
-    # Fallback: return identity matrix of appropriate size
-    n = Lmax + 1 - abs(m)
-    return sparse(1.0I, n, n)
+    error("sphere_operator not available — dedalus_sphere library not loaded")
 end
 
 # Stub for operator_matrix on radial basis
@@ -4891,8 +4859,7 @@ function spintotal(basis, tensorsig, spinindex)
     if hasproperty(basis, :spintotal)
         return basis.spintotal(tensorsig, spinindex)
     end
-    # Fallback: sum of spin orderings for matching tensor indices
-    return 0
+    error("spintotal not implemented for basis type $(typeof(basis))")
 end
 
 # Stub for derivative_basis with order argument
@@ -4900,8 +4867,7 @@ function derivative_basis(basis, order)
     if order == 1 && hasmethod(derivative_basis, Tuple{typeof(basis)})
         return derivative_basis(basis)
     end
-    # Fallback
-    return basis
+    error("derivative_basis(order=$order) not implemented for basis type $(typeof(basis))")
 end
 
 # Stubs for spherical-specific functions
@@ -4909,49 +4875,43 @@ function get_radial_basis(basis)
     if hasproperty(basis, :radial_basis)
         return basis.radial_basis
     end
-    return basis
+    error("get_radial_basis not implemented for basis type $(typeof(basis))")
 end
 
 function radial_recombinations(basis, tensorsig; ell_list=())
     if hasproperty(basis, :radial_recombinations)
         return basis.radial_recombinations(tensorsig; ell_list=ell_list)
     end
-    # Fallback: identity matrices
-    result = Dict{Any,Any}()
-    for ell in ell_list
-        n = 3^length(tensorsig)  # spherical has 3 components
-        result[ell] = sparse(1.0I, n, n)
-    end
-    return result
+    error("radial_recombinations not implemented for basis type $(typeof(basis))")
 end
 
 function n_size(basis, ell)
     if hasproperty(basis, :n_size)
         return basis.n_size(ell)
     end
-    return 1
+    error("n_size not implemented for basis type $(typeof(basis))")
 end
 
 function ell_reversed(basis, dist)
     if hasproperty(basis, :ell_reversed)
         return basis.ell_reversed(dist)
     end
-    return Dict{Any,Bool}()
+    error("ell_reversed not implemented for basis type $(typeof(basis))")
 end
 
 function ell_maps(basis, dist)
     if hasproperty(basis, :ell_maps)
         return basis.ell_maps(dist)
     end
-    return []
+    error("ell_maps not implemented for basis type $(typeof(basis))")
 end
 
 function backward_regularity_recombination!(tensorsig, axis, data; ell_maps=nothing)
-    # Stub: no-op until spherical basis module provides implementation
+    error("backward_regularity_recombination! not yet implemented — requires Milestone 3 RegularityBasis")
 end
 
 function forward_regularity_recombination!(tensorsig, axis, data; ell_maps=nothing)
-    # Stub: no-op until spherical basis module provides implementation
+    error("forward_regularity_recombination! not yet implemented — requires Milestone 3 RegularityBasis")
 end
 
 function field_shape(subproblem, op)
@@ -4975,11 +4935,11 @@ function m_maps(basis, dist)
     if hasproperty(basis, :m_maps)
         return basis.m_maps(dist)
     end
-    return []
+    error("m_maps not implemented for basis type $(typeof(basis))")
 end
 
 function require_local!(field, axis)
-    # Stub: no-op for now
+    error("require_local! not yet implemented for $(typeof(field))")
 end
 
 function coeff_size(subproblem, domain)
@@ -4991,3 +4951,5 @@ function coeff_size(subproblem, domain)
     return prod(shape; init=1)
 end
 
+
+const lap = laplacian
