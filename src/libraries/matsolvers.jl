@@ -68,6 +68,18 @@ Must be implemented by every concrete solver type.
 function solve end
 
 """
+    solve!(result, solver::AbstractMatSolver, vector)
+
+In-place solve: write the solution into `result`, avoiding allocation of the
+output vector.  Falls back to `copyto!(result, solve(solver, vector))` for
+solvers that do not provide a specialized method.
+"""
+function solve!(result, solver::AbstractMatSolver, vector::AbstractVecOrMat)
+    copyto!(result, solve(solver, vector))
+    return result
+end
+
+"""
     solve_H(solver::AbstractMatSolver, vector)
 
 Solve the conjugate-transpose (Hermitian adjoint) system.  Not all solvers
@@ -259,7 +271,14 @@ function UmfpackFactorized(matrix::AbstractSparseMatrix, solver=nothing)
 end
 
 function solve(s::UmfpackFactorized, vector::AbstractVecOrMat)
-    return s.LU \ vector
+    result = similar(vector)
+    ldiv!(result, s.LU, vector)
+    return result
+end
+
+function solve!(result, s::UmfpackFactorized, vector::AbstractVecOrMat)
+    ldiv!(result, s.LU, vector)
+    return result
 end
 
 register_solver!(UmfpackFactorized)
@@ -299,23 +318,40 @@ function FactorizedTransposeSolver(matrix::AbstractSparseMatrix; trans::Symbol=:
 end
 
 function solve(s::FactorizedTransposeSolver, vector::AbstractVecOrMat)
+    result = similar(vector)
     if s.trans == :N
-        return s.LU \ vector
+        ldiv!(result, s.LU, vector)
     elseif s.trans == :T
-        return transpose(s.LU) \ vector
+        ldiv!(result, transpose(s.LU), vector)
     else  # :H
-        return adjoint(s.LU) \ vector
+        ldiv!(result, adjoint(s.LU), vector)
     end
+    return result
+end
+
+function solve!(result, s::FactorizedTransposeSolver, vector::AbstractVecOrMat)
+    if s.trans == :N
+        ldiv!(result, s.LU, vector)
+    elseif s.trans == :T
+        ldiv!(result, transpose(s.LU), vector)
+    else  # :H
+        ldiv!(result, adjoint(s.LU), vector)
+    end
+    return result
 end
 
 function solve_H(s::FactorizedTransposeSolver, vector::AbstractVecOrMat)
+    result = similar(vector)
     if s.trans == :N
-        return adjoint(s.LU) \ vector
+        ldiv!(result, adjoint(s.LU), vector)
     elseif s.trans == :H
-        return s.LU \ vector
+        ldiv!(result, s.LU, vector)
     else  # :T
-        return conj.(s.LU \ conj.(vector))
+        conj_vec = conj.(vector)
+        ldiv!(result, s.LU, conj_vec)
+        result .= conj.(result)
     end
+    return result
 end
 
 # ---------------------------------------------------------------------------
@@ -339,6 +375,10 @@ end
 
 function solve(s::SuperluNaturalFactorized, vector::AbstractVecOrMat)
     return solve(s.inner, vector)
+end
+
+function solve!(result, s::SuperluNaturalFactorized, vector::AbstractVecOrMat)
+    return solve!(result, s.inner, vector)
 end
 
 function solve_H(s::SuperluNaturalFactorized, vector::AbstractVecOrMat)
@@ -370,6 +410,10 @@ function solve(s::SuperluNaturalFactorizedTranspose, vector::AbstractVecOrMat)
     return solve(s.inner, vector)
 end
 
+function solve!(result, s::SuperluNaturalFactorizedTranspose, vector::AbstractVecOrMat)
+    return solve!(result, s.inner, vector)
+end
+
 function solve_H(s::SuperluNaturalFactorizedTranspose, vector::AbstractVecOrMat)
     return solve_H(s.inner, vector)
 end
@@ -397,6 +441,10 @@ end
 
 function solve(s::SuperluColamdFactorized, vector::AbstractVecOrMat)
     return solve(s.inner, vector)
+end
+
+function solve!(result, s::SuperluColamdFactorized, vector::AbstractVecOrMat)
+    return solve!(result, s.inner, vector)
 end
 
 function solve_H(s::SuperluColamdFactorized, vector::AbstractVecOrMat)
@@ -428,6 +476,10 @@ function solve(s::SuperluColamdFactorizedTranspose, vector::AbstractVecOrMat)
     return solve(s.inner, vector)
 end
 
+function solve!(result, s::SuperluColamdFactorizedTranspose, vector::AbstractVecOrMat)
+    return solve!(result, s.inner, vector)
+end
+
 function solve_H(s::SuperluColamdFactorizedTranspose, vector::AbstractVecOrMat)
     return solve_H(s.inner, vector)
 end
@@ -455,6 +507,10 @@ end
 
 function solve(s::UmfpackFactorizedTranspose, vector::AbstractVecOrMat)
     return solve(s.inner, vector)
+end
+
+function solve!(result, s::UmfpackFactorizedTranspose, vector::AbstractVecOrMat)
+    return solve!(result, s.inner, vector)
 end
 
 function solve_H(s::UmfpackFactorizedTranspose, vector::AbstractVecOrMat)
@@ -503,6 +559,11 @@ function solve(s::BandedLAPACK, vector::AbstractVecOrMat)
     return ndims(vector) == 1 ? vec(b) : b
 end
 
+function solve!(result, s::BandedLAPACK, vector::AbstractVecOrMat)
+    copyto!(result, solve(s, vector))
+    return result
+end
+
 register_solver!(BandedLAPACK)
 # Also register under the Python name for compatibility
 register_solver!("scipybanded", BandedLAPACK)
@@ -527,6 +588,7 @@ function SPQRSolve(matrix::AbstractSparseMatrix, solver=nothing)
 end
 
 function solve(s::SPQRSolve, vector::AbstractVecOrMat)
+    # SuiteSparseQR does not support ldiv! with separate output; use \ here
     return s.QR \ vector
 end
 
@@ -568,6 +630,11 @@ function solve(s::SparseInverse, vector::AbstractVecOrMat)
     return s.matrix_inverse * vector
 end
 
+function solve!(result, s::SparseInverse, vector::AbstractVecOrMat)
+    mul!(result, s.matrix_inverse, vector)
+    return result
+end
+
 register_solver!(SparseInverse)
 
 # ---------------------------------------------------------------------------
@@ -591,6 +658,11 @@ end
 
 function solve(s::DenseInverse, vector::AbstractVecOrMat)
     return s.matrix_inverse * vector
+end
+
+function solve!(result, s::DenseInverse, vector::AbstractVecOrMat)
+    mul!(result, s.matrix_inverse, vector)
+    return result
 end
 
 register_solver!(DenseInverse)
@@ -658,6 +730,15 @@ function solve(s::BlockInverse, vector::AbstractVecOrMat)
     end
 end
 
+function solve!(result, s::BlockInverse, vector::AbstractVecOrMat)
+    if s.use_diagonal
+        result .= s.inv_diagonal .* vector
+    else
+        mul!(result, s.matrix_inverse, vector)
+    end
+    return result
+end
+
 register_solver!(BlockInverse)
 
 # ---------------------------------------------------------------------------
@@ -679,7 +760,15 @@ function DenseLU(matrix::AbstractSparseMatrix, solver=nothing)
 end
 
 function solve(s::DenseLU, vector::AbstractVecOrMat)
-    return s.LU \ vector
+    result = copy(convert(Array, vector))
+    ldiv!(s.LU, result)
+    return result
+end
+
+function solve!(result, s::DenseLU, vector::AbstractVecOrMat)
+    copyto!(result, vector)
+    ldiv!(s.LU, result)
+    return result
 end
 
 register_solver!(DenseLU)
@@ -746,6 +835,13 @@ end
 function solve(s::Woodbury, vector::AbstractVecOrMat)
     Ainv_Y = solve(s.A_matsolver, vector)
     return Ainv_Y - s.Ainv_U * (s.Sinv * (s.V * Ainv_Y))
+end
+
+function solve!(result, s::Woodbury, vector::AbstractVecOrMat)
+    solve!(result, s.A_matsolver, vector)
+    # result now holds Ainv_Y; compute correction in-place
+    result .-= s.Ainv_U * (s.Sinv * (s.V * result))
+    return result
 end
 
 # ---------------------------------------------------------------------------
