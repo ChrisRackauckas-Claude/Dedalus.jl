@@ -160,7 +160,7 @@ This implements the core multistep algorithm:
 5. Form and solve the LHS system
 """
 function _multistep_step!(data::MultistepIMEXData, stepper::MultistepIMEX,
-                          dt::Float64, wall_time::Float64)
+                          dt::Float64, wall_time::Float64)::Nothing
     solver = data.solver
     subproblems = [sp for sp in solver.subproblems if subproblem_size(sp) > 0]
     evaluator = solver.evaluator
@@ -284,7 +284,7 @@ end
 Apply sparse matrix along the first axis of subdata arrays.
 Handles both 1D and 2D data.
 """
-function _apply_sparse_to_subdata!(A, X, out)
+function _apply_sparse_to_subdata!(A, X, out)::Nothing
     if ndims(X) <= 1 && ndims(out) <= 1
         mul!(out, A, X)
     else
@@ -292,6 +292,7 @@ function _apply_sparse_to_subdata!(A, X, out)
         X_flat = reshape(X, size(A, 2), :)
         mul!(out_flat, A, X_flat)
     end
+    return nothing
 end
 
 # ============================================================================
@@ -857,7 +858,7 @@ For each stage i = 1, ..., s:
         - k * sum_{j<i} H_{ij} * L . X(n,j)
 """
 function _rk_step!(data::RungeKuttaIMEXData, stepper::RungeKuttaIMEX,
-                   dt::Float64, wall_time::Float64)
+                   dt::Float64, wall_time::Float64)::Nothing
     solver = data.solver
     subproblems = [sp for sp in solver.subproblems if subproblem_size(sp) > 0]
     evaluator = solver.evaluator

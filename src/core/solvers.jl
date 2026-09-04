@@ -44,7 +44,7 @@ function _solver_config(section::String, key::String; default=nothing)
     end
 end
 
-function _solver_config_bool(section::String, key::String; default=false)
+function _solver_config_bool(section::String, key::String; default::Bool=false)::Bool
     try
         return get_config_bool(section, key)
     catch

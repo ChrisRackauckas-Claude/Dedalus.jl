@@ -159,9 +159,10 @@ end
 
 Evaluate all handlers belonging to a named group.
 """
-function evaluate_group(ev::Evaluator, group; kw...)
+function evaluate_group(ev::Evaluator, group; kw...)::Nothing
     handlers = get(ev.groups, group, Any[])
     evaluate_handlers(ev, handlers; kw...)
+    return nothing
 end
 
 """
@@ -169,9 +170,10 @@ end
 
 Evaluate all handlers whose schedules indicate they are due.
 """
-function evaluate_scheduled(ev::Evaluator; kw...)
+function evaluate_scheduled(ev::Evaluator; kw...)::Nothing
     handlers = [h for h in ev.handlers if check_schedule(h; kw...)]
     evaluate_handlers(ev, handlers; kw...)
+    return nothing
 end
 
 """Alias: callers in solvers.jl and timesteppers.jl use the bang name."""
@@ -268,7 +270,7 @@ end
 
 Move all fields in `fields` to the coefficient layout.
 """
-function require_coeff_space(ev::Evaluator, fields)
+function require_coeff_space(ev::Evaluator, fields)::Nothing
     coeff_layout = ev.dist.coeff_layout
     # Quick return if all fields are already in coeff layout
     if all(f -> f.layout === coeff_layout, fields)
@@ -2131,5 +2133,5 @@ export Evaluator,
 
 
 # Evaluator-specific dispatches for require_coeff/grid_space!
-require_coeff_space!(ev::Evaluator, fields) = require_coeff_space(ev, fields)
-require_grid_space!(ev::Evaluator, fields) = require_grid_space(ev, fields)
+require_coeff_space!(ev::Evaluator, fields)::Nothing = require_coeff_space(ev, fields)
+require_grid_space!(ev::Evaluator, fields)::Nothing = require_grid_space(ev, fields)

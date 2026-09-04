@@ -62,16 +62,16 @@ using FFTW
 # ---------------------------------------------------------------------------
 
 """FFTW planning rigor flag, read from `[transforms-fftw] PLANNING_RIGOR`."""
-function _get_fftw_rigor()
+function _get_fftw_rigor()::String
     try
-        return get_config("transforms-fftw", "PLANNING_RIGOR")
+        return string(get_config("transforms-fftw", "PLANNING_RIGOR"))
     catch
         return "measure"
     end
 end
 
 """Whether to dealias before spectral conversion (Jacobi transforms)."""
-function _get_dealias_before_converting()
+function _get_dealias_before_converting()::Bool
     try
         return get_config_bool("transforms", "DEALIAS_BEFORE_CONVERTING")
     catch

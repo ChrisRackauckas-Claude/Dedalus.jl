@@ -565,13 +565,14 @@ end
 
 Precondition and scatter subproblem data out to input-like fields.
 """
-function scatter_inputs!(sp::Subproblem, data, fields)
+function scatter_inputs!(sp::Subproblem, data, fields)::Nothing
     _apply_sparse_axis0!(sp.pre_right, data, sp._input_buffer)
     for (field, buffer_data) in zip(fields, sp._input_views)
         for (buffer_view, field_slcs) in buffer_data
             copyto!(view(field.data, field_slcs...), buffer_view)
         end
     end
+    return nothing
 end
 
 """
@@ -579,13 +580,14 @@ end
 
 Precondition and scatter subproblem data out to output-like fields.
 """
-function scatter_outputs!(sp::Subproblem, data, fields)
+function scatter_outputs!(sp::Subproblem, data, fields)::Nothing
     _apply_sparse_axis0!(sp.pre_left_pinv, data, sp._output_buffer)
     for (field, buffer_data) in zip(fields, sp._output_views)
         for (buffer_view, field_slcs) in buffer_data
             copyto!(view(field.data, field_slcs...), buffer_view)
         end
     end
+    return nothing
 end
 
 """
