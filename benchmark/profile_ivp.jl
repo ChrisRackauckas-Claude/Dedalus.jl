@@ -7,6 +7,8 @@ runs it for 100 timesteps, collecting:
   2. Allocation count and total bytes via @allocated
   3. Profile.@profile flamegraph data (top-20 time-consuming functions)
   4. Per-step timing breakdown
+  5. Per-step component breakdown (RHS evaluation, LHS solve, transform,
+     transpose/MPI) estimated from Profile sample categorization
 
 Based on examples/ivp_2d_rayleigh_benard/rayleigh_benard.jl but with reduced
 resolution and fixed timestep for reproducible profiling.
@@ -334,6 +336,128 @@ function run_benchmark()
         end
         println()
     end
+
+    # ------------------------------------------------------------------
+    # Phase 5: Per-step component breakdown from Profile data
+    # ------------------------------------------------------------------
+    println("-" ^ 72)
+    println("Phase 5: Per-step component breakdown (estimated from Profile samples)")
+    println("-" ^ 72)
+    println()
+
+    try
+        # Profile.retrieve() -> (ips::Vector{UInt64}, lidict::Dict{UInt64, Vector{StackFrame}})
+        # ips is a flat stream of instruction pointers separated by 0 (one backtrace per sample).
+        # lidict maps each IP to its resolved stack frames.
+        ips_raw, lidict = Profile.retrieve()
+        if isempty(ips_raw)
+            println("  No profile data collected; skipping component breakdown.")
+        else
+            # Category regex patterns (applied to lowercase function name)
+            rhs_patterns   = [r"evaluate_scheduled", r"evaluate_group",
+                              r"evaluate_handlers", r"(?<![a-z])operate(?![a-z])", r"evaluate_future"]
+            lhs_patterns   = [r"(?<![a-z])solve(?![a-z])", r"ldiv!", r"lu!", r"factorize"]
+            trans_patterns = [r"forward!", r"backward!", r"(?<![a-z])fft", r"rfft", r"plan_"]
+            mpi_patterns   = [r"transpose", r"alltoallv", r"gather", r"scatter"]
+
+            function categorize_frame(func_name::AbstractString)
+                fn = lowercase(func_name)
+                for pat in rhs_patterns
+                    occursin(pat, fn) && return :RHS
+                end
+                for pat in lhs_patterns
+                    occursin(pat, fn) && return :LHS
+                end
+                for pat in trans_patterns
+                    occursin(pat, fn) && return :Transform
+                end
+                for pat in mpi_patterns
+                    occursin(pat, fn) && return :TransposeMPI
+                end
+                return :Other
+            end
+
+            # Count samples per category by walking every instruction pointer
+            # in every backtrace.  Each backtrace represents one sample; we
+            # attribute the sample to the leaf-most recognized category to
+            # avoid double-counting nested calls.
+            category_counts = Dict{Symbol, Int}(
+                :RHS          => 0,
+                :LHS          => 0,
+                :Transform    => 0,
+                :TransposeMPI => 0,
+                :Other        => 0,
+            )
+            total_samples = 0
+
+            # Helper: classify a single backtrace (vector of IPs) using lidict.
+            function classify_backtrace(ips, lidict)
+                # Walk from leaf (index 1) outward; first recognized category wins.
+                for ip in ips
+                    frames = get(lidict, ip, nothing)
+                    frames === nothing && continue
+                    for sf in frames
+                        cat = categorize_frame(string(sf.func))
+                        if cat !== :Other
+                            return cat
+                        end
+                    end
+                end
+                return :Other
+            end
+
+            # Parse the flat IP vector: backtraces are separated by 0
+            ips_buf = UInt64[]
+            for ip in ips_raw
+                if ip == 0
+                    if !isempty(ips_buf)
+                        cat = classify_backtrace(ips_buf, lidict)
+                        category_counts[cat] += 1
+                        total_samples += 1
+                        empty!(ips_buf)
+                    end
+                else
+                    push!(ips_buf, ip)
+                end
+            end
+            if !isempty(ips_buf)
+                cat = classify_backtrace(ips_buf, lidict)
+                category_counts[cat] += 1
+                total_samples += 1
+            end
+
+            println("  Component breakdown (from $total_samples profile samples):")
+            println()
+            @printf("    %-20s  %8s  %6s\n", "Component", "Samples", "  %")
+            println("    " * "-" ^ 40)
+
+            labels = [
+                (:RHS,          "RHS evaluation"),
+                (:LHS,          "LHS solve"),
+                (:Transform,    "Transform"),
+                (:TransposeMPI, "Transpose / MPI"),
+                (:Other,        "Other"),
+            ]
+            for (key, label) in labels
+                cnt = category_counts[key]
+                pct = total_samples > 0 ? 100.0 * cnt / total_samples : 0.0
+                @printf("    %-20s  %8d  %5.1f%%\n", label, cnt, pct)
+            end
+            println()
+
+            recognized = total_samples - category_counts[:Other]
+            recog_pct = total_samples > 0 ? 100.0 * recognized / total_samples : 0.0
+            @printf("  Recognized solver work: %d / %d samples (%.1f%%)\n",
+                    recognized, total_samples, recog_pct)
+            println()
+            println("  NOTE: Percentages are estimates from statistical profiling.")
+            println("        'Other' includes runtime, GC, I/O, and minor solver bookkeeping.")
+        end
+    catch e
+        println("  ERROR during component breakdown analysis:")
+        println("  ", e)
+    end
+    println()
 
     # ------------------------------------------------------------------
     # Summary
