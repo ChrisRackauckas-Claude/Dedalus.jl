@@ -57,6 +57,11 @@ include("core/arithmetic.jl")
 include("core/operators.jl")
 
 # ============================================================
+# Layer 4b: dedalus_sphere library (used by bases and operators)
+# ============================================================
+include("libraries/dedalus_sphere/DedalusSphere.jl")
+
+# ============================================================
 # Layer 5: Spectral bases and transforms
 # ============================================================
 include("core/basis.jl")
