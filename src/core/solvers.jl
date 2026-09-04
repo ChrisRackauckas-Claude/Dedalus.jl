@@ -343,16 +343,33 @@ function solve_dense!(solver::EigenvalueSolver, subproblem;
     A = Matrix(sp.L_min)
     B = -Matrix(sp.M_min)
     if left
-        # Right eigenvectors
         F_right = eigen(A, B)
         solver.eigenvalues = F_right.values
         pre_right_evecs = F_right.vectors
-        # Left eigenvectors: solve A^H * w = conj(lambda) * B^H * w
         F_left = eigen(A', B')
-        pre_left_evecs = F_left.vectors
+        left_evals = F_left.values
+        pre_left_evecs_raw = F_left.vectors
+        # Match left eigenvectors to right by closest conj(eigenvalue)
+        perm = Int[]
+        used = falses(length(left_evals))
+        for rv in F_right.values
+            best_idx = 0
+            best_dist = Inf
+            for j in eachindex(left_evals)
+                used[j] && continue
+                d = abs(conj(left_evals[j]) - rv)
+                if d < best_dist
+                    best_dist = d
+                    best_idx = j
+                end
+            end
+            used[best_idx] = true
+            push!(perm, best_idx)
+        end
+        pre_left_evecs = pre_left_evecs_raw[:, perm]
         solver.right_eigenvectors = solver.eigenvectors = sp.pre_right * pre_right_evecs
-        solver.left_eigenvectors = conj.(sp.pre_left') * pre_left_evecs
-        solver.modified_left_eigenvectors = conj.((sp.M_min * sp.pre_right_pinv)') * pre_left_evecs
+        solver.left_eigenvectors = sp.pre_left' * pre_left_evecs
+        solver.modified_left_eigenvectors = (sp.M_min * sp.pre_right_pinv)' * pre_left_evecs
         if normalize_left
             norms = diag(pre_left_evecs' * sp.M_min * pre_right_evecs)
             solver.left_eigenvectors ./= conj.(norms)'
@@ -397,8 +414,8 @@ function solve_sparse!(solver::EigenvalueSolver, subproblem, N::Int, target;
     if left
         solver.eigenvalues, pre_right_evecs, solver.left_eigenvalues, pre_left_evecs = eig_result
         solver.right_eigenvectors = solver.eigenvectors = sp.pre_right * pre_right_evecs
-        solver.left_eigenvectors = conj.(sp.pre_left') * pre_left_evecs
-        solver.modified_left_eigenvectors = conj.((sp.M_min * sp.pre_right_pinv)') * pre_left_evecs
+        solver.left_eigenvectors = sp.pre_left' * pre_left_evecs
+        solver.modified_left_eigenvectors = (sp.M_min * sp.pre_right_pinv)' * pre_left_evecs
         # Check eigenvalue match
         if !isapprox(solver.eigenvalues, conj.(solver.left_eigenvalues); atol=1e-10)
             if raise_on_mismatch
@@ -462,10 +479,10 @@ function _sparse_eigs(A, B; N::Int, target, matsolver, v0=nothing, left::Bool=fa
     transformed_evals = sigma .+ 1.0 ./ eigenvalues
     if left
         function matvec_H(x)
-            return B' * solve(C_solver, x)
+            return solve_H(C_solver, B' * x)
         end
         left_evals, left_evecs = _arnoldi_eigs(matvec_H, n, N; v0=v0)
-        left_transformed = sigma .+ 1.0 ./ left_evals
+        left_transformed = conj(sigma) .+ 1.0 ./ left_evals
         return (transformed_evals, eigenvectors, conj.(left_transformed), left_evecs)
     end
     return (transformed_evals, eigenvectors)
