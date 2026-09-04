@@ -407,14 +407,14 @@ function resize_coeffs_complex!(data_in::AbstractArray, data_out::AbstractArray,
         end
         nout = size(data_out, axis)
         if nout > 1
-            for i in 2:nout
+            @inbounds for i in 2:nout
                 selectdim(data_out, axis, i) .= 0
             end
         end
     else
         nout = size(data_out, axis)
         # Positive frequencies: indices 1 through Kmax+1
-        for i in 1:Kmax+1
+        @inbounds for i in 1:Kmax+1
             if rescale === nothing
                 selectdim(data_out, axis, i) .= selectdim(data_in, axis, i)
             else
@@ -424,13 +424,13 @@ function resize_coeffs_complex!(data_in::AbstractArray, data_out::AbstractArray,
         # Zero intermediate (bad) frequencies
         neg_start = nout - Kmax + 1  # first negative freq index in output
         if Kmax + 2 <= neg_start - 1
-            for i in (Kmax+2):(neg_start-1)
+            @inbounds for i in (Kmax+2):(neg_start-1)
                 selectdim(data_out, axis, i) .= 0
             end
         end
         # Negative frequencies: last Kmax indices
         nin = size(data_in, axis)
-        for j in 0:Kmax-1
+        @inbounds for j in 0:Kmax-1
             src_idx = nin - Kmax + 1 + j
             dst_idx = nout - Kmax + 1 + j
             if rescale === nothing
@@ -670,7 +670,7 @@ function unpack_rescale_real!(temp::AbstractArray, cdata::AbstractArray,
         selectdim(cdata, axis, 2) .= 0
     end
     # 1 <= k <= Kmax: unpack real and imaginary parts
-    for k in 1:Kmax
+    @inbounds for k in 1:Kmax
         cos_idx = 2 * k + 1   # 1-based index for a(k)
         msin_idx = 2 * k + 2  # 1-based index for b(k)
         temp_idx = k + 1      # 1-based index into rfft output
@@ -685,7 +685,7 @@ function unpack_rescale_real!(temp::AbstractArray, cdata::AbstractArray,
     first_zero = 2 * (Kmax + 1) + 1
     ncoeff = size(cdata, axis)
     if first_zero <= ncoeff
-        for i in first_zero:ncoeff
+        @inbounds for i in first_zero:ncoeff
             selectdim(cdata, axis, i) .= 0
         end
     end
@@ -709,7 +709,7 @@ function repack_rescale_real!(cdata::AbstractArray, temp::AbstractArray,
         selectdim(temp, axis, 1) .= selectdim(cdata, axis, 1) .* rescale
     end
     # 1 <= k <= Kmax: repack cos and msin into complex
-    for k in 1:Kmax
+    @inbounds for k in 1:Kmax
         cos_idx = 2 * k + 1
         msin_idx = 2 * k + 2
         temp_idx = k + 1
@@ -724,7 +724,7 @@ function repack_rescale_real!(cdata::AbstractArray, temp::AbstractArray,
     # Zero k > Kmax in temp
     ntemp = size(temp, axis)
     if Kmax + 2 <= ntemp
-        for i in (Kmax+2):ntemp
+        @inbounds for i in (Kmax+2):ntemp
             selectdim(temp, axis, i) .= 0
         end
     end
