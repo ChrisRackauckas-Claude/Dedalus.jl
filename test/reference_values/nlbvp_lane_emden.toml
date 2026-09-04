@@ -1,0 +1,19 @@
+[metadata]
+example = "nlbvp_ball_lane_emden"
+source = "Boyd (2011): Chebyshev spectral methods and the Lane-Emden problem"
+tolerance_rtol = 1e-6
+
+[parameters]
+Nr = 64
+n = 3.0
+tolerance = 1e-10
+max_iter = 30
+
+[reference]
+# R for the Lane-Emden equation with polytropic index n
+R_n3 = 6.896848619376960
+# Additional known values from Boyd Table 1
+R_n0 = 2.449489742783178  # sqrt(6)
+R_n1 = 3.141592653589793  # pi
+R_n1_5 = 3.65375373621912608
+R_n2 = 4.3528745959461246769735700

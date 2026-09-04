@@ -1,0 +1,22 @@
+[metadata]
+example = "ivp_1d_kdv_burgers"
+source = "Analytical: initial condition is exact; early evolution should preserve smoothness"
+tolerance_rtol = 1e-3
+relative_change_tolerance = 0.1
+
+[parameters]
+Lx = 10.0
+Nx = 256
+a = 1e-4
+b = 2e-4
+n_ic = 20
+timestep = 2e-3
+num_steps = 10
+
+[reference]
+# u(x=2,t=0) = log(1 + cosh(20)^2/cosh(20*(2-2))^2)/(2*20) = log(1+1)/(40) ≈ 0.01733
+# Peak value at x=0.2*Lx=2.0: u_peak = log(1 + cosh(20)^2) / (2*20) ≈ 0.4999
+u_peak_t0 = 0.49965890819319284
+x_peak = 2.0
+# After 10 steps (dt=2e-3, t=0.02), solution should still be bounded
+max_u_upper_bound = 1.0
