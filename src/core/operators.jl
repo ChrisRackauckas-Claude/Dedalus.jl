@@ -2230,6 +2230,9 @@ export AbstractOperator, AbstractLinearOperator, SpectralOperator, SpectralOpera
        MulCosine, PolarGradient, PolarDivergence, PolarLaplacian,
        # S2 operators (Group 4)
        SphereEllProduct,
+       # Sphere differential operators (Group 5)
+       SphereGradient, SphereDivergence, SphereLaplacian,
+       sphere_basis_k,
        gradient, divergence, curl, laplacian,
        trace_op, transpose_components, grid_op, coeff_op,
        time_derivative, component,
@@ -4417,13 +4420,16 @@ end
 # --------------------------------------------------------------------------
 
 gradient(field, cs::PolarCoordinates) = PolarGradient(field, cs)
+gradient(field, cs::S2Coordinates) = SphereGradient(field, cs)
 
 function divergence(field; index=1)
     if isa(field, Number) || field == 0
         return 0
     end
     cs = field.tensorsig[index]
-    if isa(cs, PolarCoordinates)
+    if isa(cs, S2Coordinates)
+        return SphereDivergence(field; index=index)
+    elseif isa(cs, PolarCoordinates)
         return PolarDivergence(field; index=index)
     elseif isa(cs, CartesianCoordinates) || isa(cs, Coordinate)
         return CartesianDivergence(field; index=index)
@@ -4438,7 +4444,9 @@ function laplacian(field, cs)
     if isa(field, Number) || field == 0
         return 0
     end
-    if isa(cs, PolarCoordinates)
+    if isa(cs, S2Coordinates)
+        return SphereLaplacian(field, cs)
+    elseif isa(cs, PolarCoordinates)
         return PolarLaplacian(field, cs)
     elseif isa(cs, CartesianCoordinates) || isa(cs, Coordinate)
         return CartesianLaplacian(field, cs)
@@ -4535,6 +4543,308 @@ function enforce_conditions(op::SphereEllProduct)
 end
 
 # ============================================================================
+# Group 5: Sphere differential operators (SphereGradient, SphereDivergence, SphereLaplacian)
+# ============================================================================
+
+# --------------------------------------------------------------------------
+# SphereBasis spin coupling coefficient k(ell, s, mu)
+# --------------------------------------------------------------------------
+
+"""
+    sphere_basis_k(ell, s, mu)
+
+Spin coupling coefficient for sphere operators.
+Translated from Python `SphereBasis.k(l, s, mu)`:
+    k(l, s, mu) = -mu * sqrt(max(0, (l - mu*s) * (l + mu*s + 1) / 2))
+"""
+function sphere_basis_k(ell, s, mu)
+    return -mu * sqrt(max(0, (ell - mu * s) * (ell + mu * s + 1) / 2))
+end
+
+# --------------------------------------------------------------------------
+# SphereGradient
+# --------------------------------------------------------------------------
+
+"""
+    SphereGradient <: SeparableSphereOperator
+
+Gradient on S2 (the 2-sphere). A separable sphere operator whose symbol
+is the spin-raising/lowering coefficient `k(ell, s, mu) / radius`.
+
+Prepends a vector index (the S2 coordinate system) to the tensor signature.
+"""
+mutable struct SphereGradient <: SeparableSphereOperator
+    args::Vector{Any}
+    original_args::Tuple
+    out::Any
+    dist::Any
+    domain::Any
+    tensorsig::Tuple
+    dtype::DataType
+    name::String
+    operand::Any
+    coordsys::Any
+    input_basis::Any
+    output_basis::Any
+    first_axis::Any
+    last_axis::Any
+    complex_operator::Bool
+    subaxis_dependence::Vector{Bool}
+    subaxis_coupling::Vector{Bool}
+    last_id::Any
+    last_out::Any
+    store_last::Bool
+    scales::Any
+end
+
+function SphereGradient(operand, coordsys; out=nothing)
+    if isa(operand, Number) || operand == 0
+        return 0
+    end
+    dist = operand.dist
+    input_basis = get_basis(operand.domain, coordsys)
+    output_basis = input_basis  # Gradient stays on the same basis
+    fa = first_axis(dist, input_basis)
+    la = last_axis(dist, input_basis)
+    new_tensorsig = (coordsys, operand.tensorsig...)
+    SphereGradient(Any[operand], (operand,), out, dist, operand.domain,
+                   new_tensorsig, operand.dtype, "Grad", operand,
+                   coordsys, input_basis, output_basis, fa, la,
+                   false,
+                   [false, true], [false, false],
+                   nothing, nothing, false, 1)
+end
+
+function spinindex_out(op::SphereGradient, spinindex_in)
+    # Gradient prepends spin index 1 (minus) and 2 (plus) to each existing spin index
+    return ((1, spinindex_in...), (2, spinindex_in...))
+end
+
+function symbol(op::SphereGradient, spinindex_in, spinindex_out_val,
+                spintotal_in, spintotal_out, local_ell, radius)
+    mu = spintotal_out - spintotal_in
+    k_val = sphere_basis_k.(local_ell, spintotal_in, mu)
+    # Zero out entries where |spintotal_in| > ell or |spintotal_out| > ell
+    k_val = @. ifelse(abs(spintotal_in) > local_ell, zero(k_val), k_val)
+    k_val = @. ifelse(abs(spintotal_out) > local_ell, zero(k_val), k_val)
+    return k_val ./ radius
+end
+
+function new_operand(op::SphereGradient, operand; kw...)
+    return SphereGradient(operand, op.coordsys; kw...)
+end
+
+function check_conditions(op::SphereGradient)
+    arg = op.args[1]
+    if !isa(arg, AbstractCurrent)
+        return false
+    end
+    colat_axis = op.first_axis + 1
+    return !arg.layout.grid_space[colat_axis]
+end
+
+function enforce_conditions(op::SphereGradient)
+    arg = op.args[1]
+    if isa(arg, Field)
+        colat_axis = op.first_axis + 1
+        require_coeff_space!(arg, colat_axis)
+    end
+end
+
+# --------------------------------------------------------------------------
+# SphereDivergence
+# --------------------------------------------------------------------------
+
+"""
+    SphereDivergence <: SeparableSphereOperator
+
+Divergence on S2 (the 2-sphere). A separable sphere operator whose symbol
+reuses `SphereGradient.symbol` (the gradient and divergence are dual).
+
+Contracts the first tensor index.
+"""
+mutable struct SphereDivergence <: SeparableSphereOperator
+    args::Vector{Any}
+    original_args::Tuple
+    out::Any
+    dist::Any
+    domain::Any
+    tensorsig::Tuple
+    dtype::DataType
+    name::String
+    operand::Any
+    coordsys::Any
+    input_basis::Any
+    output_basis::Any
+    first_axis::Any
+    last_axis::Any
+    index::Int
+    complex_operator::Bool
+    subaxis_dependence::Vector{Bool}
+    subaxis_coupling::Vector{Bool}
+    last_id::Any
+    last_out::Any
+    store_last::Bool
+    scales::Any
+end
+
+function SphereDivergence(operand; index=1, out=nothing)
+    if isa(operand, Number) || operand == 0
+        return 0
+    end
+    if index != 1
+        error("SphereDivergence only implemented along index 1.")
+    end
+    coordsys = operand.tensorsig[index]
+    dist = operand.dist
+    input_basis = get_basis(operand.domain, coordsys)
+    output_basis = input_basis  # Divergence stays on the same basis
+    fa = first_axis(dist, input_basis)
+    la = last_axis(dist, input_basis)
+    new_tensorsig = (operand.tensorsig[1:index-1]..., operand.tensorsig[index+1:end]...)
+    SphereDivergence(Any[operand], (operand,), out, dist, operand.domain,
+                     new_tensorsig, operand.dtype, "Div", operand,
+                     coordsys, input_basis, output_basis, fa, la,
+                     index, false,
+                     [false, true], [false, false],
+                     nothing, nothing, false, 1)
+end
+
+function spinindex_out(op::SphereDivergence, spinindex_in)
+    # Divergence contracts: spin index 1 (minus) or 2 (plus) in first position
+    if spinindex_in[1] in (1, 2)
+        return (spinindex_in[2:end],)
+    else
+        return ()
+    end
+end
+
+function symbol(op::SphereDivergence, spinindex_in, spinindex_out_val,
+                spintotal_in, spintotal_out, local_ell, radius)
+    # Divergence symbol is the same as gradient symbol (duality)
+    mu = spintotal_out - spintotal_in
+    k_val = sphere_basis_k.(local_ell, spintotal_in, mu)
+    k_val = @. ifelse(abs(spintotal_in) > local_ell, zero(k_val), k_val)
+    k_val = @. ifelse(abs(spintotal_out) > local_ell, zero(k_val), k_val)
+    return k_val ./ radius
+end
+
+function new_operand(op::SphereDivergence, operand; kw...)
+    return SphereDivergence(operand; index=op.index, kw...)
+end
+
+function check_conditions(op::SphereDivergence)
+    arg = op.args[1]
+    if !isa(arg, AbstractCurrent)
+        return false
+    end
+    colat_axis = op.first_axis + 1
+    return !arg.layout.grid_space[colat_axis]
+end
+
+function enforce_conditions(op::SphereDivergence)
+    arg = op.args[1]
+    if isa(arg, Field)
+        colat_axis = op.first_axis + 1
+        require_coeff_space!(arg, colat_axis)
+    end
+end
+
+# --------------------------------------------------------------------------
+# SphereLaplacian
+# --------------------------------------------------------------------------
+
+"""
+    SphereLaplacian <: SeparableSphereOperator
+
+Laplacian on S2 (the 2-sphere). A separable sphere operator whose symbol
+is the composition of eth and eth-bar: k_lap / radius^2.
+
+Preserves the tensor signature.
+"""
+mutable struct SphereLaplacian <: SeparableSphereOperator
+    args::Vector{Any}
+    original_args::Tuple
+    out::Any
+    dist::Any
+    domain::Any
+    tensorsig::Tuple
+    dtype::DataType
+    name::String
+    operand::Any
+    coordsys::Any
+    input_basis::Any
+    output_basis::Any
+    first_axis::Any
+    last_axis::Any
+    complex_operator::Bool
+    subaxis_dependence::Vector{Bool}
+    subaxis_coupling::Vector{Bool}
+    last_id::Any
+    last_out::Any
+    store_last::Bool
+    scales::Any
+end
+
+function SphereLaplacian(operand, coordsys; out=nothing)
+    if isa(operand, Number) || operand == 0
+        return 0
+    end
+    dist = operand.dist
+    input_basis = get_basis(operand.domain, coordsys)
+    output_basis = input_basis  # Laplacian stays on the same basis
+    fa = first_axis(dist, input_basis)
+    la = last_axis(dist, input_basis)
+    SphereLaplacian(Any[operand], (operand,), out, dist, operand.domain,
+                    operand.tensorsig, operand.dtype, "Lap", operand,
+                    coordsys, input_basis, output_basis, fa, la,
+                    false,
+                    [false, true], [false, false],
+                    nothing, nothing, false, 1)
+end
+
+function spinindex_out(op::SphereLaplacian, spinindex_in)
+    # Laplacian preserves spin indices
+    return (spinindex_in,)
+end
+
+function symbol(op::SphereLaplacian, spinindex_in, spinindex_out_val,
+                spintotal_in, spintotal_out, local_ell, radius)
+    # Laplacian = composition of eth-bar and eth:
+    # k_lap = k(ell, s-1, +1) * k(ell, s, -1) + k(ell, s+1, -1) * k(ell, s, +1)
+    kp = sphere_basis_k.(local_ell, spintotal_in, +1)   # spin-raise
+    km = sphere_basis_k.(local_ell, spintotal_in, -1)   # spin-lower
+    kp_1 = sphere_basis_k.(local_ell, spintotal_in - 1, +1)  # spin-raise from one step below
+    km_1 = sphere_basis_k.(local_ell, spintotal_in + 1, -1)  # spin-lower from one step above
+    k_lap = km_1 .* kp .+ kp_1 .* km
+    # Zero out entries where |spintotal| > ell
+    k_lap = @. ifelse(abs(spintotal_in) > local_ell, zero(k_lap), k_lap)
+    k_lap = @. ifelse(abs(spintotal_out) > local_ell, zero(k_lap), k_lap)
+    return k_lap ./ (radius^2)
+end
+
+function new_operand(op::SphereLaplacian, operand; kw...)
+    return SphereLaplacian(operand, op.coordsys; kw...)
+end
+
+function check_conditions(op::SphereLaplacian)
+    arg = op.args[1]
+    if !isa(arg, AbstractCurrent)
+        return false
+    end
+    colat_axis = op.first_axis + 1
+    return !arg.layout.grid_space[colat_axis]
+end
+
+function enforce_conditions(op::SphereLaplacian)
+    arg = op.args[1]
+    if isa(arg, Field)
+        colat_axis = op.first_axis + 1
+        require_coeff_space!(arg, colat_axis)
+    end
+end
+
+# ============================================================================
 # Display methods for new operator types
 # ============================================================================
 
@@ -4543,7 +4853,8 @@ for T in [SphericalTrace, PolarTrace, DirectProductTrace,
           CartesianSkew, SpinSkew,
           RadialComponent, AngularComponent, AzimuthalComponent,
           MulCosine, PolarGradient, PolarDivergence, PolarLaplacian,
-          SphereEllProduct]
+          SphereEllProduct,
+          SphereGradient, SphereDivergence, SphereLaplacian]
     @eval begin
         function Base.show(io::IO, op::$T)
             print(io, op.name, "(", join(map(string, op.args), ", "), ")")
@@ -4680,158 +4991,3 @@ function coeff_size(subproblem, domain)
     return prod(shape; init=1)
 end
 
-# ============================================================================
-# Sphere S2 differential operators (SeparableSphereOperator subtypes)
-# ============================================================================
-
-"""SphereGradient: gradient on the 2-sphere surface."""
-mutable struct SphereGradient <: AbstractLinearOperator
-    args::Vector{Any}
-    original_args::Tuple
-    out::Any
-    dist::Any
-    domain::Any
-    tensorsig::Tuple
-    dtype::DataType
-    name::String
-    operand::Any
-    coordsys::Any
-    last_id::Any
-    last_out::Any
-    store_last::Bool
-    scales::Any
-    input_basis::Any
-    output_basis::Any
-    first_axis::Any
-    last_axis::Any
-    subaxis_dependence::Vector{Bool}
-    _cache::Dict{Symbol,Any}
-end
-
-function SphereGradient(operand, coordsys; out=nothing)
-    dist = operand.dist
-    input_basis = get_basis(operand.domain, coordsys)
-    output_basis = input_basis
-    first_ax = first_axis(dist, input_basis)
-    last_ax = last_axis(dist, input_basis)
-    new_tensorsig = (coordsys, operand.tensorsig...)
-    SphereGradient([operand], (operand,), out, dist, operand.domain,
-                   new_tensorsig, operand.dtype, "SphereGrad", operand, coordsys,
-                   nothing, nothing, false, 1, input_basis, output_basis,
-                   first_ax, last_ax, [false, true], Dict{Symbol,Any}())
-end
-
-function spinindex_out(op::SphereGradient, spinindex_in)
-    return ((0, spinindex_in...), (1, spinindex_in...))
-end
-
-function new_operand(op::SphereGradient, operand; kw...)
-    SphereGradient(operand, op.coordsys; kw...)
-end
-
-"""SphereDivergence: divergence on the 2-sphere surface."""
-mutable struct SphereDivergence <: AbstractLinearOperator
-    args::Vector{Any}
-    original_args::Tuple
-    out::Any
-    dist::Any
-    domain::Any
-    tensorsig::Tuple
-    dtype::DataType
-    name::String
-    operand::Any
-    coordsys::Any
-    last_id::Any
-    last_out::Any
-    store_last::Bool
-    scales::Any
-    input_basis::Any
-    output_basis::Any
-    first_axis::Any
-    last_axis::Any
-    index::Int
-    subaxis_dependence::Vector{Bool}
-    _cache::Dict{Symbol,Any}
-end
-
-function SphereDivergence(operand; index=1, out=nothing)
-    coordsys = operand.tensorsig[index]
-    dist = operand.dist
-    input_basis = get_basis(operand.domain, coordsys)
-    output_basis = input_basis
-    first_ax = first_axis(dist, input_basis)
-    last_ax = last_axis(dist, input_basis)
-    new_tensorsig = tuple(operand.tensorsig[1:index-1]..., operand.tensorsig[index+1:end]...)
-    SphereDivergence([operand], (operand,), out, dist, operand.domain,
-                     new_tensorsig, operand.dtype, "SphereDiv", operand, coordsys,
-                     nothing, nothing, false, 1, input_basis, output_basis,
-                     first_ax, last_ax, index, [false, true], Dict{Symbol,Any}())
-end
-
-function spinindex_out(op::SphereDivergence, spinindex_in)
-    if spinindex_in[1] in (1, 2)  # 1-based: -, + are indices 1, 2
-        return (spinindex_in[2:end],)
-    else
-        return ()
-    end
-end
-
-function new_operand(op::SphereDivergence, operand; kw...)
-    SphereDivergence(operand; index=op.index, kw...)
-end
-
-"""SphereLaplacian: Laplacian on the 2-sphere surface."""
-mutable struct SphereLaplacian <: AbstractLinearOperator
-    args::Vector{Any}
-    original_args::Tuple
-    out::Any
-    dist::Any
-    domain::Any
-    tensorsig::Tuple
-    dtype::DataType
-    name::String
-    operand::Any
-    coordsys::Any
-    last_id::Any
-    last_out::Any
-    store_last::Bool
-    scales::Any
-    input_basis::Any
-    output_basis::Any
-    first_axis::Any
-    last_axis::Any
-    subaxis_dependence::Vector{Bool}
-    _cache::Dict{Symbol,Any}
-end
-
-function SphereLaplacian(operand, coordsys; out=nothing)
-    dist = operand.dist
-    input_basis = get_basis(operand.domain, coordsys)
-    output_basis = input_basis
-    first_ax = first_axis(dist, input_basis)
-    last_ax = last_axis(dist, input_basis)
-    SphereLaplacian([operand], (operand,), out, dist, operand.domain,
-                    operand.tensorsig, operand.dtype, "SphereLap", operand, coordsys,
-                    nothing, nothing, false, 1, input_basis, output_basis,
-                    first_ax, last_ax, [false, true], Dict{Symbol,Any}())
-end
-
-function spinindex_out(op::SphereLaplacian, spinindex_in)
-    return (spinindex_in,)
-end
-
-function new_operand(op::SphereLaplacian, operand; kw...)
-    SphereLaplacian(operand, op.coordsys; kw...)
-end
-
-# S2Coordinates dispatch
-gradient(field, cs::S2Coordinates) = SphereGradient(field, cs)
-
-function divergence(field, cs::S2Coordinates; index=1)
-    if isa(field, Number) || field == 0
-        return 0
-    end
-    return SphereDivergence(field; index=index)
-end
-
-laplacian(field, cs::S2Coordinates) = SphereLaplacian(field, cs)

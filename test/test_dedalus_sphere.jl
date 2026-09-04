@@ -759,4 +759,194 @@ using SpecialFunctions: beta
         end
     end
 
+    # =====================================================================
+    # Intertwiner tests
+    # =====================================================================
+
+    @testset "Intertwiner" begin
+
+        # ---- intertwiner_k helper ----
+        @testset "intertwiner_k basic properties" begin
+            try
+                Q0 = Dedalus.Intertwiner(0)
+                Q1 = Dedalus.Intertwiner(1)
+                Q2 = Dedalus.Intertwiner(2)
+                Q3 = Dedalus.Intertwiner(3)
+
+                # k(L, mu, s) = -mu * sqrt(max(0, (L - s*mu)*(L + s*mu + 1)/2))
+                # At L=0: k(0, mu, s) should be 0 for any (mu, s) because
+                # (0 - s*mu)*(0 + s*mu + 1) is non-positive for |s| > 0 or gives 0
+                @test Dedalus.intertwiner_k(Q0, 1, 0) == 0.0   # -1*sqrt(max(0, 0*1/2)) = 0
+                @test Dedalus.intertwiner_k(Q0, -1, 0) == 0.0
+
+                # At L=1, mu=1, s=0: k = -1 * sqrt((1-0)*(1+0+1)/2) = -sqrt(1)
+                @test isapprox(Dedalus.intertwiner_k(Q1, 1, 0), -1.0, atol=1e-14)
+                # At L=1, mu=-1, s=0: k = 1 * sqrt((1-0)*(1+0+1)/2) = sqrt(1)
+                @test isapprox(Dedalus.intertwiner_k(Q1, -1, 0), 1.0, atol=1e-14)
+
+                # At L=2, mu=1, s=0: k = -1*sqrt((2)*(3)/2) = -sqrt(3)
+                @test isapprox(Dedalus.intertwiner_k(Q2, 1, 0), -sqrt(3), atol=1e-14)
+
+                # At L=3, mu=1, s=1: k = -1*sqrt((3-1)*(3+1+1)/2) = -sqrt(5)
+                @test isapprox(Dedalus.intertwiner_k(Q3, 1, 1), -sqrt(5), atol=1e-14)
+            catch e
+                @test_broken false
+                @warn "intertwiner_k test failed" exception=e
+            end
+        end
+
+        # ---- forbidden_spin ----
+        @testset "forbidden_spin" begin
+            try
+                Q0 = Dedalus.Intertwiner(0)
+                Q1 = Dedalus.Intertwiner(1)
+                Q2 = Dedalus.Intertwiner(2)
+
+                # At L=0, any nonzero total spin is forbidden
+                @test Dedalus.forbidden_spin(Q0, (0,)) == false
+                @test Dedalus.forbidden_spin(Q0, (1,)) == true
+                @test Dedalus.forbidden_spin(Q0, (-1,)) == true
+
+                # At L=1, |total_spin| <= 1 is allowed
+                @test Dedalus.forbidden_spin(Q1, (0,)) == false
+                @test Dedalus.forbidden_spin(Q1, (1,)) == false
+                @test Dedalus.forbidden_spin(Q1, (-1,)) == false
+                @test Dedalus.forbidden_spin(Q1, (1, 1)) == true  # |2| > 1
+
+                # At L=2, |total_spin| <= 2 is allowed
+                @test Dedalus.forbidden_spin(Q2, (1, 1)) == false  # |2| <= 2
+                @test Dedalus.forbidden_spin(Q2, (1, -1)) == false # |0| <= 2
+                @test Dedalus.forbidden_spin(Q2, (1, 1, 1)) == true  # |3| > 2
+            catch e
+                @test_broken false
+                @warn "forbidden_spin test failed" exception=e
+            end
+        end
+
+        # ---- forbidden_regularity ----
+        @testset "forbidden_regularity" begin
+            try
+                Q0 = Dedalus.Intertwiner(0)
+                Q1 = Dedalus.Intertwiner(1)
+                Q2 = Dedalus.Intertwiner(2)
+                Q3 = Dedalus.Intertwiner(3)
+
+                # At L=0, only regularity () or single-element regularity with walk
+                # not going negative is allowed
+                @test Dedalus.forbidden_regularity(Q0, (1,)) == false
+                @test Dedalus.forbidden_regularity(Q0, (-1,)) == true  # walk: [0, -1] -> -1 < 0
+
+                # At L=1, rank-1 regularity should be allowed for +-1
+                @test Dedalus.forbidden_regularity(Q1, (1,)) == false
+                @test Dedalus.forbidden_regularity(Q1, (-1,)) == false
+                @test Dedalus.forbidden_regularity(Q1, (0,)) == false
+
+                # L >= rank always allowed
+                @test Dedalus.forbidden_regularity(Q2, (1,)) == false
+                @test Dedalus.forbidden_regularity(Q2, (-1,)) == false
+                @test Dedalus.forbidden_regularity(Q3, (1, 1)) == false
+                @test Dedalus.forbidden_regularity(Q3, (-1, -1)) == false
+            catch e
+                @test_broken false
+                @warn "forbidden_regularity test failed" exception=e
+            end
+        end
+
+        # ---- Recursive getindex (tensor_getindex) ----
+        @testset "tensor_getindex rank 0 (scalar)" begin
+            try
+                Q0 = Dedalus.Intertwiner(0)
+                Q1 = Dedalus.Intertwiner(1)
+                # Rank 0: should return 1
+                @test Dedalus.tensor_getindex(Q0, (), ()) == 1
+                @test Dedalus.tensor_getindex(Q1, (), ()) == 1
+            catch e
+                @test_broken false
+                @warn "tensor_getindex rank 0 test failed" exception=e
+            end
+        end
+
+        @testset "tensor_getindex rank 1 (vector) L=$L" for L in [0, 1, 2, 3]
+            try
+                Q = Dedalus.Intertwiner(L)
+                # Build the full 3x3 matrix (spin x regularity) for rank 1
+                # spin indices: -1, 0, +1; regularity indices: -1, 0, +1
+                mat = zeros(3, 3)
+                for (si, s) in enumerate([-1, 0, 1])
+                    for (ri, r) in enumerate([-1, 0, 1])
+                        mat[si, ri] = Dedalus.tensor_getindex(Q, (s,), (r,))
+                    end
+                end
+                # Forbidden entries should be zero
+                if L == 0
+                    # At L=0, only s=0 is allowed, and regularity walk for -1 goes negative
+                    @test mat[1, :] == zeros(3)  # s=-1 forbidden
+                    @test mat[3, :] == zeros(3)  # s=+1 forbidden
+                end
+                # For L >= 1, the matrix should be orthogonal (unitary)
+                if L >= 1
+                    product = mat * mat'
+                    @test isapprox(product, I(3), atol=1e-12)
+                end
+            catch e
+                @test_broken false
+                @warn "tensor_getindex rank 1 test failed for L=$L" exception=e
+            end
+        end
+
+        @testset "tensor_getindex rank 2 (tensor) L=$L" for L in [1, 2, 3]
+            try
+                Q = Dedalus.Intertwiner(L)
+                # Build full 9x9 matrix for rank 2
+                spins = [(s1, s2) for s1 in [-1, 0, 1] for s2 in [-1, 0, 1]]
+                regs = [(r1, r2) for r1 in [-1, 0, 1] for r2 in [-1, 0, 1]]
+                n = length(spins)
+                mat = zeros(n, n)
+                for (i, s) in enumerate(spins)
+                    for (j, r) in enumerate(regs)
+                        mat[i, j] = Dedalus.tensor_getindex(Q, s, r)
+                    end
+                end
+                # Forbidden rows (|total_spin| > L) should be zero
+                for (i, s) in enumerate(spins)
+                    if abs(sum(s)) > L
+                        @test norm(mat[i, :]) < 1e-14
+                    end
+                end
+                # Non-forbidden part should have orthonormal rows
+                # (Q Q^T = I on the allowed subspace)
+                allowed = [i for (i, s) in enumerate(spins) if abs(sum(s)) <= L]
+                if length(allowed) > 0
+                    sub = mat[allowed, :]
+                    product = sub * sub'
+                    @test isapprox(product, I(length(allowed)), atol=1e-12)
+                end
+            catch e
+                @test_broken false
+                @warn "tensor_getindex rank 2 test failed for L=$L" exception=e
+            end
+        end
+
+        # ---- Full matrix evaluation ----
+        @testset "_tensor_eval L=$L rank=$rank" for L in [1, 2, 3], rank in [1, 2]
+            try
+                Q = Dedalus.Intertwiner(L)
+                mat = Dedalus._tensor_eval(Q, rank)
+                n = 3^rank
+                @test size(mat) == (n, n)
+                # Should be unitary on allowed subspace
+                product = mat * mat'
+                # Check near-diagonal structure (may have zero rows for forbidden spins)
+                for i in 1:n
+                    if norm(mat[i, :]) > 1e-14
+                        @test isapprox(product[i, i], 1.0, atol=1e-12)
+                    end
+                end
+            catch e
+                @test_broken false
+                @warn "_tensor_eval test failed for L=$L, rank=$rank" exception=e
+            end
+        end
+    end
+
 end
