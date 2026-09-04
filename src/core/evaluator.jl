@@ -80,12 +80,12 @@ Coordinates evaluation of operator trees through various handlers.
 """
 mutable struct Evaluator
     dist::Any
-    vars::Dict
+    vars::Dict{String, Any}
     handlers::Vector{Any}
-    groups::Dict{Any,Vector{Any}}
+    groups::Dict{String,Vector{Any}}
 
-    function Evaluator(dist, vars::Dict)
-        return new(dist, vars, Any[], Dict{Any,Vector{Any}}())
+    function Evaluator(dist, vars::Dict{String, Any})
+        return new(dist, vars, Any[], Dict{String,Vector{Any}}())
     end
 end
 

@@ -92,7 +92,7 @@ mutable struct SolverData
     dtype::DataType
     state::Vector{Any}
     ncc_cutoff::Float64
-    max_ncc_terms::Any
+    max_ncc_terms::Union{Nothing, Int}
     entry_cutoff::Float64
     matrix_coupling::BitVector
     matrix_dependence::BitVector
@@ -101,8 +101,8 @@ mutable struct SolverData
     tau_left::Bool
     interleave_components::Bool
     store_expanded_matrices::Bool
-    subsystems::Any
-    subproblems::Any
+    subsystems::Union{Nothing, Tuple}
+    subproblems::Union{Nothing, Tuple}
     subproblems_by_group::Dict{Any, Any}
     evaluator::Any
 end

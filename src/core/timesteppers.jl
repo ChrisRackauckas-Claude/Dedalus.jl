@@ -128,7 +128,7 @@ mutable struct MultistepIMEXData{T}
     LX::Vector{CoeffSystem{T}}
     F::Vector{CoeffSystem{T}}
     _iteration::Int
-    _LHS_params::Any
+    _LHS_params::Union{Nothing, Tuple{Float64, Float64}}
 end
 
 """
@@ -829,7 +829,7 @@ mutable struct RungeKuttaIMEXData{T}
     MX0::CoeffSystem{T}
     LX::Vector{CoeffSystem{T}}
     F::Vector{CoeffSystem{T}}
-    _LHS_params::Any
+    _LHS_params::Union{Nothing, Float64}
 end
 
 """

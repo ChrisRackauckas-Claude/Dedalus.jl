@@ -322,7 +322,7 @@ function check_condition(ss::Subsystem, eqn)
         return false
     end
     # Build group dictionary
-    group_dict = Dict{String, Any}()
+    group_dict = Dict{String, Int}()
     for (axis, ax_group) in enumerate(ss.group)
         if ax_group !== nothing
             coord = ss.dist.coords[axis]
@@ -390,7 +390,7 @@ mutable struct Subproblem
     dist::Any
     domain::Any
     dtype::DataType
-    group_dict::Dict{String, Any}
+    group_dict::Dict{String, Int}
     # Matrices and preconditioners (set by build_matrices!)
     pre_left::Any
     pre_left_pinv::Any
@@ -420,7 +420,7 @@ function Subproblem(solver, subsystems_vec::Vector{Subsystem}, group)
         ss.subproblem = nothing  # will be set below
     end
     # Build group dictionary
-    group_dict = Dict{String, Any}()
+    group_dict = Dict{String, Int}()
     for (axis, ax_group) in enumerate(group)
         if ax_group !== nothing
             coord = dist.coords[axis]

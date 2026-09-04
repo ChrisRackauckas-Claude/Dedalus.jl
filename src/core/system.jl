@@ -80,10 +80,10 @@ mutable struct FieldSystem{T}
     fields::Vector{Any}
     data::Vector{T}
     array_views::Vector{Any}
-    perm::Any
+    perm::SparseMatrixCSC{T, Int}
     buffer::Vector{T}
-    group_buffer::Any
-    field_buffer::Any
+    group_buffer::SubArray
+    field_buffer::SubArray
 end
 
 function FieldSystem(fields, subproblems, coeff_layout)

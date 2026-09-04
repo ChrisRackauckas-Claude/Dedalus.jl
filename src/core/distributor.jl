@@ -822,7 +822,7 @@ mutable struct Distributor <: AbstractDistributor
     coordsystems::Tuple
     coords::Tuple
     dim::Int
-    dtype::Any
+    dtype::Union{Nothing, DataType}
     comm::Any
     comm_cart::Any
     comm_coords::Vector{Int}
