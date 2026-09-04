@@ -3044,4 +3044,1914 @@ export AffineCOV,
        global_grid_radius,
        local_grid_radius,
        m_maps,
-       ell_reversed
+       ell_reversed,
+       AnnulusBasis,
+       DiskBasis,
+       SphereBasis,
+       ell_size,
+       latitude_basis
+
+# ============================================================================
+# AnnulusBasis  (concrete polar basis for annular domains)
+# ============================================================================
+
+"""
+    AnnulusBasis <: PolarBasis
+
+Annular basis on a 2D polar domain with inner and outer radii.
+Uses Jacobi polynomials in the radial direction and Fourier in azimuth.
+
+The radial coordinate is mapped to [-1, 1] via:
+    z = 2*(r - r_inner) / dR - rho
+where dR = r_outer - r_inner and rho = (r_outer + r_inner) / dR.
+"""
+mutable struct AnnulusBasis <: PolarBasis
+    coordsys::PolarCoordinates
+    shape::Tuple{Int,Int}
+    dtype::DataType
+    radii::Tuple{Float64,Float64}
+    k::Int
+    alpha::Tuple{Float64,Float64}
+    dealias_tuple::Tuple{Float64,Float64}
+    azimuth_library::String
+    radius_library::String
+    volume::Float64
+    dR::Float64
+    rho::Float64
+    grid_params::Tuple
+    inner_edge
+    outer_edge
+    Nmax::Int
+    mmax::Int
+    forward_transforms::Vector
+    backward_transforms::Vector
+    forward_m_perm::Union{Nothing,Vector{Int}}
+    backward_m_perm::Union{Nothing,Vector{Int}}
+    group_shape_val::Tuple{Int,Int}
+    azimuth_basis
+    _cache::Dict{Symbol,Any}
+end
+
+# -- Class constants --
+basis_subaxis_dependence(::AnnulusBasis) = (false, true)
+
+# -- Constructor caching --
+const _annulus_cache = Dict{Any,WeakRef}()
+
+"""
+    AnnulusBasis(coordsys, shape, dtype; radii=(1,2), k=0, alpha=(-0.5,-0.5),
+                 dealias=(1,1), azimuth_library=nothing, radius_library=nothing)
+
+Construct (or retrieve cached) an AnnulusBasis.
+"""
+function AnnulusBasis(coordsys::PolarCoordinates, shape, dtype;
+                      radii=(1.0, 2.0), k::Int=0,
+                      alpha=(-0.5, -0.5),
+                      dealias=(1, 1),
+                      azimuth_library=nothing,
+                      radius_library=nothing)
+    # Preprocess arguments
+    if !(coordsys isa PolarCoordinates)
+        throw(ArgumentError("Annulus coordsys must be PolarCoordinates."))
+    end
+    shape = (Int(shape[1]), Int(shape[2]))
+    if length(shape) != 2
+        throw(ArgumentError("Annulus shape must have length 2."))
+    end
+    radii = (Float64(radii[1]), Float64(radii[2]))
+    if min(radii...) <= 0
+        throw(ArgumentError("Annulus radii must be positive."))
+    end
+    if radii[1] >= radii[2]
+        throw(ArgumentError("Annulus radii must be in increasing order."))
+    end
+    k = Int(k)
+    if isa(alpha, Number)
+        alpha = (Float64(alpha), Float64(alpha))
+    else
+        alpha = (Float64(alpha[1]), Float64(alpha[2]))
+    end
+    if isa(dealias, Number)
+        dealias = (Float64(dealias), Float64(dealias))
+    else
+        dealias = (Float64(dealias[1]), Float64(dealias[2]))
+    end
+    if azimuth_library === nothing
+        azimuth_library = FOURIER_DEFAULT_LIBRARY
+    end
+    if radius_library === nothing
+        if alpha[1] == alpha[2] == -0.5
+            radius_library = JACOBI_DEFAULT_DCT
+        else
+            radius_library = JACOBI_DEFAULT_LIBRARY
+        end
+    end
+
+    # Cache lookup
+    cache_key = (objectid(coordsys), shape, dtype, radii, k, alpha, dealias, azimuth_library, radius_library)
+    wr = get(_annulus_cache, cache_key, nothing)
+    if wr !== nothing
+        inst = wr.value
+        if inst !== nothing
+            return inst::AnnulusBasis
+        end
+    end
+
+    # Computed attributes
+    vol = pi * (radii[2]^2 - radii[1]^2)
+    dR = radii[2] - radii[1]
+    rho = (radii[2] + radii[1]) / dR
+    grid_params = (objectid(coordsys), dtype, radii, alpha, dealias, azimuth_library, radius_library)
+    Nmax = shape[2] - 1
+    mmax = (shape[1] - 1) ÷ 2
+
+    # Build azimuth basis
+    coord0 = get_coords(coordsys)[1]
+    Nphi = shape[1]
+    az_bounds = (0.0, 2 * pi)
+    if dtype === ComplexF64
+        az_basis = ComplexFourier(coord0, Nphi, az_bounds; dealias=dealias[1], library=azimuth_library)
+    elseif dtype === Float64
+        az_basis = RealFourier(coord0, Nphi, az_bounds; dealias=dealias[1], library=azimuth_library)
+    else
+        throw(ArgumentError("Unsupported dtype: $dtype"))
+    end
+
+    # m permutations
+    if dtype === ComplexF64
+        fwd_perm = compute_forward_m_perm_complex(Nphi)
+        group_shp = (1, 1)
+    elseif dtype === Float64
+        fwd_perm = compute_forward_m_perm_real(Nphi)
+        group_shp = (2, 1)
+    end
+    bwd_perm = compute_backward_m_perm(fwd_perm)
+
+    # Apply permutations to azimuth basis
+    if mmax > 0
+        az_basis.forward_coeff_permutation = fwd_perm
+        az_basis.backward_coeff_permutation = bwd_perm
+    end
+
+    _cache = Dict{Symbol,Any}()
+
+    # Placeholder: inner/outer edges will be set after construction
+    inst = AnnulusBasis(
+        coordsys, shape, dtype, radii, k, alpha, dealias,
+        azimuth_library, radius_library,
+        vol, dR, rho, grid_params,
+        nothing, nothing,  # inner_edge, outer_edge -- set below
+        Nmax, mmax,
+        Any[], Any[],  # transforms -- set below
+        fwd_perm, bwd_perm,
+        group_shp, az_basis, _cache
+    )
+
+    # Set transform callables
+    if mmax == 0
+        push!(inst.forward_transforms, (field, axis, gdata, cdata) -> forward_transform_azimuth_Mmax0(inst, field, axis, gdata, cdata))
+        push!(inst.backward_transforms, (field, axis, cdata, gdata) -> backward_transform_azimuth_Mmax0(inst, field, axis, cdata, gdata))
+    else
+        push!(inst.forward_transforms, (field, axis, gdata, cdata) -> forward_transform_azimuth(inst, field, axis, gdata, cdata))
+        push!(inst.backward_transforms, (field, axis, cdata, gdata) -> backward_transform_azimuth(inst, field, axis, cdata, gdata))
+    end
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> forward_transform_radius(inst, field, axis, gdata, cdata))
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> backward_transform_radius(inst, field, axis, cdata, gdata))
+
+    # Set edge bases
+    inst.inner_edge = S1_basis(inst; radius=radii[1])
+    inst.outer_edge = S1_basis(inst; radius=radii[2])
+
+    _annulus_cache[cache_key] = WeakRef(inst)
+    return inst
+end
+
+# -- nmin: always 0 for annulus --
+_nmin(::AnnulusBasis, m) = 0 .* m
+
+"""
+    radial_basis(b::AnnulusBasis)
+
+Return a radial-only version of this annulus basis (shape[1] = 1).
+"""
+function radial_basis(b::AnnulusBasis)
+    cached = get(b._cache, :radial_basis, nothing)
+    if cached !== nothing
+        return cached
+    end
+    rb = clone_with(b; shape=(1, b.shape[2]))
+    b._cache[:radial_basis] = rb
+    return rb
+end
+
+# -- Basis algebra --
+
+function basis_add(a::AnnulusBasis, other)
+    if other === nothing || other === a
+        return a
+    end
+    if other isa AnnulusBasis
+        if a.grid_params == other.grid_params
+            shape = (max(a.shape[1], other.shape[1]), max(a.shape[2], other.shape[2]))
+            k_new = max(a.k, other.k)
+            return clone_with(a; shape=shape, k=k_new)
+        end
+    end
+    return nothing
+end
+
+function basis_mul(a::AnnulusBasis, other)
+    if other === nothing
+        return a
+    end
+    if other isa AnnulusBasis
+        if a.grid_params == other.grid_params
+            shape = (max(a.shape[1], other.shape[1]), max(a.shape[2], other.shape[2]))
+            k_new = a.k + other.k
+            return clone_with(a; shape=shape, k=k_new)
+        end
+    end
+    return nothing
+end
+
+function basis_rmatmul(operand::AnnulusBasis, ncc)
+    # NCC (ncc) * operand (self) -- same as mul for annulus
+    return basis_mul(operand, ncc)
+end
+
+# -- Grid methods --
+
+"""
+    global_grid_radius(b::AnnulusBasis, dist, scale)
+
+Return the global radial grid for the annulus.
+"""
+function global_grid_radius(b::AnnulusBasis, dist, scale)
+    r = _radius_grid(b, scale)
+    return reshape_vector(r, get_dim(dist), get_basis_axis(dist, b) + 1)
+end
+
+"""
+    local_grid_radius(b::AnnulusBasis, dist, scale)
+
+Return the local radial grid for the annulus.
+"""
+function local_grid_radius(b::AnnulusBasis, dist, scale)
+    r = _radius_grid(b, scale)
+    return reshape_vector(r, get_dim(dist), get_basis_axis(dist, b) + 1)
+end
+
+"""
+    _radius_grid(b::AnnulusBasis, scale)
+
+Compute the radial grid points at the given scale. Uses Jacobi quadrature.
+"""
+function _radius_grid(b::AnnulusBasis, scale)
+    cache_key = (:_radius_grid, scale)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    N = Int(ceil(scale * b.shape[2]))
+    z, weights = jacobi_quadrature(N, b.alpha[1], b.alpha[2])
+    r = (b.dR / 2) .* (z .+ b.rho)
+    result = Float64.(r)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    _radius_weights(b::AnnulusBasis, scale)
+
+Compute the radial quadrature weights at the given scale.
+"""
+function _radius_weights(b::AnnulusBasis, scale)
+    cache_key = (:_radius_weights, scale)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    N = Int(ceil(scale * b.shape[2]))
+    z_proj, weights_proj = jacobi_quadrature(N, b.alpha[1], b.alpha[2])
+    z0, weights0 = jacobi_quadrature(N, 0.0, 0.0)
+    Q0 = jacobi_polynomials(N, b.alpha[1], b.alpha[2], z0)
+    Q_proj = jacobi_polynomials(N, b.alpha[1], b.alpha[2], z_proj)
+    normalization = b.dR / 2
+    result = normalization * transpose(Q0 * Diagonal(weights0)) * (Diagonal(weights_proj) * Q_proj)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    constant_mode_value(b::AnnulusBasis)
+
+Return the value of the zeroth radial mode (constant mode) for k=0.
+"""
+function constant_mode_value(b::AnnulusBasis)
+    cached = get(b._cache, :constant_mode_value, nothing)
+    if cached !== nothing
+        return cached
+    end
+    Q0 = jacobi_polynomials(1, b.alpha[1], b.alpha[2], [0.0])
+    val = Q0[1, 1]
+    b._cache[:constant_mode_value] = val
+    return val
+end
+
+"""
+    transform_plan(b::AnnulusBasis, dist, grid_size, k)
+
+Build (or retrieve cached) a transform plan for the annulus radial direction.
+"""
+function transform_plan(b::AnnulusBasis, dist, grid_size, k)
+    cache_key = (:transform_plan, objectid(dist), grid_size, k)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    a = b.alpha[1] + k
+    bparam = b.alpha[2] + k
+    a0 = b.alpha[1]
+    b0 = b.alpha[2]
+    # Build matrix transform plan using Jacobi polynomials
+    N = b.Nmax + 1
+    z, w = jacobi_quadrature(grid_size, a0, b0)
+    P = jacobi_polynomials(N, a, bparam, z)
+    fwd = transpose(P) * Diagonal(w)
+    bwd = P
+    plan = MatrixTransformPlan(Matrix{Float64}(fwd), Matrix{Float64}(bwd))
+    b._cache[cache_key] = plan
+    return plan
+end
+
+"""
+    forward_transform_radius(b::AnnulusBasis, field, axis, gdata, cdata)
+
+Forward radial transform for annulus basis. Applies spin recombination
+and radial factor before the Jacobi transform.
+"""
+function forward_transform_radius(b::AnnulusBasis, field, axis, gdata, cdata)
+    data_axis = length(field.tensorsig) + axis
+    grid_size = size(gdata, data_axis)
+    # Multiply by radial factor for k > 0
+    if b.k > 0
+        rfactor = _radial_transform_factor(b, field.scales[axis], data_axis, -b.k)
+        gdata = gdata .* rfactor
+    end
+    # Expand gdata if mmax=0 and dtype=float for spin recombination
+    if b.mmax == 0 && b.dtype === Float64
+        m_axis = length(field.tensorsig) + axis - 1
+        gdata = cat(gdata, zeros(eltype(gdata), size(gdata)); dims=m_axis)
+    end
+    # Apply spin recombination from gdata to temp
+    temp = zeros(eltype(gdata), size(gdata))
+    forward_spin_recombination!(b, field.tensorsig, axis, gdata, temp)
+    fill!(cdata, zero(eltype(cdata)))
+    # Transform component-by-component
+    S = spin_weights(b, field.tensorsig)
+    plan = transform_plan(b, field.dist, grid_size, b.k)
+    for i in CartesianIndices(S)
+        forward!(plan, view(temp, i), view(cdata, i), axis)
+    end
+    return nothing
+end
+
+"""
+    backward_transform_radius(b::AnnulusBasis, field, axis, cdata, gdata)
+
+Backward radial transform for annulus basis.
+"""
+function backward_transform_radius(b::AnnulusBasis, field, axis, cdata, gdata)
+    data_axis = length(field.tensorsig) + axis
+    grid_size = size(gdata, data_axis)
+    # Handle mmax=0 float expansion
+    if b.mmax == 0 && b.dtype === Float64
+        m_axis = length(field.tensorsig) + axis - 1
+        shp = collect(size(gdata))
+        shp[m_axis] = 2
+        temp = zeros(eltype(gdata), Tuple(shp))
+        gdata_orig = gdata
+        gdata = zeros(eltype(gdata), Tuple(shp))
+    else
+        temp = zeros(eltype(gdata), size(gdata))
+    end
+    # Transform component-by-component
+    S = spin_weights(b, field.tensorsig)
+    plan = transform_plan(b, field.dist, grid_size, b.k)
+    for i in CartesianIndices(S)
+        backward!(plan, view(cdata, i), view(temp, i), axis)
+    end
+    # Apply backward spin recombination
+    fill!(gdata, zero(eltype(gdata)))
+    backward_spin_recombination!(b, field.tensorsig, axis, temp, gdata)
+    # Multiply by radial factor for k > 0
+    if b.k > 0
+        rfactor = _radial_transform_factor(b, field.scales[axis], data_axis, b.k)
+        gdata .*= rfactor
+    end
+    # Collapse expanded gdata back
+    if b.mmax == 0 && b.dtype === Float64
+        m_axis = length(field.tensorsig) + axis - 1
+        idx = axslice(m_axis, 1, 1)
+        copyto!(gdata_orig, view(gdata, idx...))
+    end
+    return nothing
+end
+
+"""
+    _radial_transform_factor(b::AnnulusBasis, scale, data_axis, dk)
+
+Compute the radial prefactor (dR/r)^dk for transforms.
+"""
+function _radial_transform_factor(b::AnnulusBasis, scale, data_axis, dk)
+    cache_key = (:radial_transform_factor, scale, data_axis, dk)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    r = reshape_vector(_radius_grid(b, scale), data_axis, data_axis - 1)
+    result = (b.dR ./ r) .^ dk
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    operator_matrix(b::AnnulusBasis, op, m, spintotal; size=nothing)
+
+Build a radial operator matrix using dedalus_sphere shell operators.
+"""
+function operator_matrix(b::AnnulusBasis, op, m, spintotal; size=nothing)
+    cache_key = (:operator_matrix, op, m, spintotal, size)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    ms = m + spintotal
+    if length(op) > 0 && op[end] in ('+', '-')
+        o = op[1:end-1]
+        p = op[end] == '+' ? 1 : -1
+        if ms == 0
+            p = 1
+        elseif ms < 0
+            p = -p
+            ms = -ms
+        end
+        operator = shell_operator(2, b.radii, o; alpha=b.alpha)
+        mat = operator(p, ms)
+    elseif op == "L"
+        D = shell_operator(2, b.radii, "D"; alpha=b.alpha)
+        if ms < 0
+            mat = compose(D(+1, ms - 1), D(-1, ms))
+        else
+            mat = compose(D(-1, ms + 1), D(+1, ms))
+        end
+    else
+        operator = shell_operator(2, b.radii, op; alpha=b.alpha)
+        mat = operator
+    end
+    if size === nothing
+        size = n_size(b, m)
+    end
+    result = Float64.(resize_matrix(mat, size, b.k))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    conversion_matrix(b::AnnulusBasis, m, spintotal, dk)
+
+Build the Jacobi conversion matrix for the annulus.
+"""
+function conversion_matrix(b::AnnulusBasis, m, spintotal, dk)
+    cache_key = (:conversion_matrix, m, spintotal, dk)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    E = shell_operator(2, b.radii, "E"; alpha=b.alpha)
+    # Apply dk-fold conversion
+    op = E
+    for _ in 2:dk
+        op = compose(op, E)
+    end
+    result = Float64.(resize_matrix(op, n_size(b, m), b.k))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    jacobi_conversion(b::AnnulusBasis, m, dk; size=nothing)
+
+Build the Jacobi conversion matrix (AB operator).
+"""
+function jacobi_conversion(b::AnnulusBasis, m, dk; size=nothing)
+    cache_key = (:jacobi_conversion, m, dk, size)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    AB = shell_operator(2, b.radii, "AB"; alpha=b.alpha)
+    op = AB
+    for _ in 2:dk
+        op = compose(op, AB)
+    end
+    if size === nothing
+        size = n_size(b, m)
+    end
+    result = Float64.(resize_matrix(op, size, b.k))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    clone_with(b::AnnulusBasis; kwargs...)
+
+Create a copy of the annulus basis with some fields replaced.
+"""
+function clone_with(b::AnnulusBasis; kwargs...)
+    kw = Dict{Symbol,Any}(kwargs)
+    coordsys_val = get(kw, :coordsys, b.coordsys)
+    shape_val = get(kw, :shape, b.shape)
+    dtype_val = get(kw, :dtype, b.dtype)
+    radii_val = get(kw, :radii, b.radii)
+    k_val = get(kw, :k, b.k)
+    alpha_val = get(kw, :alpha, b.alpha)
+    dealias_val = get(kw, :dealias, b.dealias_tuple)
+    az_lib = get(kw, :azimuth_library, b.azimuth_library)
+    r_lib = get(kw, :radius_library, b.radius_library)
+    return AnnulusBasis(coordsys_val, shape_val, dtype_val;
+                        radii=radii_val, k=k_val, alpha=alpha_val,
+                        dealias=dealias_val, azimuth_library=az_lib,
+                        radius_library=r_lib)
+end
+
+"""
+    _last_axis_component_ncc_matrix(::Type{AnnulusBasis}, subproblem, ncc_basis,
+        arg_basis, out_basis, coeffs, ncc_comp, arg_comp, out_comp,
+        ncc_tensorsig, arg_tensorsig, out_tensorsig; cutoff=1e-6)
+
+Build NCC component matrix for annulus basis via Clenshaw algorithm.
+"""
+function _last_axis_component_ncc_matrix(::Type{AnnulusBasis}, subproblem, ncc_basis,
+        arg_basis, out_basis, coeffs, ncc_comp, arg_comp, out_comp,
+        ncc_tensorsig, arg_tensorsig, out_tensorsig; cutoff::Float64=1e-6)
+    error("AnnulusBasis _last_axis_component_ncc_matrix: requires subproblem infrastructure not yet available")
+end
+
+function Base.show(io::IO, b::AnnulusBasis)
+    print(io, "AnnulusBasis($(b.coordsys), shape=$(b.shape), radii=$(b.radii), k=$(b.k), alpha=$(b.alpha))")
+end
+
+# ============================================================================
+# DiskBasis  (concrete polar basis for disk domains)
+# ============================================================================
+
+"""
+    DiskBasis <: PolarBasis
+
+Disk basis on a 2D polar domain with a single radius.
+Uses Zernike polynomials in the radial direction and Fourier in azimuth.
+Employs triangular truncation: nmin(m) = |m| div 2.
+"""
+mutable struct DiskBasis <: PolarBasis
+    coordsys::PolarCoordinates
+    shape::Tuple{Int,Int}
+    dtype::DataType
+    radius::Float64
+    k::Int
+    alpha::Float64
+    dealias_tuple::Tuple{Float64,Float64}
+    azimuth_library::String
+    radius_library::String
+    volume::Float64
+    radial_COV::AffineCOV
+    grid_params::Tuple
+    edge
+    Nmax::Int
+    mmax::Int
+    forward_transforms::Vector
+    backward_transforms::Vector
+    forward_m_perm::Union{Nothing,Vector{Int}}
+    backward_m_perm::Union{Nothing,Vector{Int}}
+    group_shape_val::Tuple{Int,Int}
+    azimuth_basis
+    _cache::Dict{Symbol,Any}
+end
+
+# -- Class constants --
+basis_subaxis_dependence(::DiskBasis) = (true, true)
+
+# -- Constructor caching --
+const _disk_cache = Dict{Any,WeakRef}()
+
+"""
+    DiskBasis(coordsys, shape, dtype; radius=1.0, k=0, alpha=0.0,
+              dealias=(1,1), azimuth_library=nothing, radius_library=nothing)
+
+Construct (or retrieve cached) a DiskBasis.
+"""
+function DiskBasis(coordsys::PolarCoordinates, shape, dtype;
+                   radius::Real=1.0, k::Int=0,
+                   alpha::Real=0.0,
+                   dealias=(1, 1),
+                   azimuth_library=nothing,
+                   radius_library=nothing)
+    # Preprocess arguments
+    if !(coordsys isa PolarCoordinates)
+        throw(ArgumentError("Disk coordsys must be PolarCoordinates."))
+    end
+    shape = (Int(shape[1]), Int(shape[2]))
+    if length(shape) != 2
+        throw(ArgumentError("Disk shape must have length 2."))
+    end
+    radius = Float64(radius)
+    if radius <= 0
+        throw(ArgumentError("Disk radius must be positive."))
+    end
+    k = Int(k)
+    alpha = Float64(alpha)
+    if isa(dealias, Number)
+        dealias = (Float64(dealias), Float64(dealias))
+    else
+        dealias = (Float64(dealias[1]), Float64(dealias[2]))
+    end
+    if azimuth_library === nothing
+        azimuth_library = FOURIER_DEFAULT_LIBRARY
+    end
+    if radius_library === nothing
+        radius_library = JACOBI_DEFAULT_LIBRARY
+    end
+
+    # Cache lookup
+    cache_key = (objectid(coordsys), shape, dtype, radius, k, alpha, dealias, azimuth_library, radius_library)
+    wr = get(_disk_cache, cache_key, nothing)
+    if wr !== nothing
+        inst = wr.value
+        if inst !== nothing
+            return inst::DiskBasis
+        end
+    end
+
+    # Computed attributes
+    vol = pi * radius^2
+    radial_cov = AffineCOV((0.0, 1.0), (0.0, radius))
+    Nmax = shape[2] - 1
+    mmax = (shape[1] - 1) ÷ 2
+    grid_params = (objectid(coordsys), dtype, radius, alpha, dealias, azimuth_library, radius_library)
+
+    if mmax > 2 * Nmax
+        @warn "You are using more azimuthal modes than can be resolved with your current radial resolution"
+    end
+
+    # Build azimuth basis
+    coord0 = get_coords(coordsys)[1]
+    Nphi = shape[1]
+    az_bounds = (0.0, 2 * pi)
+    if dtype === ComplexF64
+        az_basis = ComplexFourier(coord0, Nphi, az_bounds; dealias=dealias[1], library=azimuth_library)
+    elseif dtype === Float64
+        az_basis = RealFourier(coord0, Nphi, az_bounds; dealias=dealias[1], library=azimuth_library)
+    else
+        throw(ArgumentError("Unsupported dtype: $dtype"))
+    end
+
+    # m permutations
+    if dtype === ComplexF64
+        fwd_perm = compute_forward_m_perm_complex(Nphi)
+        group_shp = (1, 1)
+    elseif dtype === Float64
+        fwd_perm = compute_forward_m_perm_real(Nphi)
+        group_shp = (2, 1)
+    end
+    bwd_perm = compute_backward_m_perm(fwd_perm)
+
+    # Apply permutations to azimuth basis
+    if mmax > 0
+        az_basis.forward_coeff_permutation = fwd_perm
+        az_basis.backward_coeff_permutation = bwd_perm
+    end
+
+    _cache = Dict{Symbol,Any}()
+
+    inst = DiskBasis(
+        coordsys, shape, dtype, radius, k, alpha, dealias,
+        azimuth_library, radius_library,
+        vol, radial_cov, grid_params,
+        nothing,  # edge -- set below
+        Nmax, mmax,
+        Any[], Any[],  # transforms -- set below
+        fwd_perm, bwd_perm,
+        group_shp, az_basis, _cache
+    )
+
+    # Set transform callables
+    if mmax == 0
+        push!(inst.forward_transforms, (field, axis, gdata, cdata) -> forward_transform_azimuth_Mmax0(inst, field, axis, gdata, cdata))
+        push!(inst.backward_transforms, (field, axis, cdata, gdata) -> backward_transform_azimuth_Mmax0(inst, field, axis, cdata, gdata))
+    else
+        push!(inst.forward_transforms, (field, axis, gdata, cdata) -> forward_transform_azimuth(inst, field, axis, gdata, cdata))
+        push!(inst.backward_transforms, (field, axis, cdata, gdata) -> backward_transform_azimuth(inst, field, axis, cdata, gdata))
+    end
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> forward_transform_radius_disk(inst, field, axis, gdata, cdata))
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> backward_transform_radius_disk(inst, field, axis, cdata, gdata))
+
+    # Set edge basis
+    inst.edge = S1_basis(inst; radius=radius)
+
+    _disk_cache[cache_key] = WeakRef(inst)
+    return inst
+end
+
+# -- nmin: triangular truncation for disk --
+_nmin(::DiskBasis, m) = abs.(m) .÷ 2
+
+"""
+    radial_basis(b::DiskBasis)
+
+Return a radial-only version of this disk basis (shape[1] = 1).
+"""
+function radial_basis(b::DiskBasis)
+    cached = get(b._cache, :radial_basis, nothing)
+    if cached !== nothing
+        return cached
+    end
+    rb = clone_with(b; shape=(1, b.shape[2]))
+    b._cache[:radial_basis] = rb
+    return rb
+end
+
+# -- Basis algebra --
+
+function basis_add(a::DiskBasis, other)
+    if other === nothing || other === a
+        return a
+    end
+    if other isa DiskBasis
+        if a.grid_params == other.grid_params
+            shape = (max(a.shape[1], other.shape[1]), max(a.shape[2], other.shape[2]))
+            k_new = max(a.k, other.k)
+            return clone_with(a; shape=shape, k=k_new)
+        end
+    end
+    return nothing
+end
+
+function basis_mul(a::DiskBasis, other)
+    if other === nothing
+        return a
+    end
+    if other isa DiskBasis
+        if a.grid_params == other.grid_params
+            shape = (max(a.shape[1], other.shape[1]), max(a.shape[2], other.shape[2]))
+            k_new = 0  # minimizes k in RHS expressions
+            return clone_with(a; shape=shape, k=k_new)
+        end
+    end
+    return nothing
+end
+
+function basis_rmatmul(operand::DiskBasis, ncc)
+    if ncc === nothing
+        return operand
+    end
+    if ncc isa DiskBasis
+        if operand.grid_params == ncc.grid_params
+            shape = (max(operand.shape[1], ncc.shape[1]), max(operand.shape[2], ncc.shape[2]))
+            k_new = operand.k  # use operand's k
+            return clone_with(operand; shape=shape, k=k_new)
+        end
+    end
+    return nothing
+end
+
+# -- Grid methods --
+
+"""
+    global_grid_radius(b::DiskBasis, dist, scale)
+
+Return the global radial grid for the disk.
+"""
+function global_grid_radius(b::DiskBasis, dist, scale)
+    r = problem_coord(b.radial_COV, _native_radius_grid(b, scale))
+    return reshape_vector(r, get_dim(dist), get_basis_axis(dist, b) + 1)
+end
+
+"""
+    local_grid_radius(b::DiskBasis, dist, scale)
+
+Return the local radial grid for the disk.
+"""
+function local_grid_radius(b::DiskBasis, dist, scale)
+    r = problem_coord(b.radial_COV, _native_radius_grid(b, scale))
+    return reshape_vector(r, get_dim(dist), get_basis_axis(dist, b) + 1)
+end
+
+"""
+    _native_radius_grid(b::DiskBasis, scale)
+
+Compute the native radial grid (in [0,1]) using Zernike quadrature.
+"""
+function _native_radius_grid(b::DiskBasis, scale)
+    cache_key = (:_native_radius_grid, scale)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    N = Int(ceil(scale * b.shape[2]))
+    z, weights = zernike_quadrature(2, N; k=b.alpha)
+    r = sqrt.((z .+ 1) ./ 2)
+    result = Float64.(r)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    constant_mode_value(b::DiskBasis)
+
+Return the constant mode value for the disk basis.
+"""
+function constant_mode_value(b::DiskBasis)
+    cached = get(b._cache, :constant_mode_value, nothing)
+    if cached !== nothing
+        return cached
+    end
+    Qk = zernike_polynomials(2, 1, b.alpha + b.k, 0, [0.0])
+    val = Qk[1, 1]
+    b._cache[:constant_mode_value] = val
+    return val
+end
+
+"""
+    transform_plan(b::DiskBasis, dist, grid_shape_val, axis, s)
+
+Build (or retrieve cached) a transform plan for the disk radial direction.
+"""
+function transform_plan(b::DiskBasis, dist, grid_shape_val, axis, s)
+    cache_key = (:transform_plan, objectid(dist), grid_shape_val, axis, s)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    # Stub: full disk transforms require m_maps distribution infrastructure
+    error("DiskBasis transform_plan: requires m_maps distribution infrastructure not yet available")
+end
+
+"""
+    forward_transform_radius_disk(b::DiskBasis, field, axis, gdata, cdata)
+
+Forward radial transform for disk basis.
+"""
+function forward_transform_radius_disk(b::DiskBasis, field, axis, gdata, cdata)
+    # Expand gdata if mmax=0 and dtype=float for spin recombination
+    if b.mmax == 0 && b.dtype === Float64
+        m_axis = length(field.tensorsig) + axis - 1
+        gdata = cat(gdata, zeros(eltype(gdata), size(gdata)); dims=m_axis)
+    end
+    # Apply spin recombination from gdata to temp
+    temp = zeros(eltype(gdata), size(gdata))
+    forward_spin_recombination!(b, field.tensorsig, axis, gdata, temp)
+    fill!(cdata, zero(eltype(cdata)))
+    # Transform component-by-component
+    S = spin_weights(b, field.tensorsig)
+    for i in CartesianIndices(S)
+        s = S[i]
+        grid_shp = size(gdata[i])
+        plan = transform_plan(b, field.dist, grid_shp, axis, s)
+        forward!(plan, view(temp, i), view(cdata, i), axis)
+    end
+    return nothing
+end
+
+"""
+    backward_transform_radius_disk(b::DiskBasis, field, axis, cdata, gdata)
+
+Backward radial transform for disk basis.
+"""
+function backward_transform_radius_disk(b::DiskBasis, field, axis, cdata, gdata)
+    # Handle mmax=0 float expansion
+    if b.mmax == 0 && b.dtype === Float64
+        m_axis = length(field.tensorsig) + axis - 1
+        shp = collect(size(gdata))
+        shp[m_axis] = 2
+        temp = zeros(eltype(gdata), Tuple(shp))
+        gdata_orig = gdata
+        gdata = zeros(eltype(gdata), Tuple(shp))
+    else
+        temp = zeros(eltype(gdata), size(gdata))
+    end
+    # Transform component-by-component
+    S = spin_weights(b, field.tensorsig)
+    for i in CartesianIndices(S)
+        s = S[i]
+        grid_shp = size(gdata[i])
+        plan = transform_plan(b, field.dist, grid_shp, axis, s)
+        backward!(plan, view(cdata, i), view(temp, i), axis)
+    end
+    # Apply backward spin recombination
+    fill!(gdata, zero(eltype(gdata)))
+    backward_spin_recombination!(b, field.tensorsig, axis, temp, gdata)
+    # Collapse expanded gdata
+    if b.mmax == 0 && b.dtype === Float64
+        m_axis = length(field.tensorsig) + axis - 1
+        idx = axslice(m_axis, 1, 1)
+        copyto!(gdata_orig, view(gdata, idx...))
+    end
+    return nothing
+end
+
+"""
+    operator_matrix(b::DiskBasis, op, m, spin; size=nothing)
+
+Build a radial operator matrix using dedalus_sphere Zernike operators.
+"""
+function operator_matrix(b::DiskBasis, op, m, spin; size=nothing)
+    cache_key = (:operator_matrix, op, m, spin, size)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    ms = m + spin
+    if length(op) > 0 && op[end] in ('+', '-')
+        o = op[1:end-1]
+        p = op[end] == '+' ? 1 : -1
+        if ms == 0
+            p = 1
+        elseif ms < 0
+            p = -p
+        end
+        operator = zernike_operator(2, o; radius=b.radius)
+        mat = operator(p)
+    elseif op == "L"
+        D = zernike_operator(2, "D"; radius=b.radius)
+        if ms < 0
+            mat = compose(D(+1), D(-1))
+        else
+            mat = compose(D(-1), D(+1))
+        end
+    else
+        operator = zernike_operator(2, op; radius=b.radius)
+        mat = operator
+    end
+    if size === nothing
+        size = n_size(b, m)
+    end
+    result = Float64.(resize_matrix(mat, size, b.alpha + b.k, abs(ms)))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    conversion_matrix(b::DiskBasis, m, spintotal, dk)
+
+Build the Zernike conversion matrix for the disk.
+"""
+function conversion_matrix(b::DiskBasis, m, spintotal, dk)
+    cache_key = (:conversion_matrix, m, spintotal, dk)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    E = zernike_operator(2, "E"; radius=b.radius)
+    op = E(+1)
+    for _ in 2:dk
+        op = compose(op, E(+1))
+    end
+    result = Float64.(resize_matrix(op, n_size(b, m), b.alpha + b.k, abs(m + spintotal)))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    interpolation(b::DiskBasis, m, spintotal, position)
+
+Build the interpolation matrix for the disk at the given radial position.
+"""
+function interpolation(b::DiskBasis, m, spintotal, position)
+    cache_key = (:interpolation, m, spintotal, position)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    native_position = native_coord(b.radial_COV, position)
+    native_z = 2 * native_position^2 - 1
+    result = zernike_polynomials(2, n_size(b, m), b.alpha + b.k, abs(m + spintotal), native_z)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    radius_multiplication_matrix(b::DiskBasis, m, spintotal, order, d)
+
+Build the matrix for multiplying by r^order with additional factor.
+"""
+function radius_multiplication_matrix(b::DiskBasis, m, spintotal, order, d)
+    cache_key = (:radius_multiplication_matrix, m, spintotal, order, d)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    if order == 0
+        operator = zernike_operator(2, "Id"; radius=b.radius)
+    else
+        R = zernike_operator(2, "R"; radius=1.0)
+        if order < 0
+            op = R(-1)
+            for _ in 2:abs(order)
+                op = compose(op, R(-1))
+            end
+            operator = op
+        else
+            op = R(+1)
+            for _ in 2:abs(order)
+                op = compose(op, R(+1))
+            end
+            operator = op
+        end
+    end
+    if d > 0
+        R = zernike_operator(2, "R"; radius=1.0)
+        R2 = compose(R(-1), R(+1))
+        for _ in 1:(d ÷ 2)
+            operator = compose(R2, operator)
+        end
+    end
+    result = Float64.(resize_matrix(operator, n_size(b, m), b.alpha + b.k, abs(m + spintotal)))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    clone_with(b::DiskBasis; kwargs...)
+
+Create a copy of the disk basis with some fields replaced.
+"""
+function clone_with(b::DiskBasis; kwargs...)
+    kw = Dict{Symbol,Any}(kwargs)
+    coordsys_val = get(kw, :coordsys, b.coordsys)
+    shape_val = get(kw, :shape, b.shape)
+    dtype_val = get(kw, :dtype, b.dtype)
+    radius_val = get(kw, :radius, b.radius)
+    k_val = get(kw, :k, b.k)
+    alpha_val = get(kw, :alpha, b.alpha)
+    dealias_val = get(kw, :dealias, b.dealias_tuple)
+    az_lib = get(kw, :azimuth_library, b.azimuth_library)
+    r_lib = get(kw, :radius_library, b.radius_library)
+    return DiskBasis(coordsys_val, shape_val, dtype_val;
+                     radius=radius_val, k=k_val, alpha=alpha_val,
+                     dealias=dealias_val, azimuth_library=az_lib,
+                     radius_library=r_lib)
+end
+
+"""
+    _last_axis_component_ncc_matrix(::Type{DiskBasis}, subproblem, ncc_basis,
+        arg_basis, out_basis, coeffs, ncc_comp, arg_comp, out_comp,
+        ncc_tensorsig, arg_tensorsig, out_tensorsig; cutoff=1e-6)
+
+Build NCC component matrix for disk basis via Clenshaw algorithm.
+"""
+function _last_axis_component_ncc_matrix(::Type{DiskBasis}, subproblem, ncc_basis,
+        arg_basis, out_basis, coeffs, ncc_comp, arg_comp, out_comp,
+        ncc_tensorsig, arg_tensorsig, out_tensorsig; cutoff::Float64=1e-6)
+    error("DiskBasis _last_axis_component_ncc_matrix: requires subproblem infrastructure not yet available")
+end
+
+function Base.show(io::IO, b::DiskBasis)
+    print(io, "DiskBasis($(b.coordsys), shape=$(b.shape), radius=$(b.radius), k=$(b.k), alpha=$(b.alpha))")
+end
+
+# ============================================================================
+# SphereBasis  (concrete spin basis for S2 / spherical shell surfaces)
+# ============================================================================
+
+"""
+    SphereBasis <: SpinBasis
+
+Spherical harmonic basis on the 2-sphere (S2).
+Uses Fourier in azimuth and spin-weighted spherical harmonics in colatitude.
+"""
+mutable struct SphereBasis <: SpinBasis
+    coordsys::Union{S2Coordinates, SphericalCoordinates}
+    shape::Tuple{Int,Int}
+    dtype::DataType
+    radius::Float64
+    dealias_tuple::Tuple{Float64,Float64}
+    azimuth_library::String
+    colatitude_library::String
+    volume::Float64
+    Lmax::Int
+    grid_params::Tuple
+    forward_transforms::Vector
+    backward_transforms::Vector
+    forward_m_perm::Union{Nothing,Vector{Int}}
+    backward_m_perm::Union{Nothing,Vector{Int}}
+    group_shape_val::Tuple{Int,Int}
+    mmax::Int
+    azimuth_basis
+    _cache::Dict{Symbol,Any}
+end
+
+# -- Class constants --
+basis_dim(::SphereBasis) = 2
+basis_subaxis_dependence(::SphereBasis) = (true, true)
+const SPHERE_CONSTANT_MODE_VALUE = 1.0 / sqrt(2.0)
+
+# -- Constructor caching --
+const _sphere_cache = Dict{Any,WeakRef}()
+
+"""
+    SphereBasis(coordsys, shape, dtype; radius=1.0, dealias=(1,1),
+                azimuth_library=nothing, colatitude_library=nothing)
+
+Construct (or retrieve cached) a SphereBasis.
+"""
+function SphereBasis(coordsys::Union{S2Coordinates, SphericalCoordinates},
+                     shape, dtype;
+                     radius::Real=1.0,
+                     dealias=(1, 1),
+                     azimuth_library=nothing,
+                     colatitude_library=nothing)
+    # Preprocess arguments
+    if !(coordsys isa S2Coordinates || coordsys isa SphericalCoordinates)
+        throw(ArgumentError("Sphere coordsys must be S2Coordinates or SphericalCoordinates."))
+    end
+    shape = (Int(shape[1]), Int(shape[2]))
+    if length(shape) != 2
+        throw(ArgumentError("Sphere shape must have length 2."))
+    end
+    radius = Float64(radius)
+    if radius < 0
+        throw(ArgumentError("Sphere radius must be non-negative."))
+    end
+    if isa(dealias, Number)
+        dealias = (Float64(dealias), Float64(dealias))
+    else
+        dealias = (Float64(dealias[1]), Float64(dealias[2]))
+    end
+    if azimuth_library === nothing
+        azimuth_library = FOURIER_DEFAULT_LIBRARY
+    end
+    if colatitude_library === nothing
+        colatitude_library = JACOBI_DEFAULT_LIBRARY
+    end
+
+    # Cache lookup
+    cache_key = (objectid(coordsys), shape, dtype, radius, dealias, azimuth_library, colatitude_library)
+    wr = get(_sphere_cache, cache_key, nothing)
+    if wr !== nothing
+        inst = wr.value
+        if inst !== nothing
+            return inst::SphereBasis
+        end
+    end
+
+    # Computed attributes
+    vol = 4 * pi * radius^2
+    mmax = (shape[1] - 1) ÷ 2
+
+    # Set Lmax for optimal load balancing
+    if dtype === Float64
+        Lmax = max(0, shape[2] - 2)
+    elseif dtype === ComplexF64
+        Lmax = shape[2] - 1
+    else
+        throw(ArgumentError("Unsupported dtype: $dtype"))
+    end
+
+    if Lmax > 0 && (mmax > Lmax + 1)
+        @warn "You are using more azimuthal modes than can be resolved with your current colatitude resolution"
+    end
+
+    grid_params = (objectid(coordsys), dtype, radius, dealias, azimuth_library, colatitude_library)
+
+    # Validate phi resolution
+    if shape[1] > 1 && shape[1] % 2 != 0
+        throw(ArgumentError("Don't use an odd phi resolution please"))
+    end
+    if shape[1] > 1 && dtype === Float64 && shape[1] % 4 != 0
+        throw(ArgumentError("Don't use a phi resolution that isn't divisible by 4, please"))
+    end
+
+    # Build azimuth basis
+    if coordsys isa S2Coordinates
+        coord0 = coordsys.azimuth
+    else
+        coord0 = coordsys.azimuth
+    end
+    Nphi = shape[1]
+    az_bounds = (0.0, 2 * pi)
+    if dtype === ComplexF64
+        az_basis = ComplexFourier(coord0, Nphi, az_bounds; dealias=dealias[1], library=azimuth_library)
+    elseif dtype === Float64
+        az_basis = RealFourier(coord0, Nphi, az_bounds; dealias=dealias[1], library=azimuth_library)
+    end
+
+    # m permutations (triangular truncation repacking)
+    if dtype === ComplexF64
+        az_index = collect(0:Nphi-1)
+        az_div = az_index .÷ 2
+        az_mod = az_index .% 2
+        fwd_perm_0based = az_div .+ (Nphi ÷ 2) .* az_mod
+        fwd_perm = fwd_perm_0based .+ 1  # 1-based
+        bwd_perm = similar(fwd_perm)
+        for (i, p) in enumerate(fwd_perm)
+            bwd_perm[p] = i
+        end
+        group_shp = (1, 1)
+    elseif dtype === Float64
+        if Nphi == 1
+            az_index = collect(0:1)
+        else
+            az_index = collect(0:Nphi-1)
+        end
+        div2 = az_index .÷ 2
+        mod2 = az_index .% 2
+        div22 = div2 .% 2
+        fwd_perm_0based = (mod2 .+ div2) .* (1 .- div22) .+ (Nphi .- 1 .+ mod2 .- div2) .* div22
+        fwd_perm = fwd_perm_0based .+ 1  # 1-based
+        bwd_perm = similar(fwd_perm)
+        for (i, p) in enumerate(fwd_perm)
+            bwd_perm[p] = i
+        end
+        group_shp = (2, 1)
+    end
+
+    # Apply permutations to azimuth basis
+    if mmax > 0
+        az_basis.forward_coeff_permutation = fwd_perm
+        az_basis.backward_coeff_permutation = bwd_perm
+    end
+
+    _cache = Dict{Symbol,Any}()
+
+    inst = SphereBasis(
+        coordsys, shape, dtype, radius, dealias,
+        azimuth_library, colatitude_library,
+        vol, Lmax, grid_params,
+        Any[], Any[],  # transforms -- set below
+        fwd_perm, bwd_perm,
+        group_shp, mmax, az_basis, _cache
+    )
+
+    # Set transform callables
+    if mmax == 0
+        push!(inst.forward_transforms, (field, axis, gdata, cdata) -> _forward_transform_azimuth_Mmax0_sphere(inst, field, axis, gdata, cdata))
+        push!(inst.backward_transforms, (field, axis, cdata, gdata) -> _backward_transform_azimuth_Mmax0_sphere(inst, field, axis, cdata, gdata))
+    else
+        push!(inst.forward_transforms, (field, axis, gdata, cdata) -> _forward_transform_azimuth_sphere(inst, field, axis, gdata, cdata))
+        push!(inst.backward_transforms, (field, axis, cdata, gdata) -> _backward_transform_azimuth_sphere(inst, field, axis, cdata, gdata))
+    end
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> forward_transform_colatitude(inst, field, axis, gdata, cdata))
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> backward_transform_colatitude(inst, field, axis, cdata, gdata))
+
+    # For SphericalCoordinates, add radial pass-through transforms
+    if coordsys isa SphericalCoordinates
+        push!(inst.forward_transforms, (field, axis, gdata, cdata) -> nothing)
+        push!(inst.backward_transforms, (field, axis, cdata, gdata) -> nothing)
+    end
+
+    _sphere_cache[cache_key] = WeakRef(inst)
+    return inst
+end
+
+# -- SphereBasis interface methods --
+
+"""
+    latitude_basis(b::SphereBasis)
+
+Return a latitude-only version of this sphere basis (shape[1] = 1).
+"""
+function latitude_basis(b::SphereBasis)
+    cached = get(b._cache, :latitude_basis, nothing)
+    if cached !== nothing
+        return cached
+    end
+    lb = clone_with(b; shape=(1, b.shape[2]))
+    b._cache[:latitude_basis] = lb
+    return lb
+end
+
+"""
+    ell_size(b::SphereBasis, m)
+
+Return the number of valid ell modes for azimuthal wavenumber m.
+"""
+function ell_size(b::SphereBasis, m)
+    return b.Lmax + 1 - abs(m)
+end
+
+"""
+    matrix_dependence(b::SphereBasis, matrix_coupling)
+
+If colatitude coupling is present, azimuthal dependence must also be present.
+"""
+function matrix_dependence(b::SphereBasis, matrix_coupling)
+    md = copy(matrix_coupling)
+    if matrix_coupling[2]
+        md[1] = true
+    end
+    return md
+end
+
+"""
+    global_shape(b::SphereBasis, grid_space, scales)
+
+Compute the global data shape for the given grid/coeff space and scale factors.
+"""
+function global_shape(b::SphereBasis, grid_space, scales)
+    gs = grid_shape(b, scales)
+    if grid_space[1]
+        # grid-grid space
+        if b.mmax == 0
+            return (1, gs[2])
+        else
+            return gs
+        end
+    elseif grid_space[2]
+        # coeff-grid space
+        shp = collect(gs)
+        if b.mmax > 0
+            shp[1] = b.shape[1]
+        else
+            if b.dtype === ComplexF64
+                shp[1] = 1
+            elseif b.dtype === Float64
+                shp[1] = 2
+            end
+        end
+        return Tuple(shp)
+    else
+        # coeff-coeff space -- repacked triangular truncation
+        Nphi = b.shape[1]
+        Lmax = b.Lmax
+        if b.mmax > 0
+            if b.dtype === ComplexF64
+                return (Nphi ÷ 2, Lmax + 1 + max(0, Lmax + 1 - Nphi ÷ 2))
+            elseif b.dtype === Float64
+                return (Nphi ÷ 2, Lmax + 1 + max(0, Lmax + 2 - Nphi ÷ 2))
+            end
+        else
+            if b.dtype === ComplexF64
+                return (1, Lmax + 1)
+            elseif b.dtype === Float64
+                return (2, Lmax + 1)
+            end
+        end
+    end
+end
+
+"""
+    chunk_shape(b::SphereBasis, grid_space)
+
+Compute the chunk shape for distribution.
+"""
+function chunk_shape(b::SphereBasis, grid_space)
+    if grid_space[1]
+        return (1, 1)
+    elseif grid_space[2]
+        if b.dtype === ComplexF64
+            if b.mmax > 0
+                return (2, 1)
+            else
+                return (1, 1)
+            end
+        elseif b.dtype === Float64
+            if b.mmax > 0
+                return (4, 1)
+            else
+                return (2, 1)
+            end
+        end
+    else
+        if b.dtype === ComplexF64
+            return (1, 1)
+        elseif b.dtype === Float64
+            return (2, 1)
+        end
+    end
+end
+
+"""
+    elements_to_groups(b::SphereBasis, grid_space, elements)
+
+Convert element indices to group indices (m, ell pairs).
+"""
+function elements_to_groups(b::SphereBasis, grid_space, elements)
+    if grid_space[1]
+        return elements
+    elseif grid_space[2]
+        # coeff-grid space: unpacked m
+        permuted_native_wn = native_wavenumbers(b.azimuth_basis)
+        groups = copy(elements)
+        # elements are 0-based indices; wavenumbers are indexed 1-based
+        groups[1] = permuted_native_wn[elements[1] .+ 1]
+        return groups
+    else
+        # coeff-coeff space: repacked triangular truncation
+        i_el, j_el = elements[1], elements[2]
+        Nphi = b.shape[1]
+        Lmax = b.Lmax
+        if b.dtype === ComplexF64
+            shift = max(0, Lmax + 1 - Nphi ÷ 2)
+            m = copy(i_el)
+            ell = j_el .- shift
+            # Fix for m < 0
+            neg_modes = ell .< m
+            m[neg_modes] .= i_el[neg_modes] .- (Nphi + 1) ÷ 2
+            ell[neg_modes] .= Lmax .- j_el[neg_modes]
+            # Fix for m = 0
+            m_zero = i_el .== 0
+            m[m_zero] .= 0
+            ell[m_zero] .= j_el[m_zero]
+            # Fix for Nyquist
+            nyq_modes = (i_el .== 0) .& (j_el .> Lmax)
+            m[nyq_modes] .= Nphi ÷ 2
+            ell[nyq_modes] .= j_el[nyq_modes] .- shift
+        elseif b.dtype === Float64
+            shift = max(0, Lmax + 2 - Nphi ÷ 2)
+            m = i_el .÷ 2
+            ell = j_el .- shift
+            # Fix for Nphi/4 <= m < Nphi/2-1
+            neg_modes = ell .< m
+            m[neg_modes] .= (Nphi ÷ 2 - 1) .- m[neg_modes]
+            ell[neg_modes] .= Lmax .- j_el[neg_modes]
+            # Fix for m = 0
+            m_zero = i_el .< 2
+            m[m_zero] .= 0
+            ell[m_zero] .= j_el[m_zero]
+            # Fix for m = Nphi/2 - 1
+            m_max = (i_el .< 2) .& (j_el .> Lmax)
+            m[m_max] .= Nphi ÷ 2 - 1
+            ell[m_max] .= j_el[m_max] .- shift
+        end
+        return [m, ell]
+    end
+end
+
+"""
+    valid_elements(b::SphereBasis, tensorsig, grid_space, elements)
+
+Determine which elements are valid for the given tensor signature.
+"""
+function valid_elements(b::SphereBasis, tensorsig, grid_space, elements)
+    if grid_space[2]
+        # grid-grid and coeff-grid: same as Fourier validity
+        return valid_elements(b.azimuth_basis, tensorsig, grid_space, elements)
+    else
+        # coeff-coeff space
+        groups = elements_to_groups(b, grid_space, elements)
+        m = groups[1]
+        ell = groups[2]
+        tshape = tuple((get_dim(cs) for cs in tensorsig)...)
+        valid = ones(Bool, tshape..., size(m)...)
+        if !isempty(tensorsig)
+            rank = length(tensorsig)
+            dim = ndims(m)
+            # Expand m and ell with leading singleton dims for tensor indices
+            full_m = reshape(m, ntuple(_ -> 1, rank)..., size(m)...)
+            full_ell = reshape(ell, ntuple(_ -> 1, rank)..., size(ell)...)
+            s = spin_weights(b, tensorsig)
+            full_s = reshape(s, size(s)..., ntuple(_ -> 1, dim)...)
+            valid[max.(abs.(full_m), abs.(full_s)) .> full_ell] .= false
+        else
+            valid[abs.(m) .> ell] .= false
+        end
+        # Drop msin part of ell == 0 for real scalars and vectors
+        if b.dtype === Float64
+            if length(tensorsig) == 0
+                valid[(ell .== 0) .& (elements[1] .% 2 .== 1)] .= false
+            elseif length(tensorsig) == 1
+                allcomps = ntuple(_ -> Colon(), 1)
+                valid[allcomps..., (ell .== 0) .& (elements[1] .% 2 .== 1)] .= false
+            end
+        end
+        return valid
+    end
+end
+
+# -- Grid methods --
+
+"""
+    global_grids(b::SphereBasis, dist, scales)
+
+Return tuple of (azimuth_grid, colatitude_grid).
+"""
+function global_grids(b::SphereBasis, dist, scales)
+    return (global_grid(b.azimuth_basis, dist, scales[1]),
+            global_grid_colatitude(b, dist, scales[2]))
+end
+
+"""
+    local_grids(b::SphereBasis, dist, scales)
+
+Return tuple of (local_azimuth_grid, local_colatitude_grid).
+"""
+function local_grids(b::SphereBasis, dist, scales)
+    return (local_grid(b.azimuth_basis, dist, scales[1]),
+            local_grid_colatitude(b, dist, scales[2]))
+end
+
+"""
+    global_grid_colatitude(b::SphereBasis, dist, scale)
+
+Return the global colatitude grid.
+"""
+function global_grid_colatitude(b::SphereBasis, dist, scale)
+    theta = _native_colatitude_grid(b, scale)
+    return reshape_vector(theta, get_dim(dist), get_basis_axis(dist, b) + 1)
+end
+
+"""
+    local_grid_colatitude(b::SphereBasis, dist, scale)
+
+Return the local colatitude grid.
+"""
+function local_grid_colatitude(b::SphereBasis, dist, scale)
+    theta = _native_colatitude_grid(b, scale)
+    return reshape_vector(theta, get_dim(dist), get_basis_axis(dist, b) + 1)
+end
+
+"""
+    _native_colatitude_grid(b::SphereBasis, scale)
+
+Compute the colatitude grid at the given scale using sphere quadrature.
+"""
+function _native_colatitude_grid(b::SphereBasis, scale)
+    cache_key = (:_native_colatitude_grid, scale)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    N = Int(ceil(scale * b.shape[2]))
+    cos_theta, weights = sphere_quadrature(N - 1)
+    theta = Float64.(acos.(cos_theta))
+    b._cache[cache_key] = theta
+    return theta
+end
+
+"""
+    global_colatitude_weights(b::SphereBasis, dist; scale=nothing)
+
+Return the global colatitude quadrature weights.
+"""
+function global_colatitude_weights(b::SphereBasis, dist; scale=nothing)
+    if scale === nothing; scale = 1; end
+    N = Int(ceil(scale * b.shape[2]))
+    cos_theta, weights = sphere_quadrature(N - 1)
+    return reshape_vector(Float64.(weights), get_dim(dist), get_basis_axis(dist, b) + 1)
+end
+
+"""
+    local_colatitude_weights(b::SphereBasis, dist; scale=nothing)
+
+Return the local colatitude quadrature weights.
+"""
+function local_colatitude_weights(b::SphereBasis, dist; scale=nothing)
+    if scale === nothing; scale = 1; end
+    N = Int(ceil(scale * b.shape[2]))
+    cos_theta, weights = sphere_quadrature(N - 1)
+    return reshape_vector(Float64.(weights), get_dim(dist), get_basis_axis(dist, b) + 1)
+end
+
+# -- Transform methods --
+
+"""
+    _forward_transform_azimuth_Mmax0_sphere(b::SphereBasis, field, axis, gdata, cdata)
+
+Forward azimuth transform for sphere when mmax == 0.
+"""
+function _forward_transform_azimuth_Mmax0_sphere(b::SphereBasis, field, axis, gdata, cdata)
+    slice_axis = axis + length(field.tensorsig)
+    temp = zeros(eltype(cdata), size(cdata))
+    idx = axslice(slice_axis, 1, 1)
+    copyto!(view(temp, idx...), gdata)
+    copyto!(cdata, temp)
+    return nothing
+end
+
+"""
+    _forward_transform_azimuth_sphere(b::SphereBasis, field, axis, gdata, cdata)
+
+Forward azimuth transform for sphere: delegate to Fourier basis.
+"""
+function _forward_transform_azimuth_sphere(b::SphereBasis, field, axis, gdata, cdata)
+    forward_transform(b.azimuth_basis, field, axis, gdata, cdata)
+    return nothing
+end
+
+"""
+    _backward_transform_azimuth_Mmax0_sphere(b::SphereBasis, field, axis, cdata, gdata)
+
+Backward azimuth transform for sphere when mmax == 0.
+"""
+function _backward_transform_azimuth_Mmax0_sphere(b::SphereBasis, field, axis, cdata, gdata)
+    slice_axis = axis + length(field.tensorsig)
+    idx = axslice(slice_axis, 1, 1)
+    copyto!(gdata, view(cdata, idx...))
+    return nothing
+end
+
+"""
+    _backward_transform_azimuth_sphere(b::SphereBasis, field, axis, cdata, gdata)
+
+Backward azimuth transform for sphere: delegate to Fourier basis.
+"""
+function _backward_transform_azimuth_sphere(b::SphereBasis, field, axis, cdata, gdata)
+    backward_transform(b.azimuth_basis, field, axis, cdata, gdata)
+    return nothing
+end
+
+"""
+    transform_plan(b::SphereBasis, dist, Ntheta, s)
+
+Build (or retrieve cached) a colatitude transform plan.
+"""
+function transform_plan(b::SphereBasis, dist, Ntheta, s)
+    cache_key = (:transform_plan, objectid(dist), Ntheta, s)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    # Stub: full sphere transforms require m_maps infrastructure
+    error("SphereBasis transform_plan: requires m_maps distribution infrastructure not yet available")
+end
+
+"""
+    forward_transform_colatitude(b::SphereBasis, field, axis, gdata, cdata)
+
+Forward colatitude transform: spin recombination + SWSH transform.
+"""
+function forward_transform_colatitude(b::SphereBasis, field, axis, gdata, cdata)
+    # Expand gdata if mmax=0 and dtype=float for spin recombination
+    if b.mmax == 0 && b.dtype === Float64
+        m_axis = length(field.tensorsig) + axis - 1
+        gdata = cat(gdata, zeros(eltype(gdata), size(gdata)); dims=m_axis)
+    end
+    # Apply spin recombination from gdata to temp
+    temp = zeros(eltype(gdata), size(gdata))
+    forward_spin_recombination!(b, field.tensorsig, axis, gdata, temp)
+    fill!(cdata, zero(eltype(cdata)))
+    # Transform component-by-component
+    S = spin_weights(b, field.tensorsig)
+    for i in CartesianIndices(S)
+        s = S[i]
+        Ntheta = size(gdata[i], axis)
+        plan = transform_plan(b, field.dist, Ntheta, s)
+        forward!(plan, view(temp, i), view(cdata, i), axis)
+    end
+    return nothing
+end
+
+"""
+    backward_transform_colatitude(b::SphereBasis, field, axis, cdata, gdata)
+
+Backward colatitude transform: SWSH transform + backward spin recombination.
+"""
+function backward_transform_colatitude(b::SphereBasis, field, axis, cdata, gdata)
+    # Handle mmax=0 float expansion
+    if b.mmax == 0 && b.dtype === Float64
+        m_axis = length(field.tensorsig) + axis - 1
+        shp = collect(size(gdata))
+        shp[m_axis] = 2
+        temp = zeros(eltype(gdata), Tuple(shp))
+        gdata_orig = gdata
+        gdata = zeros(eltype(gdata), Tuple(shp))
+    else
+        temp = zeros(eltype(gdata), size(gdata))
+    end
+    # Transform component-by-component
+    S = spin_weights(b, field.tensorsig)
+    for i in CartesianIndices(S)
+        s = S[i]
+        Ntheta = size(gdata[i], axis)
+        plan = transform_plan(b, field.dist, Ntheta, s)
+        backward!(plan, view(cdata, i), view(temp, i), axis)
+    end
+    # Apply backward spin recombination
+    fill!(gdata, zero(eltype(gdata)))
+    backward_spin_recombination!(b, field.tensorsig, axis, temp, gdata)
+    # Collapse expanded gdata
+    if b.mmax == 0 && b.dtype === Float64
+        m_axis = length(field.tensorsig) + axis - 1
+        idx = axslice(m_axis, 1, 1)
+        copyto!(gdata_orig, view(gdata, idx...))
+    end
+    return nothing
+end
+
+# -- Basis algebra --
+
+function basis_add(a::SphereBasis, other)
+    if other === nothing || other === a
+        return a
+    end
+    if other isa SphereBasis
+        if a.radius != other.radius
+            throw(ErrorException("Cannot add two sphere bases with different radii ($(a.radius) and $(other.radius))."))
+        end
+        if a.grid_params == other.grid_params
+            shape = (max(a.shape[1], other.shape[1]), max(a.shape[2], other.shape[2]))
+            return clone_with(a; shape=shape)
+        end
+    end
+    return nothing
+end
+
+function basis_mul(a::SphereBasis, other)
+    if other === nothing || other === a
+        return a
+    end
+    if other isa SphereBasis
+        if a.radius != other.radius
+            throw(ErrorException("Cannot multiply two sphere bases with different radii ($(a.radius) and $(other.radius))."))
+        end
+        if a.grid_params == other.grid_params
+            shape = (max(a.shape[1], other.shape[1]), max(a.shape[2], other.shape[2]))
+            return clone_with(a; shape=shape)
+        end
+    end
+    return nothing
+end
+
+function basis_rmatmul(operand::SphereBasis, ncc)
+    return basis_mul(operand, ncc)
+end
+
+# -- Ell methods --
+
+"""
+    k_func(b::SphereBasis, l, s, mu)
+
+Compute the k coupling factor: -mu * sqrt(max(0, (l - mu*s)*(l + mu*s + 1)/2)).
+"""
+function k_func(b::SphereBasis, l, s, mu)
+    return -mu .* sqrt.(max.(0, (l .- mu .* s) .* (l .+ mu .* s .+ 1) ./ 2))
+end
+
+"""
+    k_vector(b::SphereBasis, mu, m, s, local_l)
+
+Compute the k vector for the given parameters.
+"""
+function k_vector(b::SphereBasis, mu, m, s, local_l)
+    cache_key = (:k_vector, mu, m, s, Tuple(local_l))
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    vec = zeros(length(local_l))
+    Lmin = max(abs(m), abs(s), abs(s + mu))
+    for (idx, l) in enumerate(local_l)
+        if l < Lmin
+            vec[idx] = 0
+        else
+            vec[idx] = sphere_op("k" * (mu > 0 ? "+" : "-"), l, m, s)
+        end
+    end
+    b._cache[cache_key] = vec
+    return vec
+end
+
+"""
+    operator_matrix(b::SphereBasis, op, m, spintotal; size=nothing)
+
+Build operator matrix using dedalus_sphere sphere operators.
+"""
+function operator_matrix(b::SphereBasis, op, m, spintotal; size=nothing)
+    cache_key = (:operator_matrix, op, m, spintotal, size)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    if op == "Cos"
+        operator = sphere_operator("Cos")
+    else
+        error("SphereBasis operator_matrix: operator '$op' not yet supported")
+    end
+    result = Float64.(resize_matrix(operator, size - 1 + max(abs(m), abs(spintotal)), m, spintotal))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    sine_multiplication_matrix(b::SphereBasis, m, spintotal, order; size=nothing)
+
+Build the sine multiplication matrix for the sphere.
+"""
+function sine_multiplication_matrix(b::SphereBasis, m, spintotal, order; size=nothing)
+    cache_key = (:sine_multiplication_matrix, m, spintotal, order, size)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    if size === nothing
+        size = ell_size(b, m)
+    end
+    if order == 0
+        result = sparse(1.0I, size, size)
+    else
+        S_op = sphere_operator("Sin")
+        if order < 0
+            op = S_op(-1)
+            for _ in 2:abs(order)
+                op = compose(op, S_op(-1))
+            end
+        else
+            op = S_op(+1)
+            for _ in 2:abs(order)
+                op = compose(op, S_op(+1))
+            end
+        end
+        sign_factor = (-1)^max(0, -order)
+        result = Float64.(sign_factor .* resize_matrix(op, size - 1 + max(abs(m), abs(spintotal)), m, spintotal))
+    end
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    clone_with(b::SphereBasis; kwargs...)
+
+Create a copy of the sphere basis with some fields replaced.
+"""
+function clone_with(b::SphereBasis; kwargs...)
+    kw = Dict{Symbol,Any}(kwargs)
+    coordsys_val = get(kw, :coordsys, b.coordsys)
+    shape_val = get(kw, :shape, b.shape)
+    dtype_val = get(kw, :dtype, b.dtype)
+    radius_val = get(kw, :radius, b.radius)
+    dealias_val = get(kw, :dealias, b.dealias_tuple)
+    az_lib = get(kw, :azimuth_library, b.azimuth_library)
+    co_lib = get(kw, :colatitude_library, b.colatitude_library)
+    return SphereBasis(coordsys_val, shape_val, dtype_val;
+                       radius=radius_val, dealias=dealias_val,
+                       azimuth_library=az_lib, colatitude_library=co_lib)
+end
+
+"""
+    _last_axis_component_ncc_matrix(::Type{SphereBasis}, subproblem, ncc_basis,
+        arg_basis, out_basis, coeffs, ncc_comp, arg_comp, out_comp,
+        ncc_tensorsig, arg_tensorsig, out_tensorsig; cutoff=1e-6)
+
+Build NCC component matrix for sphere basis via Clenshaw algorithm.
+"""
+function _last_axis_component_ncc_matrix(::Type{SphereBasis}, subproblem, ncc_basis,
+        arg_basis, out_basis, coeffs, ncc_comp, arg_comp, out_comp,
+        ncc_tensorsig, arg_tensorsig, out_tensorsig; cutoff::Float64=1e-6)
+    error("SphereBasis _last_axis_component_ncc_matrix: requires subproblem infrastructure not yet available")
+end
+
+# -- m_maps and ell_maps --
+
+"""
+    m_maps(b::SphereBasis, dist)
+
+Compute a tuple of (m, mg_slice, mc_slice, ell_slice) for all local m values.
+"""
+function m_maps(b::SphereBasis, dist)
+    cache_key = (:m_maps, objectid(dist))
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    error("SphereBasis m_maps: requires distributor infrastructure not yet available")
+end
+
+"""
+    ell_reversed(b::SphereBasis, dist)
+
+Return a dictionary mapping m -> Bool indicating whether ell ordering is reversed.
+"""
+function ell_reversed(b::SphereBasis, dist)
+    cache_key = (:ell_reversed, objectid(dist))
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    result = Dict{Int, Bool}()
+    for (m, mg_slice, mc_slice, ell_sl) in m_maps(b, dist)
+        result[m] = false
+        if ell_sl isa StepRange && step(ell_sl) < 0
+            result[m] = true
+        end
+    end
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    ell_maps(b::SphereBasis, dist)
+
+Compute a tuple of (ell, m_slice, ell_slice) for all local ells in coeff space.
+"""
+function ell_maps(b::SphereBasis, dist)
+    cache_key = (:ell_maps, objectid(dist))
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    error("SphereBasis ell_maps: requires distributor infrastructure not yet available")
+end
+
+function Base.show(io::IO, b::SphereBasis)
+    print(io, "SphereBasis($(b.coordsys), shape=$(b.shape), radius=$(b.radius), Lmax=$(b.Lmax))")
+end
