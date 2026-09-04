@@ -6641,6 +6641,24 @@ function ell_reversed(b::AbstractSpherical3DBasis, dist)
 end
 
 """
+    n_size(b::AbstractSpherical3DBasis, ell)
+
+Delegate n_size to the radial_basis (mirrors Python Spherical3DBasis.n_size).
+"""
+function n_size(b::AbstractSpherical3DBasis, ell)
+    return n_size(b.radial_basis, ell)
+end
+
+"""
+    n_slice(b::AbstractSpherical3DBasis, ell)
+
+Delegate n_slice to the radial_basis (mirrors Python Spherical3DBasis.n_slice).
+"""
+function n_slice(b::AbstractSpherical3DBasis, ell)
+    return n_slice(b.radial_basis, ell)
+end
+
+"""
     matrix_dependence(b::AbstractSpherical3DBasis, matrix_coupling)
 
 If colatitude coupling is present, azimuthal dependence must also be present.
@@ -7261,22 +7279,228 @@ end
 # -- NCC matrix building --
 
 """
+    _last_axis_field_ncc_matrix(product, subproblem, axis, ncc_basis, arg_basis,
+                                out_basis, coeffs, ncc_cutoff, max_ncc_terms)
+
+Generic NCC matrix builder that loops over tensor components, computes Gamma
+intertwiners, and assembles the block matrix by calling
+`_last_axis_component_ncc_matrix` for each component pair.
+
+`axis` uses 0-based indexing (matching the Python convention):
+  - 0 means "no spatial axes" (constant NCC)
+  - For a 3D basis occupying axes 1-3, `last_axis - 1` gives `axis = 2`.
+
+Translates Python `MultidimensionalBasis._last_axis_field_ncc_matrix`.
+"""
+function _last_axis_field_ncc_matrix(product, subproblem, axis,
+        ncc_basis, arg_basis, out_basis, coeffs, ncc_cutoff, max_ncc_terms)
+    operand = product.operand
+    ncc = product.ncc
+    group = subproblem.group
+    ncc_first = product.ncc_first
+    ncc_group = Tuple(g !== nothing ? 0 * g : nothing for g in group)
+    if ncc_first
+        # axis+1 converts 0-based to Julia 1-based for the Gamma function
+        G = Gamma(product, ncc.tensorsig, operand.tensorsig, product.tensorsig,
+                  ncc_group, group, group, axis + 1)
+    else
+        G = Gamma(product, operand.tensorsig, ncc.tensorsig, product.tensorsig,
+                  group, ncc_group, group, axis + 1)
+        G = permutedims(G, (2, 1, 3))
+    end
+    # Compute M, N from coefficient shapes up to and including this axis
+    # Python: prod(coeff_shape[:axis+1])  ->  Julia: prod(coeff_shape[1:axis+1])
+    # For axis=0, this gives prod(coeff_shape[1:1]) = first element
+    out_cshape = coeff_shape(subproblem, product.domain)
+    arg_cshape = coeff_shape(subproblem, operand.domain)
+    M = prod(out_cshape[1:axis+1])
+    N = prod(arg_cshape[1:axis+1])
+    # Build block matrix over tensor components
+    blocks = Vector{Vector{Any}}()
+    for (ic, out_comp) in enum_indices(product.tensorsig)
+        block_row = Any[]
+        for (ib, arg_comp) in enum_indices(operand.tensorsig)
+            block = spzeros(product.dtype, M, N)
+            # Loop over NCC tensor components
+            for (ia, ncc_comp) in enum_indices(ncc.tensorsig)
+                Gval = G[ia, ib, ic]
+                if abs(Gval) > ncc_cutoff
+                    if ncc_basis === nothing
+                        # Constant NCC: scalar times identity
+                        ncc_coeff = isempty(ncc_comp) ? coeffs : coeffs[ncc_comp...]
+                        if length(ncc_coeff) != 1
+                            error("NotImplementedError: constant NCC with non-scalar coeff")
+                        end
+                        matrix = vec(ncc_coeff)[1] * sparse(1.0I, M, N)
+                    else
+                        # Delegate to component NCC matrix builder
+                        sub_coeffs = isempty(ncc_comp) ? coeffs : coeffs[ncc_comp...]
+                        squeeze_dims = findall(size(sub_coeffs) .== 1)
+                        squeezed = isempty(squeeze_dims) ? sub_coeffs : dropdims(sub_coeffs; dims=tuple(squeeze_dims...))
+                        matrix = _last_axis_component_ncc_matrix(
+                            typeof(out_basis), subproblem, ncc_basis, arg_basis,
+                            out_basis, squeezed, ncc_comp, arg_comp, out_comp,
+                            ncc.tensorsig, operand.tensorsig, product.tensorsig;
+                            cutoff=ncc_cutoff)
+                        # Kron up for real Fourier bases if needed
+                        if size(matrix) != (M, N)
+                            m, n = size(matrix)
+                            matrix = kron(sparse(1.0I, fld(M, m), fld(N, n)), matrix)
+                        end
+                    end
+                    if product.dtype == Float64
+                        if imag(Gval) != 0
+                            error("NotImplementedError: complex Gamma with real dtype")
+                        else
+                            block = block + real(Gval) * matrix
+                        end
+                    else
+                        block = block + Gval * matrix
+                    end
+                end
+            end
+            push!(block_row, block)
+        end
+        push!(blocks, block_row)
+    end
+    # Assemble block matrix
+    nrows = length(blocks)
+    ncols = length(blocks[1])
+    matrix = hvcat(
+        ntuple(_ -> ncols, nrows),
+        [blocks[i][j] for i in 1:nrows for j in 1:ncols]...
+    )
+    return sparse(matrix)
+end
+
+"""
+    _generic_basis_build_ncc_matrix(b, product, subproblem, ncc_cutoff, max_ncc_terms)
+
+Generic NCC matrix builder for bases that only support last-axis NCCs.
+Equivalent to Python `MultidimensionalBasis.build_ncc_matrix`.
+Checks that NCC variation is confined to the last axis, then delegates
+to `_last_axis_field_ncc_matrix`.
+"""
+function _generic_basis_build_ncc_matrix(b, product, subproblem, ncc_cutoff, max_ncc_terms)
+    dist = product.dist
+    fa = first_axis(dist, b)
+    la = last_axis(dist, b)
+    nc = domain_nonconstant(product.ncc.domain)
+    # Check that only the last axis is nonconstant (axes fa to la-1 must be constant)
+    if fa < la && any(nc[fa:la-1])
+        error("NotImplementedError: Only last-axis NCCs implemented for this basis.")
+    end
+    # axis is 0-based for _last_axis_field_ncc_matrix
+    axis = la - 1
+    ncc_basis = get_basis(product.ncc.domain, la)
+    arg_basis = get_basis(product.operand.domain, la)
+    out_basis = get_basis(product.domain, la)
+    coeffs = product._ncc_data
+    return _last_axis_field_ncc_matrix(product, subproblem, axis, ncc_basis,
+        arg_basis, out_basis, coeffs, ncc_cutoff, max_ncc_terms)
+end
+
+"""
     build_ncc_matrix(b::ShellBasis, product, subproblem, ncc_cutoff, max_ncc_terms)
 
-Build NCC matrix for ShellBasis. Routes to radial, meridional, or errors.
+Build NCC matrix for ShellBasis. Routes based on NCC type:
+- Constant NCC (ncc_basis is nothing): delegate to generic builder
+- Radial NCC (shape[1]==1 && shape[2]==1): delegate to generic builder
+- Meridional NCC (shape[1]==1 && shape[2]!=1): call build_meridional_ncc_matrix
+- Azimuthal NCC: raise NotImplementedError
 """
 function build_ncc_matrix(b::ShellBasis, product, subproblem, ncc_cutoff, max_ncc_terms)
-    error("ShellBasis build_ncc_matrix: requires subproblem infrastructure not yet available")
+    axis = last_axis(product.dist, b)
+    ncc_basis = get_basis(product.ncc.domain, axis)
+    if ncc_basis === nothing
+        # NCC is constant
+        return _generic_basis_build_ncc_matrix(b, product, subproblem, ncc_cutoff, max_ncc_terms)
+    elseif ncc_basis.shape[1] == 1
+        if ncc_basis.shape[2] == 1
+            # NCC is radial
+            return _generic_basis_build_ncc_matrix(b, product, subproblem, ncc_cutoff, max_ncc_terms)
+        else
+            # NCC is meridional
+            return build_meridional_ncc_matrix(b, product, subproblem, ncc_cutoff, max_ncc_terms)
+        end
+    else
+        error("NotImplementedError: Azimuthal NCCs not yet supported.")
+    end
 end
 
 """
     build_meridional_ncc_matrix(b::ShellBasis, product, subproblem, ncc_cutoff, max_ncc_terms)
 
-Build meridional NCC matrix for ShellBasis. Complex operation involving
-Q matrix interleaving for spin components.
+Build meridional NCC matrix for ShellBasis. Converts NCC coefficients to spin
+components, builds deferred S2 NCC sub-matrices for each radial index, applies
+forward Q (regularity) transformations, and passes the result through the
+radial basis Clenshaw algorithm.
+
+Translates Python `ShellBasis.build_meridional_ncc_matrix` (basis.py:4683-4722).
 """
 function build_meridional_ncc_matrix(b::ShellBasis, product, subproblem, ncc_cutoff, max_ncc_terms)
-    error("ShellBasis build_meridional_ncc_matrix: requires _last_axis_field_ncc_matrix and subproblem infrastructure not yet available")
+    axis = last_axis(product.dist, b)
+    ncc_basis = get_basis(product.ncc.domain, axis)
+    arg_basis = get_basis(product.operand.domain, axis)
+    out_basis = get_basis(product.domain, axis)
+    # Build coefficient norms (same result for all components)
+    coeffs = product._ncc_data
+    # Take Frobenius norm of tensor components
+    tensor_axes = Tuple(1:length(product.ncc.tensorsig))
+    subcoeff_norms = sqrt.(sum(abs.(coeffs).^2; dims=tensor_axes))
+    # Drop the tensor dimensions
+    subcoeff_norms = dropdims(subcoeff_norms; dims=tensor_axes)
+    # Sum over sin and cos for real (first remaining axis, which was the azimuthal dim)
+    subcoeff_norms = sqrt.(sum(subcoeff_norms.^2; dims=1))
+    subcoeff_norms = dropdims(subcoeff_norms; dims=(1,))
+    # Take max over ell (first remaining axis after azimuthal was removed)
+    subcoeff_norms = vec(maximum(subcoeff_norms; dims=1))
+    # Convert NCC coefficients to spin components
+    spin_coeffs = copy(coeffs)
+    backward_regularity_recombination(b.radial_basis, product.ncc.tensorsig,
+        axis, spin_coeffs, ell_maps(ncc_basis, product.dist))
+    # Build deferred S2 NCC for each radial index
+    s2b = S2_basis(b)
+    # axis-1 converts from 1-based last axis to 0-based for _last_axis_field_ncc_matrix
+    # Python: axis-1 where axis is 0-based -> in Julia: (axis-1)-1 = axis-2
+    # But _last_axis_field_ncc_matrix expects 0-based axis, so axis of the S2 sub-call
+    # is (axis-1) in 1-based, which is (axis-2) in 0-based.
+    s2_axis_0based = axis - 2
+    function reg_NCC_matrix(radial_index)
+        # Select radial spin data (last dimension index)
+        # In Julia, radial_index is 1-based (from DeferredTuple)
+        subcoeffs = selectdim(spin_coeffs, ndims(spin_coeffs), radial_index)
+        # Call S2 NCC
+        submatrix = _last_axis_field_ncc_matrix(product, subproblem, s2_axis_0based,
+            S2_basis(ncc_basis), S2_basis(arg_basis), S2_basis(out_basis),
+            subcoeffs, ncc_cutoff, max_ncc_terms)
+        # Apply forward Q (regularity) transformations
+        # Python: m = subproblem.group[axis-2]  (0-based axis, so axis-2)
+        # Julia: group is a tuple, axis is 1-based, equivalent index is axis-2
+        m = subproblem.group[axis - 2]
+        ells = collect(abs(m):b.Lmax)
+        if get(ell_reversed(S2_basis(b), product.dist), m, false)
+            reverse!(ells)
+        end
+        ells_tuple = Tuple(ells)
+        Qout = radial_recombinations(b.radial_basis, product.tensorsig, ells_tuple)
+        Qout_interleaved = interleave_matrices(
+            [sparse(transpose(Qout[ell])) for ell in ells_tuple])
+        Qarg = radial_recombinations(b.radial_basis, product.operand.tensorsig, ells_tuple)
+        Qarg_interleaved = interleave_matrices(
+            [sparse(transpose(Qarg[ell])) for ell in ells_tuple])
+        return Qout_interleaved * submatrix * transpose(Qarg_interleaved)
+    end
+    subcoeff_vals = DeferredTuple(reg_NCC_matrix, length(subcoeff_norms))
+    # Call last-axis Clenshaw via ShellRadialBasis
+    subcoeffs = (subcoeff_vals, subcoeff_norms)
+    ncc_comp = arg_comp = out_comp = ()
+    ncc_tensorsig = arg_tensorsig = out_tensorsig = ()
+    return _last_axis_component_ncc_matrix(typeof(b.radial_basis), subproblem,
+        ncc_basis, arg_basis, out_basis, subcoeffs,
+        ncc_comp, arg_comp, out_comp,
+        ncc_tensorsig, arg_tensorsig, out_tensorsig;
+        cutoff=ncc_cutoff)
 end
 
 """
@@ -7655,6 +7879,20 @@ function Base.show(io::IO, b::BallBasis)
     print(io, "BallBasis($(b.coordsys), shape=$(b.shape), radius=$(b.radius), k=$(b.k), alpha=$(b.alpha))")
 end
 
+# -- NCC matrix building --
+
+"""
+    build_ncc_matrix(b::BallBasis, product, subproblem, ncc_cutoff, max_ncc_terms)
+
+Build NCC matrix for BallBasis. Supports constant and radial NCCs only.
+Meridional and azimuthal NCCs raise NotImplementedError, matching the Python
+behaviour where BallBasis inherits `Spherical3DBasis -> MultidimensionalBasis`
+and has no `build_meridional_ncc_matrix`.
+"""
+function build_ncc_matrix(b::BallBasis, product, subproblem, ncc_cutoff, max_ncc_terms)
+    return _generic_basis_build_ncc_matrix(b, product, subproblem, ncc_cutoff, max_ncc_terms)
+end
+
 
 # ============================================================================
 # ConvertRegularity  (operator for converting between regularity-based bases)
@@ -7786,5 +8024,7 @@ export AbstractSpherical3DBasis,
        backward_transform_radius_shell_3d,
        forward_transform_radius_ball_3d,
        backward_transform_radius_ball_3d,
+       _last_axis_field_ncc_matrix,
+       _generic_basis_build_ncc_matrix,
        build_ncc_matrix,
        build_meridional_ncc_matrix
