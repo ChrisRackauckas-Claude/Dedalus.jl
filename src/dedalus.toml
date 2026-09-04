@@ -1,0 +1,51 @@
+[logging]
+nonroot_level = "warning"
+stdout_level = "info"
+file_level = "none"
+filename = "logs/dedalus"
+
+[transforms]
+DEFAULT_LIBRARY = "fftw"
+GROUP_TRANSFORMS = false
+DEALIAS_BEFORE_CONVERTING = true
+
+[transforms-fftw]
+PLANNING_RIGOR = "measure"
+
+[parallelism]
+TRANSPOSE_LIBRARY = "fftw"
+SYNC_TRANSPOSES = false
+GROUP_TRANSPOSES = true
+
+[parallelism-fftw]
+IN_PLACE = false
+PLANNING_RIGOR = "measure"
+
+[parallelism-mpi]
+ALLTOALLV = false
+
+[matrix_construction]
+BC_TOP = false
+TAU_LEFT = false
+INTERLEAVE_COMPONENTS = false
+STORE_EXPANDED_MATRICES = false
+
+[linear_algebra]
+MATRIX_SOLVER = "SuperLUColamdSpsolve"
+MATRIX_FACTORIZER = "SuperLUColamdFactorizedTranspose"
+SPLIT_CSR_MATVECS = false
+OLD_CSR_MATVECS = false
+
+[memory]
+STORE_OUTPUTS = true
+STORE_LAST_DEFAULT = true
+
+[analysis]
+FILEHANDLER_MODE_DEFAULT = "overwrite"
+FILEHANDLER_PARALLEL_DEFAULT = "virtual"
+FILEHANDLER_TOUCH_TMPFILE = false
+
+[profiling]
+PROFILE_DEFAULT = false
+PARALLEL_PROFILE_DEFAULT = false
+PROFILE_DIRECTORY = "profiles"

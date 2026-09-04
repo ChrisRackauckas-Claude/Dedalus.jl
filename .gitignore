@@ -1,0 +1,32 @@
+# Julia artifacts
+Manifest.toml
+*.jl.cov
+*.cov
+*.jl.mem
+deps/build.log
+
+# Build output
+/docs/build/
+/docs/site/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# HDF5 output files
+*.h5
+*.hdf5
+
+# Profile output
+profiles/
+
+# Log files
+logs/
+*.log
