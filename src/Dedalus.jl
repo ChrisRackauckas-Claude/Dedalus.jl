@@ -114,10 +114,13 @@ export differentiate, interpolate, integrate, average, lift,
        radial_component, angular_component, azimuthal_component,
        grid_op, coeff_op, time_derivative, convert_operand
 
-# Basis types (1D from Milestone 1, 2D curvilinear from Milestone 2)
+# Basis types (1D from Milestone 1, 2D curvilinear from Milestone 2, 3D from Milestone 3)
 export Jacobi, ChebyshevT, ChebyshevU, Legendre, Ultraspherical,
        ComplexFourier, RealFourier, Fourier,
-       DiskBasis, AnnulusBasis, SphereBasis
+       DiskBasis, AnnulusBasis, SphereBasis,
+       ShellBasis, BallBasis,
+       AbstractRegularityBasis, ShellRadialBasis, BallRadialBasis,
+       AbstractSpherical3DBasis, ConvertRegularity
 
 # Problems
 export IVP, EVP, LBVP, NLBVP
@@ -129,6 +132,13 @@ export LinearBoundaryValueSolver, EigenvalueSolver,
 # Timesteppers
 export CNAB1, CNAB2, MCNAB2, CNLF2, SBDF1, SBDF2, SBDF3, SBDF4,
        RK111, RK222, RK443, RKSMR, RKGFY
+
+# Spherical operators (Milestone 3)
+export SphericalEllOperator, SphericalGradient, SphericalDivergence,
+       SphericalCurl, SphericalLaplacian, SphericalEllProduct
+
+# MPI distribution
+export GlobalArrayReducer, AlltoallvTranspose
 
 # Extras – flow tools
 export CFL, GlobalFlowProperty
