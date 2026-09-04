@@ -886,6 +886,18 @@ function Base.getproperty(s::InitialValueSolver, sym::Symbol)
     return getfield(s, sym)
 end
 
+function Base.setproperty!(s::InitialValueSolver, sym::Symbol, val)
+    if sym === :sim_time
+        setfield!(s, :sim_time, val)
+        try
+            getfield(s, :sd).problem.time["g"] = val
+        catch
+        end
+        return val
+    end
+    setfield!(s, sym, val)
+end
+
 function _get_initial_sim_time(problem)
     try
         return Float64(problem.time["g"])
