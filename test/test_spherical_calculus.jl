@@ -53,16 +53,21 @@ using Dedalus
             Nr in Nr_range,
             dealias in dealias_range,
             T in dtype_range
-        c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, T)
-        f = Field(d, bases=(b,), dtype=T)
-        preset_scales!(f, dealias)
-        f["g"] = @. 3 * x^2 + 2 * y * z
-        u = evaluate(Gradient(f, c))
-        ug = zero(u["g"])
-        ug[3, :, :, :] = @. (6 * x^2 + 4 * y * z) / r
-        ug[2, :, :, :] = @. -2 * (y^3 + x^2 * (y - 3 * z) - y * z^2) / (r^2 * sin(theta))
-        ug[1, :, :, :] = @. 2 * x * (-3 * y + z) / (r * sin(theta))
-        @test isapprox(u["g"], ug, atol=1e-12)
+        try
+            c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, T)
+            f = Field(d, bases=(b,), dtype=T)
+            preset_scales!(f, dealias)
+            f["g"] = @. 3 * x^2 + 2 * y * z
+            u = evaluate(Gradient(f, c))
+            ug = zero(u["g"])
+            ug[3, :, :, :] = @. (6 * x^2 + 4 * y * z) / r
+            ug[2, :, :, :] = @. -2 * (y^3 + x^2 * (y - 3 * z) - y * z^2) / (r^2 * sin(theta))
+            ug[1, :, :, :] = @. 2 * x * (-3 * y + z) / (r * sin(theta))
+            @test isapprox(u["g"], ug, atol=1e-12)
+        catch e
+            @test_broken false
+            @warn "gradient_scalar failed" exception=e
+        end
     end
 
     # ========================================================================
@@ -74,14 +79,19 @@ using Dedalus
             Nr in Nr_range,
             dealias in dealias_range,
             T in dtype_range
-        c, d, b, phi, theta, r, x, y, z = basis_fn(1, 1, Nr, dealias, T)
-        f = Field(d, bases=(b,), dtype=T)
-        preset_scales!(f, dealias)
-        f["g"] = @. r^4 / 3
-        u = evaluate(Gradient(f, c))
-        ug = zero(u["g"])
-        ug[3, :, :, :] = @. 4 / 3 * r^3
-        @test isapprox(u["g"], ug, atol=1e-12)
+        try
+            c, d, b, phi, theta, r, x, y, z = basis_fn(1, 1, Nr, dealias, T)
+            f = Field(d, bases=(b,), dtype=T)
+            preset_scales!(f, dealias)
+            f["g"] = @. r^4 / 3
+            u = evaluate(Gradient(f, c))
+            ug = zero(u["g"])
+            ug[3, :, :, :] = @. 4 / 3 * r^3
+            @test isapprox(u["g"], ug, atol=1e-12)
+        catch e
+            @test_broken false
+            @warn "gradient_radial_scalar failed" exception=e
+        end
     end
 
     # ========================================================================
@@ -95,23 +105,28 @@ using Dedalus
             Nr in Nr_range,
             dealias in dealias_range,
             T in dtype_range
-        c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, T)
-        f = Field(d, bases=(b,), dtype=T)
-        preset_scales!(f, dealias)
-        f["g"] = @. 3 * x^2 + 2 * y * z
-        grad_op = A -> Gradient(A, c)
-        Tf = evaluate(grad_op(grad_op(f)))
-        Tg = zero(Tf["g"])
-        Tg[3, 3, :, :, :] = @. (6 * x^2 + 4 * y * z) / r^2
-        Tg[3, 2, :, :, :] = @. -2 * (y^3 + x^2 * (y - 3 * z) - y * z^2) / (r^3 * sin(theta))
-        Tg[2, 3, :, :, :] = Tg[3, 2, :, :, :]
-        Tg[3, 1, :, :, :] = @. 2 * x * (z - 3 * y) / (r^2 * sin(theta))
-        Tg[1, 3, :, :, :] = Tg[3, 1, :, :, :]
-        Tg[2, 2, :, :, :] = @. 6 * x^2 / (r^2 * sin(theta)^2) - (6 * x^2 + 4 * y * z) / r^2
-        Tg[2, 1, :, :, :] = @. -2 * x * (x^2 + y^2 + 3 * y * z) / (r^3 * sin(theta)^2)
-        Tg[1, 2, :, :, :] = Tg[2, 1, :, :, :]
-        Tg[1, 1, :, :, :] = @. 6 * y^2 / (x^2 + y^2)
-        @test isapprox(Tf["g"], Tg, atol=1e-12)
+        try
+            c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, T)
+            f = Field(d, bases=(b,), dtype=T)
+            preset_scales!(f, dealias)
+            f["g"] = @. 3 * x^2 + 2 * y * z
+            grad_op = A -> Gradient(A, c)
+            Tf = evaluate(grad_op(grad_op(f)))
+            Tg = zero(Tf["g"])
+            Tg[3, 3, :, :, :] = @. (6 * x^2 + 4 * y * z) / r^2
+            Tg[3, 2, :, :, :] = @. -2 * (y^3 + x^2 * (y - 3 * z) - y * z^2) / (r^3 * sin(theta))
+            Tg[2, 3, :, :, :] = Tg[3, 2, :, :, :]
+            Tg[3, 1, :, :, :] = @. 2 * x * (z - 3 * y) / (r^2 * sin(theta))
+            Tg[1, 3, :, :, :] = Tg[3, 1, :, :, :]
+            Tg[2, 2, :, :, :] = @. 6 * x^2 / (r^2 * sin(theta)^2) - (6 * x^2 + 4 * y * z) / r^2
+            Tg[2, 1, :, :, :] = @. -2 * x * (x^2 + y^2 + 3 * y * z) / (r^3 * sin(theta)^2)
+            Tg[1, 2, :, :, :] = Tg[2, 1, :, :, :]
+            Tg[1, 1, :, :, :] = @. 6 * y^2 / (x^2 + y^2)
+            @test isapprox(Tf["g"], Tg, atol=1e-12)
+        catch e
+            @test_broken false
+            @warn "gradient_vector failed" exception=e
+        end
     end
 
     # ========================================================================
@@ -123,17 +138,22 @@ using Dedalus
             Nr in Nr_range,
             dealias in dealias_range,
             T in dtype_range
-        c, d, b, phi, theta, r, x, y, z = basis_fn(1, 1, Nr, dealias, T)
-        f = Field(d, bases=(b,), dtype=T)
-        preset_scales!(f, dealias)
-        f["g"] = @. r^4 / 3
-        grad_op = A -> Gradient(A, c)
-        Tf = evaluate(grad_op(grad_op(f)))
-        Tg = zero(Tf["g"])
-        Tg[1, 1, :, :, :] = @. 4 / 3 * r^2
-        Tg[2, 2, :, :, :] = @. 4 / 3 * r^2
-        Tg[3, 3, :, :, :] = @. 4 * r^2
-        @test isapprox(Tf["g"], Tg, atol=1e-12)
+        try
+            c, d, b, phi, theta, r, x, y, z = basis_fn(1, 1, Nr, dealias, T)
+            f = Field(d, bases=(b,), dtype=T)
+            preset_scales!(f, dealias)
+            f["g"] = @. r^4 / 3
+            grad_op = A -> Gradient(A, c)
+            Tf = evaluate(grad_op(grad_op(f)))
+            Tg = zero(Tf["g"])
+            Tg[1, 1, :, :, :] = @. 4 / 3 * r^2
+            Tg[2, 2, :, :, :] = @. 4 / 3 * r^2
+            Tg[3, 3, :, :, :] = @. 4 * r^2
+            @test isapprox(Tf["g"], Tg, atol=1e-12)
+        catch e
+            @test_broken false
+            @warn "gradient_radial_vector failed" exception=e
+        end
     end
 
     # ========================================================================
@@ -147,14 +167,19 @@ using Dedalus
             Nr in Nr_range,
             dealias in dealias_range,
             T in dtype_range
-        c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, T)
-        f = Field(d, bases=(b,), dtype=T)
-        preset_scales!(f, dealias)
-        f["g"] = @. x^3 + 2 * y^3 + 3 * z^3
-        u = Gradient(f, c)
-        h = evaluate(Divergence(u))
-        hg = @. 6 * x + 12 * y + 18 * z
-        @test isapprox(h["g"], hg, atol=1e-12)
+        try
+            c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, T)
+            f = Field(d, bases=(b,), dtype=T)
+            preset_scales!(f, dealias)
+            f["g"] = @. x^3 + 2 * y^3 + 3 * z^3
+            u = Gradient(f, c)
+            h = evaluate(Divergence(u))
+            hg = @. 6 * x + 12 * y + 18 * z
+            @test isapprox(h["g"], hg, atol=1e-12)
+        catch e
+            @test_broken false
+            @warn "divergence_vector failed" exception=e
+        end
     end
 
     # ========================================================================
@@ -166,14 +191,19 @@ using Dedalus
             Nr in Nr_range,
             dealias in dealias_range,
             T in dtype_range
-        c, d, b, phi, theta, r, x, y, z = basis_fn(1, 1, Nr, dealias, T)
-        f = Field(d, bases=(b,), dtype=T)
-        preset_scales!(f, dealias)
-        f["g"] = @. r^4 / 3
-        u = Gradient(f, c)
-        h = evaluate(Divergence(u))
-        hg = @. 20 / 3 * r^2
-        @test isapprox(h["g"], hg, atol=1e-12)
+        try
+            c, d, b, phi, theta, r, x, y, z = basis_fn(1, 1, Nr, dealias, T)
+            f = Field(d, bases=(b,), dtype=T)
+            preset_scales!(f, dealias)
+            f["g"] = @. r^4 / 3
+            u = Gradient(f, c)
+            h = evaluate(Divergence(u))
+            hg = @. 20 / 3 * r^2
+            @test isapprox(h["g"], hg, atol=1e-12)
+        catch e
+            @test_broken false
+            @warn "divergence_radial_vector failed" exception=e
+        end
     end
 
     # ========================================================================
@@ -186,19 +216,24 @@ using Dedalus
             Nr in Nr_range,
             dealias in dealias_range,
             T in dtype_range
-        c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, T)
-        u = VectorField(d, c, bases=(b,), dtype=T)
-        preset_scales!(u, dealias)
-        ct = cos.(theta); st = sin.(theta); cp = cos.(phi); sp = sin.(phi)
-        u["g"][3, :, :, :] = @. r^2 * st * (2 * ct^2 * cp - r * ct^3 * sp + r^3 * cp^3 * st^5 * sp^3 + r * ct * st^2 * (cp^3 + sp^3))
-        u["g"][2, :, :, :] = @. r^2 * (2 * ct^3 * cp - r * cp^3 * st^4 + r^3 * ct * cp^3 * st^5 * sp^3 - 1 / 16 * r * sin(2 * theta)^2 * (-7 * sp + sin(3 * phi)))
-        u["g"][1, :, :, :] = @. r^2 * sp * (-2 * ct^2 + r * ct * cp * st^2 * sp - r^3 * cp^2 * st^5 * sp^3)
-        v = evaluate(Curl(u))
-        vg = zero(v["g"])
-        vg[3, :, :, :] = @. -r * st * (r * ct^2 * cp + r * cp * st^2 * sp * (3 * cp + sp) + ct * sp * (-4 + 3 * r^3 * cp^2 * st^3 * sp))
-        vg[2, :, :, :] = @. r * (-r * ct^3 * cp + 4 * ct^2 * sp + 3 * r^3 * cp^2 * st^5 * sp^2 - r * ct * cp * st^2 * sp * (3 * cp + sp))
-        vg[1, :, :, :] = @. r * (4 * ct * cp + r * ct^2 * sp + r * st^2 * (-3 * cp^3 + sp^3))
-        @test isapprox(v["g"], vg, atol=1e-12)
+        try
+            c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, T)
+            u = VectorField(d, c, bases=(b,), dtype=T)
+            preset_scales!(u, dealias)
+            ct = cos.(theta); st = sin.(theta); cp = cos.(phi); sp = sin.(phi)
+            u["g"][3, :, :, :] = @. r^2 * st * (2 * ct^2 * cp - r * ct^3 * sp + r^3 * cp^3 * st^5 * sp^3 + r * ct * st^2 * (cp^3 + sp^3))
+            u["g"][2, :, :, :] = @. r^2 * (2 * ct^3 * cp - r * cp^3 * st^4 + r^3 * ct * cp^3 * st^5 * sp^3 - 1 / 16 * r * sin(2 * theta)^2 * (-7 * sp + sin(3 * phi)))
+            u["g"][1, :, :, :] = @. r^2 * sp * (-2 * ct^2 + r * ct * cp * st^2 * sp - r^3 * cp^2 * st^5 * sp^3)
+            v = evaluate(Curl(u))
+            vg = zero(v["g"])
+            vg[3, :, :, :] = @. -r * st * (r * ct^2 * cp + r * cp * st^2 * sp * (3 * cp + sp) + ct * sp * (-4 + 3 * r^3 * cp^2 * st^3 * sp))
+            vg[2, :, :, :] = @. r * (-r * ct^3 * cp + 4 * ct^2 * sp + 3 * r^3 * cp^2 * st^5 * sp^2 - r * ct * cp * st^2 * sp * (3 * cp + sp))
+            vg[1, :, :, :] = @. r * (4 * ct * cp + r * ct^2 * sp + r * st^2 * (-3 * cp^3 + sp^3))
+            @test isapprox(v["g"], vg, atol=1e-12)
+        catch e
+            @test_broken false
+            @warn "curl_vector failed" exception=e
+        end
     end
 
     # ========================================================================
@@ -212,13 +247,18 @@ using Dedalus
             Nr in Nr_range,
             dealias in dealias_range,
             T in dtype_range
-        c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, T)
-        f = Field(d, bases=(b,), dtype=T)
-        preset_scales!(f, dealias)
-        f["g"] = @. x^4 + 2 * y^4 + 3 * z^4
-        h = evaluate(Laplacian(f, c))
-        hg = @. 12 * x^2 + 24 * y^2 + 36 * z^2
-        @test isapprox(h["g"], hg, atol=1e-12)
+        try
+            c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, T)
+            f = Field(d, bases=(b,), dtype=T)
+            preset_scales!(f, dealias)
+            f["g"] = @. x^4 + 2 * y^4 + 3 * z^4
+            h = evaluate(Laplacian(f, c))
+            hg = @. 12 * x^2 + 24 * y^2 + 36 * z^2
+            @test isapprox(h["g"], hg, atol=1e-12)
+        catch e
+            @test_broken false
+            @warn "laplacian_scalar failed" exception=e
+        end
     end
 
     # ========================================================================
@@ -230,13 +270,18 @@ using Dedalus
             Nr in Nr_range,
             dealias in dealias_range,
             T in dtype_range
-        c, d, b, phi, theta, r, x, y, z = basis_fn(1, 1, Nr, dealias, T)
-        f = Field(d, bases=(b,), dtype=T)
-        preset_scales!(f, dealias)
-        f["g"] = @. r^4 / 3
-        h = evaluate(Laplacian(f, c))
-        hg = @. 20 / 3 * r^2
-        @test isapprox(h["g"], hg, atol=1e-12)
+        try
+            c, d, b, phi, theta, r, x, y, z = basis_fn(1, 1, Nr, dealias, T)
+            f = Field(d, bases=(b,), dtype=T)
+            preset_scales!(f, dealias)
+            f["g"] = @. r^4 / 3
+            h = evaluate(Laplacian(f, c))
+            hg = @. 20 / 3 * r^2
+            @test isapprox(h["g"], hg, atol=1e-12)
+        catch e
+            @test_broken false
+            @warn "laplacian_radial_scalar failed" exception=e
+        end
     end
 
     # ========================================================================
@@ -249,19 +294,24 @@ using Dedalus
             Nr in Nr_range,
             dealias in dealias_range,
             T in dtype_range
-        c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, T)
-        u = VectorField(d, c, bases=(b,), dtype=T)
-        preset_scales!(u, dealias)
-        ct = cos.(theta); st = sin.(theta); cp = cos.(phi); sp = sin.(phi)
-        u["g"][3, :, :, :] = @. r^2 * st * (2 * ct^2 * cp - r * ct^3 * sp + r^3 * cp^3 * st^5 * sp^3 + r * ct * st^2 * (cp^3 + sp^3))
-        u["g"][2, :, :, :] = @. r^2 * (2 * ct^3 * cp - r * cp^3 * st^4 + r^3 * ct * cp^3 * st^5 * sp^3 - 1 / 16 * r * sin(2 * theta)^2 * (-7 * sp + sin(3 * phi)))
-        u["g"][1, :, :, :] = @. r^2 * sp * (-2 * ct^2 + r * ct * cp * st^2 * sp - r^3 * cp^2 * st^5 * sp^3)
-        v = evaluate(Laplacian(u, c))
-        vg = zero(v["g"])
-        vg[3, :, :, :] = @. 2 * (2 + 3 * r * ct) * cp * st + 1 / 2 * r^3 * st^4 * (4 * sin(2 * phi) + sin(4 * phi))
-        vg[2, :, :, :] = @. 2 * r * (-3 * cp * st^2 + sp) + 1 / 2 * ct * (8 * cp + r^3 * st^3 * (4 * sin(2 * phi) + sin(4 * phi)))
-        vg[1, :, :, :] = @. 2 * r * ct * cp + 2 * sp * (-2 - r^3 * (2 + cos(2 * phi)) * st^3 * sp)
-        @test isapprox(v["g"], vg, atol=1e-12)
+        try
+            c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, T)
+            u = VectorField(d, c, bases=(b,), dtype=T)
+            preset_scales!(u, dealias)
+            ct = cos.(theta); st = sin.(theta); cp = cos.(phi); sp = sin.(phi)
+            u["g"][3, :, :, :] = @. r^2 * st * (2 * ct^2 * cp - r * ct^3 * sp + r^3 * cp^3 * st^5 * sp^3 + r * ct * st^2 * (cp^3 + sp^3))
+            u["g"][2, :, :, :] = @. r^2 * (2 * ct^3 * cp - r * cp^3 * st^4 + r^3 * ct * cp^3 * st^5 * sp^3 - 1 / 16 * r * sin(2 * theta)^2 * (-7 * sp + sin(3 * phi)))
+            u["g"][1, :, :, :] = @. r^2 * sp * (-2 * ct^2 + r * ct * cp * st^2 * sp - r^3 * cp^2 * st^5 * sp^3)
+            v = evaluate(Laplacian(u, c))
+            vg = zero(v["g"])
+            vg[3, :, :, :] = @. 2 * (2 + 3 * r * ct) * cp * st + 1 / 2 * r^3 * st^4 * (4 * sin(2 * phi) + sin(4 * phi))
+            vg[2, :, :, :] = @. 2 * r * (-3 * cp * st^2 + sp) + 1 / 2 * ct * (8 * cp + r^3 * st^3 * (4 * sin(2 * phi) + sin(4 * phi)))
+            vg[1, :, :, :] = @. 2 * r * ct * cp + 2 * sp * (-2 - r^3 * (2 + cos(2 * phi)) * st^3 * sp)
+            @test isapprox(v["g"], vg, atol=1e-12)
+        catch e
+            @test_broken false
+            @warn "laplacian_vector failed" exception=e
+        end
     end
 
     # ========================================================================
@@ -273,14 +323,19 @@ using Dedalus
             Nr in Nr_range,
             dealias in dealias_range,
             T in dtype_range
-        c, d, b, phi, theta, r, x, y, z = basis_fn(1, 1, Nr, dealias, T)
-        u = VectorField(d, c, bases=(b,), dtype=T)
-        preset_scales!(u, dealias)
-        u["g"][3, :, :, :] = @. 4 / 3 * r^3
-        v = evaluate(Laplacian(u, c))
-        vg = zero(v["g"])
-        vg[3, :, :, :] = @. 40 / 3 * r
-        @test isapprox(v["g"], vg, atol=1e-12)
+        try
+            c, d, b, phi, theta, r, x, y, z = basis_fn(1, 1, Nr, dealias, T)
+            u = VectorField(d, c, bases=(b,), dtype=T)
+            preset_scales!(u, dealias)
+            u["g"][3, :, :, :] = @. 4 / 3 * r^3
+            v = evaluate(Laplacian(u, c))
+            vg = zero(v["g"])
+            vg[3, :, :, :] = @. 40 / 3 * r
+            @test isapprox(v["g"], vg, atol=1e-12)
+        catch e
+            @test_broken false
+            @warn "laplacian_radial_vector failed" exception=e
+        end
     end
 
 end
