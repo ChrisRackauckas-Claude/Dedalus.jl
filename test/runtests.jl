@@ -77,4 +77,9 @@ using Dedalus
     include("test_spherical_calculus.jl")
     include("test_spherical_operators.jl")
     include("test_spherical_ncc.jl")
+
+    # Example validation tests (slow — opt-in via environment variable)
+    if get(ENV, "DEDALUS_TEST_EXAMPLES", "") == "true"
+        include("test_example_validation.jl")
+    end
 end
