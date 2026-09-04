@@ -3311,9 +3311,9 @@ function operate(op::SphericalTransposeComponents, out)
             out.data .= operand.data
             radial_basis = op.radial_basis
             ell_maps_val = ell_maps(op.input_basis, op.dist)
-            backward_regularity_recombination!(operand.tensorsig, radius_axis, out.data; ell_maps=ell_maps_val)
+            backward_regularity_recombination!(radial_basis, operand.tensorsig, radius_axis, out.data; ell_maps=ell_maps_val)
             out.data .= permutedims(out.data, collect(op.new_axis_order))
-            forward_regularity_recombination!(operand.tensorsig, radius_axis, out.data; ell_maps=ell_maps_val)
+            forward_regularity_recombination!(radial_basis, operand.tensorsig, radius_axis, out.data; ell_maps=ell_maps_val)
         end
     end
 end
@@ -5848,12 +5848,12 @@ function ell_maps(basis, dist)
     error("ell_maps not implemented for basis type $(typeof(basis))")
 end
 
-function backward_regularity_recombination!(tensorsig, axis, data; ell_maps=nothing)
-    error("backward_regularity_recombination! not yet implemented — requires Milestone 3 RegularityBasis")
+function backward_regularity_recombination!(basis, tensorsig, axis, data; ell_maps=nothing)
+    backward_regularity_recombination(basis, tensorsig, axis, data, ell_maps)
 end
 
-function forward_regularity_recombination!(tensorsig, axis, data; ell_maps=nothing)
-    error("forward_regularity_recombination! not yet implemented — requires Milestone 3 RegularityBasis")
+function forward_regularity_recombination!(basis, tensorsig, axis, data; ell_maps=nothing)
+    forward_regularity_recombination(basis, tensorsig, axis, data; ell_maps=ell_maps)
 end
 
 function field_shape(subproblem, op)

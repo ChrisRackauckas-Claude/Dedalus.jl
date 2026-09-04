@@ -58,9 +58,10 @@ Provides `size = 1` and `coords = ()`.
 """
 struct SerialComm
     size::Int
+    rank::Int
 end
 
-SerialComm() = SerialComm(1)
+SerialComm() = SerialComm(1, 0)
 
 """
     SerialCommCart
@@ -868,7 +869,7 @@ mutable struct Distributor <: AbstractDistributor
                 using_mpi = true
             else
                 # Serial mode
-                comm = nothing
+                comm = SerialComm()
                 mpi_comm_size = 1
             end
         else
@@ -880,7 +881,7 @@ mutable struct Distributor <: AbstractDistributor
             else
                 # comm provided but MPI not initialized; treat as serial
                 @warn "Communicator provided but MPI not initialised; running in serial mode."
-                comm = nothing
+                comm = SerialComm()
                 mpi_comm_size = 1
             end
         end

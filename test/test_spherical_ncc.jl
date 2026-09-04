@@ -72,30 +72,25 @@ using Dedalus
             ell_coupling in [false],
             dealias in dealias_range,
             T in dtype_range
-        try
-            c, d, b = basis_fn(Nphi, Ntheta, Nr, alpha, dealias, T)
-            # Fields
-            b_ncc = clone_with(radial_basis(b); k=k_ncc)
-            b_arg = clone_with(b; k=k_arg)
-            f = Field(d, bases=(b_ncc,), tensorsig=ntuple(_ -> c, rank_ncc), dtype=T)
-            g = Field(d, bases=(b_arg,), tensorsig=ntuple(_ -> c, rank_arg), dtype=T)
-            fill_random!(f, "g")
-            fill_random!(g, "g")
-            # Dummy problem to build subproblems with correct coupling/dependence
-            problem = LBVP([g])
-            add_equation!(problem, (norm2(f) * g, 0))
-            solver = build_solver(problem; matrix_coupling=(false, ell_coupling, true))
-            # NCC operators
-            w0 = f * g
-            w1 = reinitialize(w0; ncc=true, ncc_vars=[g])
-            store_ncc_matrices!(w1, [g], solver.subproblems; ncc_cutoff=ncc_cutoff)
-            w0 = evaluate(w0)
-            w1 = evaluate_as_ncc(w1)
-            @test isapprox(w0["c"], w1["c"], atol=1e-12)
-        catch e
-            @test_broken false
-            @warn "test_radial_multiply failed" exception=e
-        end
+        c, d, b = basis_fn(Nphi, Ntheta, Nr, alpha, dealias, T)
+        # Fields
+        b_ncc = clone_with(radial_basis(b); k=k_ncc)
+        b_arg = clone_with(b; k=k_arg)
+        f = Field(d, bases=(b_ncc,), tensorsig=ntuple(_ -> c, rank_ncc), dtype=T)
+        g = Field(d, bases=(b_arg,), tensorsig=ntuple(_ -> c, rank_arg), dtype=T)
+        fill_random!(f, "g")
+        fill_random!(g, "g")
+        # Dummy problem to build subproblems with correct coupling/dependence
+        problem = LBVP([g])
+        add_equation!(problem, (norm2(f) * g, 0))
+        solver = build_solver(problem; matrix_coupling=(false, ell_coupling, true))
+        # NCC operators
+        w0 = f * g
+        w1 = reinitialize(w0; ncc=true, ncc_vars=[g])
+        store_ncc_matrices!(w1, [g], solver.subproblems; ncc_cutoff=ncc_cutoff)
+        w0 = evaluate(w0)
+        w1 = evaluate_as_ncc(w1)
+        @test isapprox(w0["c"], w1["c"], atol=1e-12)
     end
 
     # ell_coupling=true cases are expected to fail
@@ -147,28 +142,23 @@ using Dedalus
             ell_coupling in [false],
             dealias in dealias_range,
             T in dtype_range
-        try
-            c, d, b = basis_fn(Nphi, Ntheta, Nr, alpha, dealias, T)
-            b_ncc = clone_with(radial_basis(b); k=k_ncc)
-            b_arg = clone_with(b; k=k_arg)
-            f = Field(d, bases=(b_ncc,), tensorsig=ntuple(_ -> c, rank_ncc), dtype=T)
-            g = Field(d, bases=(b_arg,), tensorsig=ntuple(_ -> c, rank_arg), dtype=T)
-            fill_random!(f, "g")
-            fill_random!(g, "g")
-            problem = LBVP([g])
-            add_equation!(problem, (norm2(f) * g, 0))
-            solver = build_solver(problem; matrix_coupling=(false, ell_coupling, true))
-            # NCC operators using dot product
-            w0 = DotProduct(f, g)
-            w1 = reinitialize(w0; ncc=true, ncc_vars=[g])
-            store_ncc_matrices!(w1, [g], solver.subproblems; ncc_cutoff=ncc_cutoff)
-            w0 = evaluate(w0)
-            w1 = evaluate_as_ncc(w1)
-            @test isapprox(w0["c"], w1["c"], atol=1e-12)
-        catch e
-            @test_broken false
-            @warn "test_radial_dot failed" exception=e
-        end
+        c, d, b = basis_fn(Nphi, Ntheta, Nr, alpha, dealias, T)
+        b_ncc = clone_with(radial_basis(b); k=k_ncc)
+        b_arg = clone_with(b; k=k_arg)
+        f = Field(d, bases=(b_ncc,), tensorsig=ntuple(_ -> c, rank_ncc), dtype=T)
+        g = Field(d, bases=(b_arg,), tensorsig=ntuple(_ -> c, rank_arg), dtype=T)
+        fill_random!(f, "g")
+        fill_random!(g, "g")
+        problem = LBVP([g])
+        add_equation!(problem, (norm2(f) * g, 0))
+        solver = build_solver(problem; matrix_coupling=(false, ell_coupling, true))
+        # NCC operators using dot product
+        w0 = DotProduct(f, g)
+        w1 = reinitialize(w0; ncc=true, ncc_vars=[g])
+        store_ncc_matrices!(w1, [g], solver.subproblems; ncc_cutoff=ncc_cutoff)
+        w0 = evaluate(w0)
+        w1 = evaluate_as_ncc(w1)
+        @test isapprox(w0["c"], w1["c"], atol=1e-12)
     end
 
     # ell_coupling=true cases are expected to fail
@@ -218,27 +208,22 @@ using Dedalus
             ell_coupling in [false],
             dealias in dealias_range,
             T in dtype_range
-        try
-            c, d, b = basis_fn(Nphi, Ntheta, Nr, alpha, dealias, T)
-            b_ncc = clone_with(radial_basis(b); k=k_ncc)
-            b_arg = clone_with(b; k=k_arg)
-            f = VectorField(d, c, bases=(b_ncc,), dtype=T)
-            g = VectorField(d, c, bases=(b_arg,), dtype=T)
-            fill_random!(f, "g")
-            fill_random!(g, "g")
-            problem = LBVP([g])
-            add_equation!(problem, (norm2(f) * g, 0))
-            solver = build_solver(problem; matrix_coupling=(false, ell_coupling, true))
-            w0 = CrossProduct(f, g)
-            w1 = reinitialize(w0; ncc=true, ncc_vars=[g])
-            store_ncc_matrices!(w1, [g], solver.subproblems; ncc_cutoff=ncc_cutoff)
-            w0 = evaluate(w0)
-            w1 = evaluate_as_ncc(w1)
-            @test isapprox(w0["c"], w1["c"], atol=1e-12)
-        catch e
-            @test_broken false
-            @warn "test_radial_cross failed" exception=e
-        end
+        c, d, b = basis_fn(Nphi, Ntheta, Nr, alpha, dealias, T)
+        b_ncc = clone_with(radial_basis(b); k=k_ncc)
+        b_arg = clone_with(b; k=k_arg)
+        f = VectorField(d, c, bases=(b_ncc,), dtype=T)
+        g = VectorField(d, c, bases=(b_arg,), dtype=T)
+        fill_random!(f, "g")
+        fill_random!(g, "g")
+        problem = LBVP([g])
+        add_equation!(problem, (norm2(f) * g, 0))
+        solver = build_solver(problem; matrix_coupling=(false, ell_coupling, true))
+        w0 = CrossProduct(f, g)
+        w1 = reinitialize(w0; ncc=true, ncc_vars=[g])
+        store_ncc_matrices!(w1, [g], solver.subproblems; ncc_cutoff=ncc_cutoff)
+        w0 = evaluate(w0)
+        w1 = evaluate_as_ncc(w1)
+        @test isapprox(w0["c"], w1["c"], atol=1e-12)
     end
 
     # ell_coupling=true cases are expected to fail
@@ -289,27 +274,22 @@ using Dedalus
             rank_arg in [0, 1],
             dealias in dealias_range,
             T in [ComplexF64]
-        try
-            c, d, b = basis_fn(Nphi, Ntheta, Nr, alpha, dealias, T)
-            b_ncc = clone_with(meridional_basis(b); k=k_ncc)
-            b_arg = clone_with(b; k=k_arg)
-            f = Field(d, bases=(b_ncc,), tensorsig=ntuple(_ -> c, rank_ncc), dtype=T)
-            g = Field(d, bases=(b_arg,), tensorsig=ntuple(_ -> c, rank_arg), dtype=T)
-            fill_random!(f, "g")
-            fill_random!(g, "g")
-            problem = LBVP([g])
-            add_equation!(problem, (norm2(f) * g, 0))
-            solver = build_solver(problem)
-            w0 = f * g
-            w1 = reinitialize(w0; ncc=true, ncc_vars=[g])
-            store_ncc_matrices!(w1, [g], solver.subproblems; ncc_cutoff=ncc_cutoff)
-            w0 = evaluate(w0)
-            w1 = evaluate_as_ncc(w1)
-            @test isapprox(w0["c"], w1["c"], atol=1e-12)
-        catch e
-            @test_broken false
-            @warn "test_meridional_multiply failed" exception=e
-        end
+        c, d, b = basis_fn(Nphi, Ntheta, Nr, alpha, dealias, T)
+        b_ncc = clone_with(meridional_basis(b); k=k_ncc)
+        b_arg = clone_with(b; k=k_arg)
+        f = Field(d, bases=(b_ncc,), tensorsig=ntuple(_ -> c, rank_ncc), dtype=T)
+        g = Field(d, bases=(b_arg,), tensorsig=ntuple(_ -> c, rank_arg), dtype=T)
+        fill_random!(f, "g")
+        fill_random!(g, "g")
+        problem = LBVP([g])
+        add_equation!(problem, (norm2(f) * g, 0))
+        solver = build_solver(problem)
+        w0 = f * g
+        w1 = reinitialize(w0; ncc=true, ncc_vars=[g])
+        store_ncc_matrices!(w1, [g], solver.subproblems; ncc_cutoff=ncc_cutoff)
+        w0 = evaluate(w0)
+        w1 = evaluate_as_ncc(w1)
+        @test isapprox(w0["c"], w1["c"], atol=1e-12)
     end
 
     # Ball meridional NCCs - expected to fail
@@ -391,27 +371,22 @@ using Dedalus
             rank_arg in [1, 2],
             dealias in dealias_range,
             T in [ComplexF64]
-        try
-            c, d, b = basis_fn(Nphi, Ntheta, Nr, alpha, dealias, T)
-            b_ncc = clone_with(meridional_basis(b); k=k_ncc)
-            b_arg = clone_with(b; k=k_arg)
-            f = Field(d, bases=(b_ncc,), tensorsig=ntuple(_ -> c, rank_ncc), dtype=T)
-            g = Field(d, bases=(b_arg,), tensorsig=ntuple(_ -> c, rank_arg), dtype=T)
-            fill_random!(f, "g")
-            fill_random!(g, "g")
-            problem = LBVP([g])
-            add_equation!(problem, (norm2(f) * g, 0))
-            solver = build_solver(problem)
-            w0 = DotProduct(f, g)
-            w1 = reinitialize(w0; ncc=true, ncc_vars=[g])
-            store_ncc_matrices!(w1, [g], solver.subproblems; ncc_cutoff=ncc_cutoff)
-            w0 = evaluate(w0)
-            w1 = evaluate_as_ncc(w1)
-            @test isapprox(w0["c"], w1["c"], atol=1e-12)
-        catch e
-            @test_broken false
-            @warn "test_meridional_dot failed" exception=e
-        end
+        c, d, b = basis_fn(Nphi, Ntheta, Nr, alpha, dealias, T)
+        b_ncc = clone_with(meridional_basis(b); k=k_ncc)
+        b_arg = clone_with(b; k=k_arg)
+        f = Field(d, bases=(b_ncc,), tensorsig=ntuple(_ -> c, rank_ncc), dtype=T)
+        g = Field(d, bases=(b_arg,), tensorsig=ntuple(_ -> c, rank_arg), dtype=T)
+        fill_random!(f, "g")
+        fill_random!(g, "g")
+        problem = LBVP([g])
+        add_equation!(problem, (norm2(f) * g, 0))
+        solver = build_solver(problem)
+        w0 = DotProduct(f, g)
+        w1 = reinitialize(w0; ncc=true, ncc_vars=[g])
+        store_ncc_matrices!(w1, [g], solver.subproblems; ncc_cutoff=ncc_cutoff)
+        w0 = evaluate(w0)
+        w1 = evaluate_as_ncc(w1)
+        @test isapprox(w0["c"], w1["c"], atol=1e-12)
     end
 
     # Ball meridional dot - expected to fail
@@ -491,27 +466,22 @@ using Dedalus
             k_arg in k_range,
             dealias in dealias_range,
             T in [ComplexF64]
-        try
-            c, d, b = basis_fn(Nphi, Ntheta, Nr, alpha, dealias, T)
-            b_ncc = clone_with(meridional_basis(b); k=k_ncc)
-            b_arg = clone_with(b; k=k_arg)
-            f = VectorField(d, c, bases=(b_ncc,), dtype=T)
-            g = VectorField(d, c, bases=(b_arg,), dtype=T)
-            fill_random!(f, "g")
-            fill_random!(g, "g")
-            problem = LBVP([g])
-            add_equation!(problem, (norm2(f) * g, 0))
-            solver = build_solver(problem)
-            w0 = CrossProduct(f, g)
-            w1 = reinitialize(w0; ncc=true, ncc_vars=[g])
-            store_ncc_matrices!(w1, [g], solver.subproblems; ncc_cutoff=ncc_cutoff)
-            w0 = evaluate(w0)
-            w1 = evaluate_as_ncc(w1)
-            @test isapprox(w0["c"], w1["c"], atol=1e-12)
-        catch e
-            @test_broken false
-            @warn "test_meridional_cross failed" exception=e
-        end
+        c, d, b = basis_fn(Nphi, Ntheta, Nr, alpha, dealias, T)
+        b_ncc = clone_with(meridional_basis(b); k=k_ncc)
+        b_arg = clone_with(b; k=k_arg)
+        f = VectorField(d, c, bases=(b_ncc,), dtype=T)
+        g = VectorField(d, c, bases=(b_arg,), dtype=T)
+        fill_random!(f, "g")
+        fill_random!(g, "g")
+        problem = LBVP([g])
+        add_equation!(problem, (norm2(f) * g, 0))
+        solver = build_solver(problem)
+        w0 = CrossProduct(f, g)
+        w1 = reinitialize(w0; ncc=true, ncc_vars=[g])
+        store_ncc_matrices!(w1, [g], solver.subproblems; ncc_cutoff=ncc_cutoff)
+        w0 = evaluate(w0)
+        w1 = evaluate_as_ncc(w1)
+        @test isapprox(w0["c"], w1["c"], atol=1e-12)
     end
 
     # Ball meridional cross - expected to fail

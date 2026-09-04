@@ -116,8 +116,8 @@ Create a file handler and register it with the evaluator.
 
 `parallel` selects the parallel writing strategy:
 - `"gather"` -- root process gathers all data (default in serial mode)
-- `"virtual"` -- virtual datasets (stub)
-- `"mpio"` -- parallel HDF5 (stub)
+- `"virtual"` -- virtual datasets (H5VirtualFileHandler)
+- `"mpio"` -- parallel HDF5 (H5ParallelFileHandler)
 """
 function add_file_handler(ev::Evaluator, filename; parallel=nothing, kw...)
     if parallel === nothing

@@ -4993,7 +4993,81 @@ function ell_maps(b::SphereBasis, dist)
     if cached !== nothing
         return cached
     end
-    error("SphereBasis ell_maps: requires distributor infrastructure not yet available")
+    # Build ell_maps from the coeff-space layout.
+    # In coeff-coeff space, use elements_to_groups to find (m, ell) for each position,
+    # then group by ell to produce (ell, m_slice, ell_slice) entries.
+    cl = coeff_layout(dist)
+    domain = make_domain(dist, (b,))
+    azimuth_axis = first_axis(dist, b)          # 1-based axis for azimuth
+    colatitude_axis = first_axis(dist, b) + 1    # 1-based axis for colatitude
+
+    # Get local elements (0-based) in coeff space
+    le = local_elements(cl, domain, Tuple(b.dealias_tuple); broadcast=true)
+
+    # Build element index arrays for this basis's axes
+    fa = first_axis(dist, b)
+    la = last_axis(dist, b)
+    basis_le = [le[ax] for ax in fa:la]  # (azimuth_elements, colatitude_elements)
+
+    # Create meshgrid of 0-based element indices
+    n_az = length(basis_le[1])
+    n_co = length(basis_le[2])
+    i_grid = repeat(reshape(basis_le[1], n_az, 1), 1, n_co)
+    j_grid = repeat(reshape(basis_le[2], 1, n_co), n_az, 1)
+
+    # Convert to (m, ell) groups
+    gs = cl.grid_space[fa:la]
+    groups = elements_to_groups(b, gs, [i_grid, j_grid])
+    m_arr = groups[1]
+    ell_arr = groups[2]
+
+    # Build ell_maps: for each unique ell, collect the data indices
+    # m_ind and ell_ind are 1-based Julia indices into the local data array
+    result = Tuple{Int, Any, Any}[]
+    seen_ells = Dict{Int, Bool}()
+    for j in 1:n_co
+        for i in 1:n_az
+            ell_val = ell_arr[i, j]
+            m_val = m_arr[i, j]
+            if abs(m_val) > ell_val
+                continue  # invalid mode
+            end
+            if !haskey(seen_ells, ell_val)
+                seen_ells[ell_val] = true
+                # Find all positions with this ell
+                m_indices = Int[]
+                ell_indices = Int[]
+                for jj in 1:n_co
+                    for ii in 1:n_az
+                        if ell_arr[ii, jj] == ell_val && abs(m_arr[ii, jj]) <= ell_arr[ii, jj]
+                            push!(m_indices, ii)
+                            push!(ell_indices, jj)
+                        end
+                    end
+                end
+                # If all ell_indices are the same (single column), use scalar index
+                unique_ell_inds = unique(ell_indices)
+                if length(unique_ell_inds) == 1
+                    ell_ind = unique_ell_inds[1]
+                else
+                    ell_ind = ell_indices
+                end
+                # For m_indices, check if they form a contiguous range
+                unique_m_inds = sort(unique(m_indices))
+                if length(unique_m_inds) == 1
+                    m_ind = unique_m_inds[1]
+                elseif unique_m_inds == collect(unique_m_inds[1]:unique_m_inds[end])
+                    m_ind = unique_m_inds[1]:unique_m_inds[end]
+                else
+                    m_ind = unique_m_inds
+                end
+                push!(result, (ell_val, m_ind, ell_ind))
+            end
+        end
+    end
+    result_tuple = Tuple(result)
+    b._cache[cache_key] = result_tuple
+    return result_tuple
 end
 
 function Base.show(io::IO, b::SphereBasis)
@@ -5043,6 +5117,20 @@ end
 
 # Override basis_constant to use regularity_constant
 basis_constant(b::AbstractRegularityBasis) = regularity_constant(b)
+
+"""
+    basis_shape(b::AbstractRegularityBasis)
+
+Return the shape tuple for an AbstractRegularityBasis.
+"""
+basis_shape(b::AbstractRegularityBasis) = b.shape
+
+"""
+    basis_coordsys(b::AbstractRegularityBasis)
+
+Return the coordinate system for an AbstractRegularityBasis.
+"""
+basis_coordsys(b::AbstractRegularityBasis) = b.coordsys
 
 """
     grid_shape(b::AbstractRegularityBasis, scales)
@@ -5122,8 +5210,17 @@ function elements_to_groups(b::AbstractRegularityBasis, grid_space, elements)
         ell = groups[2]
         n = groups[3]
         nmin_val = _nmin(b, ell)
-        # Mask invalid elements (n < nmin)
-        # In Julia, we flag them; the caller checks validity
+        # Mask invalid elements by setting them to -1
+        # Python uses np.ma.masked_array; in Julia we flag with -1
+        invalid = n .< nmin_val
+        for i in 1:length(groups)
+            if groups[i] isa AbstractArray
+                groups[i] = copy(groups[i])
+                groups[i][invalid] .= -1
+            elseif invalid isa Bool && invalid
+                groups[i] = -1
+            end
+        end
     end
     return groups
 end
@@ -5140,7 +5237,62 @@ function ell_maps(b::AbstractRegularityBasis, dist)
     if cached !== nothing
         return cached
     end
-    error("RegularityBasis ell_maps: requires distributor infrastructure not yet available")
+    # Delegate to SphereBasis.ell_maps logic.
+    # In Python this calls SphereBasis.ell_maps(self, dist) as an unbound method.
+    # The RegularityBasis is 3D (azimuth, colatitude, radius). The ell_maps
+    # only depends on the S2 (azimuth, colatitude) axes, which have the same
+    # data layout. We reuse the SphereBasis ell_maps from the parent 3D basis.
+    #
+    # Find the SphereBasis that shares our coordinate system.
+    # We look it up from the coordsys cache since RegularityBasis doesn't store
+    # a direct reference to its SphereBasis.
+    cl = coeff_layout(dist)
+    domain = make_domain(dist, (b,))
+    azimuth_axis = first_axis(dist, b)
+    colatitude_axis = first_axis(dist, b) + 1
+
+    # Get local elements (0-based) in coeff space
+    le = local_elements(cl, domain, Tuple(b.dealias); broadcast=true)
+
+    # Build element index arrays for the S2 axes
+    fa = first_axis(dist, b)
+    basis_le_az = le[fa]        # azimuth elements
+    basis_le_co = le[fa + 1]    # colatitude elements
+
+    n_az = length(basis_le_az)
+    n_co = length(basis_le_co)
+
+    # For RegularityBasis in coeff-coeff space, the first two axes map to (m, ell)
+    # via elements_to_groups. We need to extract the S2 part.
+    gs = cl.grid_space[fa:fa+1]
+    i_grid = repeat(reshape(basis_le_az, n_az, 1), 1, n_co)
+    j_grid = repeat(reshape(basis_le_co, 1, n_co), n_az, 1)
+
+    # elements_to_groups for RegularityBasis maps (m, ell, n) -> groups
+    # but we only need the S2 part. The first axis in coeff space maps m -> 0
+    # (grouped), second axis gives ell directly.
+    # For the S2 axes: in coeff space, groups[1]=0, groups[2]=ell value
+    # So ell = basis_le_co (0-based element indices = ell values for colatitude axis)
+
+    result = Tuple{Int, Any, Any}[]
+    seen_ells = Dict{Int, Bool}()
+    for j in 1:n_co
+        ell_val = basis_le_co[j]  # 0-based colatitude element = ell value
+        if !haskey(seen_ells, ell_val)
+            seen_ells[ell_val] = true
+            # m_ind covers all azimuth positions (they are all grouped to m=0)
+            if n_az == 1
+                m_ind = 1
+            else
+                m_ind = 1:n_az
+            end
+            ell_ind = j  # 1-based index into colatitude axis
+            push!(result, (ell_val, m_ind, ell_ind))
+        end
+    end
+    result_tuple = Tuple(result)
+    b._cache[cache_key] = result_tuple
+    return result_tuple
 end
 
 """
@@ -6742,11 +6894,53 @@ function global_grid_spacing(b::AbstractSpherical3DBasis, dist, subaxis, scales)
         b._cache[cache_key] = result
         return result
     end
-    # Python: axis = dist.first_axis(self) + subaxis
-    # In Julia: get_basis_axis is 1-based, subaxis is 1-based
+    # Compute gradient along the relevant axis using finite differences (edge_order=2).
+    # numpy.gradient with edge_order=2 uses:
+    #   - Interior: central differences (f[i+1] - f[i-1]) / 2h
+    #   - Boundaries: second-order one-sided differences
+    # The grid is an N-dimensional array with data along one axis.
     axis = get_basis_axis(dist, b) + subaxis - 1
-    # Compute gradient along axis (edge_order=2 like numpy)
-    error("global_grid_spacing: gradient computation not yet implemented")
+    result = _numpy_gradient(grid, axis)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    _numpy_gradient(arr, axis)
+
+Compute the gradient of an N-dimensional array along the given axis
+using second-order finite differences (mimics numpy.gradient with edge_order=2).
+"""
+function _numpy_gradient(arr::AbstractArray, axis::Int)
+    result = similar(arr, Float64)
+    n = size(arr, axis)
+    if n < 2
+        fill!(result, Inf)
+        return result
+    end
+    # Build index helpers
+    ndim = ndims(arr)
+    function make_slice(idx)
+        return ntuple(d -> d == axis ? idx : Colon(), ndim)
+    end
+    if n == 2
+        # Only two points: use simple difference for both
+        d = selectdim(arr, axis, 2) .- selectdim(arr, axis, 1)
+        result .= reshape(d, size(result, 1) == 1 && ndim == 1 ? (1,) : size(d))
+        return result
+    end
+    # Interior: central differences
+    for i in 2:(n-1)
+        h_prev = selectdim(arr, axis, i) .- selectdim(arr, axis, i-1)
+        h_next = selectdim(arr, axis, i+1) .- selectdim(arr, axis, i)
+        view(result, make_slice(i)...) .= (selectdim(arr, axis, i+1) .- selectdim(arr, axis, i-1)) ./ 2
+    end
+    # Boundary: second-order one-sided differences
+    # Left boundary (i=1): (-3f[1] + 4f[2] - f[3]) / 2
+    view(result, make_slice(1)...) .= (-3 .* selectdim(arr, axis, 1) .+ 4 .* selectdim(arr, axis, 2) .- selectdim(arr, axis, 3)) ./ 2
+    # Right boundary (i=n): (3f[n] - 4f[n-1] + f[n-2]) / 2
+    view(result, make_slice(n)...) .= (3 .* selectdim(arr, axis, n) .- 4 .* selectdim(arr, axis, n-1) .+ selectdim(arr, axis, n-2)) ./ 2
+    return result
 end
 
 """
@@ -6760,7 +6954,17 @@ function local_grid_spacing(b::AbstractSpherical3DBasis, dist, subaxis, scales)
     if cached !== nothing
         return cached
     end
-    error("local_grid_spacing: not yet implemented (requires global_grid_spacing)")
+    axis = get_basis_axis(dist, b) + subaxis - 1
+    gs = global_grid_spacing(b, dist, subaxis, scales)
+    domain = make_domain(dist, (b,))
+    le = local_elements(grid_layout(dist), domain, Tuple(scales[subaxis] for _ in 1:get_dim(b)); broadcast=true)
+    local_el = le[axis]
+    # Extract local portion from global spacing and reshape
+    flat_gs = vec(gs)
+    local_vals = flat_gs[local_el .+ 1]  # +1 for 0-based to 1-based
+    result = reshape_vector(local_vals, get_dim(dist), axis)
+    b._cache[cache_key] = result
+    return result
 end
 
 """
@@ -6769,7 +6973,10 @@ end
 Return the local elements. Not yet implemented.
 """
 function local_elements(b::AbstractSpherical3DBasis)
-    error("local_elements: not yet implemented")
+    # Not implemented in Python either (raises NotImplementedError).
+    # Local element access for spherical 3D bases should go through the
+    # layout/distributor system: dist.grid_layout.local_elements(domain, scales).
+    error("local_elements(::AbstractSpherical3DBasis): use dist.grid_layout.local_elements(domain, scales) instead")
 end
 
 # -- Delegation to radial basis --
@@ -6903,8 +7110,17 @@ function elements_to_groups(b::AbstractSpherical3DBasis, grid_space, elements)
         ell = groups[2]
         n = groups[3]
         nmin_val = _nmin(b.radial_basis, ell)
-        # Mark invalid elements where n < nmin
-        # (masked array behavior -- in Julia we leave them but the caller checks validity)
+        # Mark invalid elements by setting them to -1
+        # Python uses np.ma.masked_array; in Julia we flag with -1
+        invalid = n .< nmin_val
+        for i in 1:length(groups)
+            if groups[i] isa AbstractArray
+                groups[i] = copy(groups[i])
+                groups[i][invalid] .= -1
+            elseif invalid isa Bool && invalid
+                groups[i] = -1
+            end
+        end
     end
     return groups
 end
