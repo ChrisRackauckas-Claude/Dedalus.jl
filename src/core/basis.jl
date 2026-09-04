@@ -1926,6 +1926,1003 @@ function backward!(plan::MatrixTransformPlan, cdata, gdata, axis)
 end
 
 # ============================================================================
+# MultidimensionalBasis  (abstract base for multi-axis bases)
+# ============================================================================
+
+"""
+    MultidimensionalBasis <: Basis
+
+Abstract base type for bases that span multiple coordinate axes (e.g.
+spherical, polar, disk bases).  Concrete subtypes must provide:
+- `forward_transforms::Vector` — a vector of callables for each sub-axis
+- `backward_transforms::Vector` — a vector of callables for each sub-axis
+
+Transform dispatch delegates to the appropriate sub-axis transform by
+computing `subaxis = axis - get_basis_axis(field.dist, basis) + 1`
+(1-based in Julia; Python used 0-based).
+"""
+abstract type MultidimensionalBasis <: Basis end
+
+function forward_transform(b::MultidimensionalBasis, field, axis, gdata, cdata)
+    subaxis = axis - get_basis_axis(field.dist, b) + 1  # 1-based
+    return b.forward_transforms[subaxis](field, axis, gdata, cdata)
+end
+
+function backward_transform(b::MultidimensionalBasis, field, axis, cdata, gdata)
+    subaxis = axis - get_basis_axis(field.dist, b) + 1  # 1-based
+    return b.backward_transforms[subaxis](field, axis, cdata, gdata)
+end
+
+# ============================================================================
+# reduced_view_5  (helper for spin recombination)
+# ============================================================================
+
+"""
+    reduced_view_5(data::AbstractArray, axis1::Int, axis2::Int)
+
+Reshape `data` into a 5D view with dimensions:
+  (pre-axis1, axis1, between, axis2, post-axis2)
+
+Both `axis1` and `axis2` are 1-based. `axis1 < axis2` is required.
+"""
+function reduced_view_5(data::AbstractArray, axis1::Int, axis2::Int)
+    shp = size(data)
+    N0 = prod(shp[1:axis1-1]; init=1)
+    N1 = shp[axis1]
+    N2 = prod(shp[axis1+1:axis2-1]; init=1)
+    N3 = shp[axis2]
+    N4 = prod(shp[axis2+1:end]; init=1)
+    return reshape(data, (N0, N1, N2, N3, N4))
+end
+
+# ============================================================================
+# Spin Recombination functions (from spin_recombination.pyx)
+# ============================================================================
+
+const _INVSQRT2 = 1.0 / sqrt(2.0)
+
+"""
+    recombine_forward!(s::Int, input::AbstractArray{Float64,5},
+                       output::AbstractArray{Float64,5})
+
+Component-to-spin recombination on 5D arrays.
+
+`s` is the 1-based sub-axis index within dimension 2 of the 5D view.
+In Python this was 0-based; here we use 1-based indexing.
+
+The recombination operates on the pair of slices `output[:, s, :, :, :]` and
+`output[:, s+1, :, :, :]`, mixing even/odd elements of dimension 4 using
+a 1/sqrt(2) scaling factor.  Slices outside the pair are copied unchanged.
+"""
+function recombine_forward!(s::Int, input::AbstractArray{Float64,5},
+                            output::AbstractArray{Float64,5})
+    size0 = size(input, 1)
+    size1 = size(input, 2)
+    size2 = size(input, 3)
+    size3 = size(input, 4)
+    size4 = size(input, 5)
+    size3_2 = size3 ÷ 2
+
+    @inbounds for i in 1:size0
+        # Copy slices before s
+        for j in 1:s-1
+            for k in 1:size2, l in 1:size3, m in 1:size4
+                output[i, j, k, l, m] = input[i, j, k, l, m]
+            end
+        end
+        # Recombine the s and s+1 pair
+        for k in 1:size2
+            @simd for l_half in 1:size3_2
+                for m in 1:size4
+                    l_even = 2 * l_half - 1  # 1-based even index (was 2*l in 0-based)
+                    l_odd  = 2 * l_half      # 1-based odd index  (was 2*l+1 in 0-based)
+                    # s+1 corresponds to Python s+0 (1-based), s+2 corresponds to Python s+1
+                    inp_s0_even = input[i, s,   k, l_even, m]
+                    inp_s0_odd  = input[i, s,   k, l_odd,  m]
+                    inp_s1_even = input[i, s+1, k, l_even, m]
+                    inp_s1_odd  = input[i, s+1, k, l_odd,  m]
+                    output[i, s,   k, l_even, m] = (inp_s1_even + inp_s0_odd)  * _INVSQRT2
+                    output[i, s+1, k, l_odd,  m] = (inp_s1_odd  + inp_s0_even) * _INVSQRT2
+                    output[i, s+1, k, l_even, m] = (inp_s1_even - inp_s0_odd)  * _INVSQRT2
+                    output[i, s,   k, l_odd,  m] = (inp_s1_odd  - inp_s0_even) * _INVSQRT2
+                end
+            end
+        end
+        # Copy slices after s+1
+        for j in s+2:size1
+            for k in 1:size2, l in 1:size3, m in 1:size4
+                output[i, j, k, l, m] = input[i, j, k, l, m]
+            end
+        end
+    end
+    return nothing
+end
+
+"""
+    recombine_backward!(s::Int, input::AbstractArray{Float64,5},
+                        output::AbstractArray{Float64,5})
+
+Spin-to-component recombination on 5D arrays (inverse of `recombine_forward!`).
+
+`s` is 1-based (converted from Python's 0-based `s` parameter).
+"""
+function recombine_backward!(s::Int, input::AbstractArray{Float64,5},
+                             output::AbstractArray{Float64,5})
+    size0 = size(input, 1)
+    size1 = size(input, 2)
+    size2 = size(input, 3)
+    size3 = size(input, 4)
+    size4 = size(input, 5)
+    size3_2 = size3 ÷ 2
+
+    @inbounds for i in 1:size0
+        # Copy slices before s
+        for j in 1:s-1
+            for k in 1:size2, l in 1:size3, m in 1:size4
+                output[i, j, k, l, m] = input[i, j, k, l, m]
+            end
+        end
+        # Recombine the s and s+1 pair (inverse of forward)
+        for k in 1:size2
+            @simd for l_half in 1:size3_2
+                for m in 1:size4
+                    l_even = 2 * l_half - 1
+                    l_odd  = 2 * l_half
+                    inp_s0_even = input[i, s,   k, l_even, m]
+                    inp_s0_odd  = input[i, s,   k, l_odd,  m]
+                    inp_s1_even = input[i, s+1, k, l_even, m]
+                    inp_s1_odd  = input[i, s+1, k, l_odd,  m]
+                    output[i, s,   k, l_even, m] = (inp_s1_odd  - inp_s0_odd)  * _INVSQRT2
+                    output[i, s,   k, l_odd,  m] = (inp_s0_even - inp_s1_even) * _INVSQRT2
+                    output[i, s+1, k, l_even, m] = (inp_s0_even + inp_s1_even) * _INVSQRT2
+                    output[i, s+1, k, l_odd,  m] = (inp_s0_odd  + inp_s1_odd)  * _INVSQRT2
+                end
+            end
+        end
+        # Copy slices after s+1
+        for j in s+2:size1
+            for k in 1:size2, l in 1:size3, m in 1:size4
+                output[i, j, k, l, m] = input[i, j, k, l, m]
+            end
+        end
+    end
+    return nothing
+end
+
+# ============================================================================
+# SpinRecombination trait (Holy trait pattern)
+# ============================================================================
+
+"""
+    SpinRecombinationTrait
+
+Abstract trait type for the spin recombination dispatch pattern.
+"""
+abstract type SpinRecombinationTrait end
+
+"""
+    HasSpinRecombination <: SpinRecombinationTrait
+
+Marker trait indicating a basis supports spin recombination.
+"""
+struct HasSpinRecombination <: SpinRecombinationTrait end
+
+"""
+    NoSpinRecombination <: SpinRecombinationTrait
+
+Marker trait indicating a basis does NOT support spin recombination.
+"""
+struct NoSpinRecombination <: SpinRecombinationTrait end
+
+"""
+    spin_recombination_trait(basis) -> SpinRecombinationTrait
+
+Return the spin recombination trait for the given basis.  Default is
+`NoSpinRecombination()`.  Concrete multidimensional bases that support
+spin recombination (SpinBasis subtypes) should override to return
+`HasSpinRecombination()`.
+"""
+spin_recombination_trait(::Basis) = NoSpinRecombination()
+
+"""
+    spin_ordering(cs::AbstractCoordinateSystem)
+
+Return the spin ordering tuple for the given coordinate system.
+Maps to the `spin_ordering` class attribute in the Python code.
+"""
+spin_ordering(::S2Coordinates)          = S2_SPIN_ORDERING
+spin_ordering(::PolarCoordinates)       = POLAR_SPIN_ORDERING
+spin_ordering(::SphericalCoordinates)   = SPHERICAL_SPIN_ORDERING
+
+"""
+    spin_recombination_factors(basis, tensorsig)
+
+Build a vector of matrices (or `nothing` entries) for applying spin
+recombination to each tensor index.  The recombination factors are
+separable over tensor index and depend on which tensor indices share
+coordinates with the basis's second coordinate (coords[2], the
+colatitude/radial direction).
+
+Uses `_cache` dict for memoization.
+"""
+function spin_recombination_factors(basis, tensorsig)
+    cache_key = (:spin_recombination_factors, objectid(tensorsig))
+    cached = get(basis._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    cs = basis_coordsys(basis)
+    coord1 = get_coords(cs)[2]  # Python coords[1] → Julia coords[2] (1-based)
+    factors = Vector{Union{Nothing, AbstractMatrix}}(undef, length(tensorsig))
+    for (i, tcs) in enumerate(tensorsig)
+        tcoords = get_coords(tcs)
+        idx = findfirst(c -> c == coord1, tcoords)
+        if idx !== nothing
+            # subaxis is 0-based in Python; forward_intertwiner uses it directly
+            subaxis = idx - 1
+            factors[i] = forward_intertwiner(tcs, subaxis; order=1, group=nothing)
+        else
+            factors[i] = nothing
+        end
+    end
+    basis._cache[cache_key] = factors
+    return factors
+end
+
+"""
+    spin_recombination_matrix(basis, tensorsig, n_upstream)
+
+Build the full spin recombination matrix by combining the per-tensor-index
+factors.  `nothing` placeholders are replaced by identity matrices.
+For real-valued problems (Float64 dtype), the matrix is expanded for
+cos/sin (msin) parts.
+"""
+function spin_recombination_matrix(basis, tensorsig, n_upstream)
+    factors = copy(spin_recombination_factors(basis, tensorsig))
+    for (i, tcs) in enumerate(tensorsig)
+        if factors[i] === nothing
+            factors[i] = Matrix{ComplexF64}(I, get_dim(tcs), get_dim(tcs))
+        end
+    end
+    # Add space for upstream groups
+    all_factors = copy(factors)
+    if n_upstream > 1
+        push!(all_factors, Matrix{ComplexF64}(I, n_upstream, n_upstream))
+    end
+    matrix = kronecker(all_factors...)
+    # Expand for cos and msin parts for real-valued problems
+    if basis.dtype === Float64
+        matrix = kron(real(matrix), [1 0; 0 1]) + kron(imag(matrix), [0 -1; 1 0])
+    end
+    return matrix
+end
+
+"""
+    forward_spin_recombination!(basis, tensorsig, colat_axis, gdata, out)
+
+Apply component-to-spin recombination.  `colat_axis` is 1-based.
+For complex data, applies the unitary matrices directly via `apply_matrix`.
+For real data, uses the optimised `recombine_forward!` on 5D views,
+alternating between `gdata` and `out` as input/output buffers.
+"""
+function forward_spin_recombination!(basis, tensorsig, colat_axis, gdata, out)
+    if isempty(tensorsig)
+        copyto!(out, gdata)
+        return nothing
+    end
+    azimuth_axis = colat_axis - 1
+    factors = spin_recombination_factors(basis, tensorsig)
+    if eltype(gdata) <: Complex
+        # Complex path: directly apply unitary matrices
+        copyto!(out, gdata)
+        for (i, Ui) in enumerate(factors)
+            if Ui !== nothing
+                temp = apply_matrix(Ui, out, i)
+                copyto!(out, temp)
+            end
+        end
+    else
+        # Real (Float64) path: use recombine_forward! with 5D views
+        num_recombinations = 0
+        cs = basis_coordsys(basis)
+        coord0 = get_coords(cs)[1]  # Python coords[0] → Julia coords[1]
+        for (i, Ui) in enumerate(factors)
+            if Ui !== nothing
+                tcoords = get_coords(tensorsig[i])
+                subaxis_idx = findfirst(c -> c == coord0, tcoords)
+                # subaxis is 1-based for Julia recombine_forward!
+                subaxis = subaxis_idx
+                if num_recombinations % 2 == 0
+                    input_view  = reduced_view_5(gdata, i, azimuth_axis + length(tensorsig))
+                    output_view = reduced_view_5(out,   i, azimuth_axis + length(tensorsig))
+                else
+                    input_view  = reduced_view_5(out,   i, azimuth_axis + length(tensorsig))
+                    output_view = reduced_view_5(gdata, i, azimuth_axis + length(tensorsig))
+                end
+                recombine_forward!(subaxis, input_view, output_view)
+                num_recombinations += 1
+            end
+        end
+        if num_recombinations % 2 == 0
+            copyto!(out, gdata)
+        end
+    end
+    return nothing
+end
+
+"""
+    backward_spin_recombination!(basis, tensorsig, colat_axis, gdata, out)
+
+Apply spin-to-component recombination (inverse of forward).
+`colat_axis` is 1-based.
+"""
+function backward_spin_recombination!(basis, tensorsig, colat_axis, gdata, out)
+    if isempty(tensorsig)
+        copyto!(out, gdata)
+        return nothing
+    end
+    azimuth_axis = colat_axis - 1
+    factors = spin_recombination_factors(basis, tensorsig)
+    if eltype(gdata) <: Complex
+        # Complex path: apply conjugate transpose of unitary matrices
+        copyto!(out, gdata)
+        for (i, Ui) in enumerate(factors)
+            if Ui !== nothing
+                temp = apply_matrix(conj(transpose(Ui)), out, i)
+                copyto!(out, temp)
+            end
+        end
+    else
+        # Real (Float64) path: use recombine_backward! with 5D views
+        num_recombinations = 0
+        cs = basis_coordsys(basis)
+        coord0 = get_coords(cs)[1]
+        for (i, Ui) in enumerate(factors)
+            if Ui !== nothing
+                tcoords = get_coords(tensorsig[i])
+                subaxis_idx = findfirst(c -> c == coord0, tcoords)
+                subaxis = subaxis_idx  # 1-based
+                if num_recombinations % 2 == 0
+                    input_view  = reduced_view_5(gdata, i, azimuth_axis + length(tensorsig))
+                    output_view = reduced_view_5(out,   i, azimuth_axis + length(tensorsig))
+                else
+                    input_view  = reduced_view_5(out,   i, azimuth_axis + length(tensorsig))
+                    output_view = reduced_view_5(gdata, i, azimuth_axis + length(tensorsig))
+                end
+                recombine_backward!(subaxis, input_view, output_view)
+                num_recombinations += 1
+            end
+        end
+        if num_recombinations % 2 == 0
+            copyto!(out, gdata)
+        end
+    end
+    return nothing
+end
+
+# ============================================================================
+# SpinBasis  (abstract; common for S2 and D2 / polar bases)
+# ============================================================================
+
+"""
+    SpinBasis <: MultidimensionalBasis
+
+Abstract base type for multidimensional bases with spin-weighted fields.
+Common parent for S2 (sphere) and D2 (disk/annulus/polar) bases.
+
+Concrete subtypes must have fields:
+- `coordsys` — the coordinate system (e.g. `S2Coordinates`, `PolarCoordinates`)
+- `shape::Tuple{Int,Int}` — (N_azimuth, N_radial_or_colat)
+- `dtype::DataType` — `Float64` or `ComplexF64`
+- `dealias_tuple::Tuple{Float64,Float64}` — dealias factors per sub-axis
+- `mmax::Int` — maximum azimuthal wavenumber = (shape[1] - 1) ÷ 2
+- `azimuth_basis` — a `ComplexFourierBasis` or `RealFourierBasis`
+- `azimuth_library` — library name for azimuth transforms
+- `_cache::Dict{Symbol,Any}` — for cached attributes/methods
+
+## Constructor logic (to be implemented in concrete subtypes)
+
+    SpinBasis constructor:
+    - Takes `coordsys`, `shape`, `dtype`, `dealias`, `azimuth_library`
+    - Computes `mmax = (shape[1] - 1) ÷ 2`
+    - Creates `azimuth_basis`:
+        - `ComplexFourier` if `dtype == ComplexF64`
+        - `RealFourier` if `dtype == Float64`
+"""
+abstract type SpinBasis <: MultidimensionalBasis end
+
+# SpinBasis subtypes support spin recombination
+spin_recombination_trait(::SpinBasis) = HasSpinRecombination()
+
+# -- Accessor functions for SpinBasis concrete subtypes --
+
+"""
+    get_mmax(b::SpinBasis) -> Int
+
+Return the maximum azimuthal wavenumber.
+Concrete subtypes must have a `mmax` field.
+"""
+get_mmax(b::SpinBasis) = b.mmax
+
+"""
+    get_azimuth_basis(b::SpinBasis)
+
+Return the azimuth (Fourier) sub-basis.
+"""
+get_azimuth_basis(b::SpinBasis) = b.azimuth_basis
+
+"""
+    basis_constant(b::SpinBasis)
+
+Return tuple of booleans indicating which sub-axes are constant.
+The azimuth is constant only when mmax == 0.
+"""
+function basis_constant(b::SpinBasis)
+    cached = get(b._cache, :constant, nothing)
+    if cached !== nothing
+        return cached
+    end
+    val = (b.mmax == 0, false)
+    b._cache[:constant] = val
+    return val
+end
+
+"""
+    basis_coordsys(b::SpinBasis)
+
+Return the coordinate system for a SpinBasis.
+"""
+basis_coordsys(b::SpinBasis) = b.coordsys
+
+"""
+    basis_shape(b::SpinBasis)
+
+Return the shape tuple for a SpinBasis.
+"""
+basis_shape(b::SpinBasis) = b.shape
+
+"""
+    basis_dealias(b::SpinBasis)
+
+Return the dealias tuple for a SpinBasis.
+"""
+basis_dealias(b::SpinBasis) = b.dealias_tuple
+
+"""
+    spin_weights(basis::SpinBasis, tensorsig)
+
+Compute the spin weight array for the given tensor signature.
+Returns an integer array of shape `[dim(cs) for cs in tensorsig]`
+containing the total spin weight contribution from each tensor index.
+
+Uses `_cache` for memoization.
+"""
+function spin_weights(basis::SpinBasis, tensorsig)
+    cache_key = (:spin_weights, objectid(tensorsig))
+    cached = get(basis._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    cs = basis_coordsys(basis)
+    coord1 = get_coords(cs)[2]  # Python coords[1] → Julia coords[2]
+    spin_order = collect(spin_ordering(cs))
+    dims = [get_dim(tcs) for tcs in tensorsig]
+    S = zeros(Int, dims...)
+    for (i, tcs) in enumerate(tensorsig)
+        tcoords = get_coords(tcs)
+        idx = findfirst(c -> c == coord1, tcoords)
+        if idx !== nothing
+            start = idx - 1  # 0-based start for axslice compatibility
+            cs_dim = get_dim(cs)
+            # Slice spin_order to match the coordinate system dimension of this tensor index
+            # (hack for 2-vectors on S2 with 3D spherical coords)
+            tcs_dim = get_dim(tcs)
+            spin_sub = spin_order[1:min(tcs_dim, length(spin_order))]
+            spin_vec = reshape_vector(spin_sub, length(tensorsig), i)
+            # Build index tuple for the slice: all colons except axis i gets start+1:start+cs_dim
+            idx_tuple = ntuple(d -> d == i ? (start+1:start+cs_dim) : Colon(), length(tensorsig))
+            S[idx_tuple...] .+= spin_vec
+        end
+    end
+    basis._cache[cache_key] = S
+    return S
+end
+
+"""
+    spintotal(basis::SpinBasis, tensorsig, spinindex)
+
+Return the total spin for the given tensor signature at the given spin index.
+`spinindex` should be a tuple or CartesianIndex indexing into `spin_weights`.
+"""
+function spintotal(basis::SpinBasis, tensorsig, spinindex)
+    cache_key = (:spintotal, objectid(tensorsig), spinindex)
+    cached = get(basis._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    val = Int(spin_weights(basis, tensorsig)[spinindex...])
+    basis._cache[cache_key] = val
+    return val
+end
+
+# ============================================================================
+# PolarBasis  (abstract; for disk/annulus bases with dim=2)
+# ============================================================================
+
+"""
+    PolarBasis <: SpinBasis
+
+Abstract base type for 2D polar-type bases (azimuth + radius) such as
+`DiskBasis` and `AnnulusBasis`.
+
+`dim = 2`, `dims = ["azimuth", "radius"]`.
+
+Concrete subtypes must have fields:
+- `coordsys` — `PolarCoordinates` or similar 2D curvilinear system
+- `shape::Tuple{Int,Int}` — (N_azimuth, N_radial)
+- `dtype::DataType` — `Float64` or `ComplexF64`
+- `k::Int` — regularity parameter
+- `Nmax::Int` — `shape[2] - 1`
+- `dealias_tuple::Tuple{Float64,Float64}`
+- `mmax::Int` — `(shape[1] - 1) ÷ 2`
+- `azimuth_basis` — Fourier sub-basis with permutations applied
+- `azimuth_library` — library name
+- `forward_m_perm::Union{Nothing,Vector{Int}}` — m permutation for triangular truncation
+- `backward_m_perm::Union{Nothing,Vector{Int}}` — inverse m permutation
+- `group_shape_val::Tuple{Int,Int}` — group shape
+- `forward_transforms::Vector` — transform callables per sub-axis
+- `backward_transforms::Vector` — transform callables per sub-axis
+- `_cache::Dict{Symbol,Any}`
+
+## m permutation arrays
+
+For complex dtype (`ComplexF64`), when `mmax > 0`:
+    az_index = 0:Nphi-1
+    az_div, az_mod = divmod(az_index, 2)
+    forward_m_perm = az_div + Nphi÷2 * az_mod  (+1 for 1-based)
+
+For real dtype (`Float64`), when `mmax > 0`:
+    az_index = 0:Nphi-1
+    div2, mod2 = divmod(az_index, 2)
+    div22 = div2 % 2
+    forward_m_perm = (mod2 + div2) * (1 - div22) + (Nphi - 1 + mod2 - div2) * div22  (+1 for 1-based)
+"""
+abstract type PolarBasis <: SpinBasis end
+
+"""
+    polar_basis_dim(::PolarBasis) -> Int
+
+PolarBasis always has dimension 2.
+"""
+basis_dim(::PolarBasis) = 2
+
+"""
+    polar_basis_dims(::PolarBasis)
+
+Return the sub-axis names: `("azimuth", "radius")`.
+"""
+polar_basis_dims(::PolarBasis) = ("azimuth", "radius")
+
+"""
+    basis_subaxis_dependence(::PolarBasis) -> Tuple{Bool,Bool}
+
+Both sub-axes have dependence.
+"""
+basis_subaxis_dependence(::PolarBasis) = (false, false)
+
+"""
+    basis_group_shape(b::PolarBasis)
+
+Return the group shape for the basis.
+"""
+basis_group_shape(b::PolarBasis) = b.group_shape_val
+
+# -- m permutation computation helpers --
+
+"""
+    compute_forward_m_perm_complex(Nphi::Int) -> Union{Nothing, Vector{Int}}
+
+Compute the forward m permutation for complex dtype.
+Returns `nothing` if mmax == 0 (i.e., Nphi leads to mmax = (Nphi-1)÷2 == 0).
+"""
+function compute_forward_m_perm_complex(Nphi::Int)
+    mmax = (Nphi - 1) ÷ 2
+    if mmax == 0
+        return nothing
+    end
+    az_index = collect(0:Nphi-1)
+    az_div = az_index .÷ 2
+    az_mod = az_index .% 2
+    perm_0based = az_div .+ (Nphi ÷ 2) .* az_mod
+    return perm_0based .+ 1  # Convert to 1-based
+end
+
+"""
+    compute_forward_m_perm_real(Nphi::Int) -> Union{Nothing, Vector{Int}}
+
+Compute the forward m permutation for real dtype.
+Returns `nothing` if mmax == 0.
+"""
+function compute_forward_m_perm_real(Nphi::Int)
+    mmax = (Nphi - 1) ÷ 2
+    if mmax == 0
+        return nothing
+    end
+    az_index = collect(0:Nphi-1)
+    div2 = az_index .÷ 2
+    mod2 = az_index .% 2
+    div22 = div2 .% 2
+    perm_0based = (mod2 .+ div2) .* (1 .- div22) .+ (Nphi .- 1 .+ mod2 .- div2) .* div22
+    return perm_0based .+ 1  # Convert to 1-based
+end
+
+"""
+    compute_backward_m_perm(forward_perm::Union{Nothing, Vector{Int}}) -> Union{Nothing, Vector{Int}}
+
+Compute the backward (inverse) m permutation from the forward permutation.
+"""
+function compute_backward_m_perm(forward_perm::Union{Nothing, Vector{Int}})
+    if forward_perm === nothing
+        return nothing
+    end
+    backward = similar(forward_perm)
+    for (i, p) in enumerate(forward_perm)
+        backward[p] = i
+    end
+    return backward
+end
+
+# -- PolarBasis methods --
+
+"""
+    matrix_dependence(b::PolarBasis, matrix_coupling)
+
+If radial coupling is present, then azimuthal dependence must also be present.
+Returns a copy of `matrix_coupling` with azimuthal dependence set if radial
+coupling is active.
+"""
+function matrix_dependence(b::PolarBasis, matrix_coupling)
+    md = copy(matrix_coupling)
+    if matrix_coupling[2]
+        md[1] = true
+    end
+    return md
+end
+
+"""
+    valid_elements(b::PolarBasis, tensorsig, grid_space, elements)
+
+Determine which elements are valid for the given tensor signature and
+grid/coeff space configuration.
+"""
+function valid_elements(b::PolarBasis, tensorsig, grid_space, elements)
+    if grid_space[2]
+        # grid-grid and coeff-grid: same as Fourier validity
+        return valid_elements(b.azimuth_basis, tensorsig, grid_space, elements)
+    else
+        # coeff-coeff space
+        m, n = elements_to_groups(b, grid_space, elements)
+        if !isempty(tensorsig)
+            rank = length(tensorsig)
+            # Expand m, n with leading singleton dimensions for tensor indices
+            for _ in 1:rank
+                m = reshape(m, 1, size(m)...)
+                n = reshape(n, 1, size(n)...)
+            end
+        end
+        valid = n .>= _nmin(b, m)
+        if isempty(tensorsig)
+            # Drop msin part of m = 0
+            elem0 = elements[1]
+            valid[(m .== 0) .& (elem0 .% 2 .== 1)] .= false
+        end
+        return valid
+    end
+end
+
+"""
+    _nmin(b::PolarBasis, m)
+
+Return the minimum n for a given m.  Must be implemented by concrete subtypes
+(DiskBasis, AnnulusBasis).  Default returns `0 * m` to preserve array shape.
+"""
+_nmin(b::PolarBasis, m) = 0 .* m
+
+"""
+    S1_basis(b::PolarBasis; radius=1)
+
+Create a 1D azimuth (Fourier) basis with the polar basis's m permutations
+applied.  The resulting basis can be used for azimuthal transforms and
+validity checks.  Cached via `_cache`.
+"""
+function S1_basis(b::PolarBasis; radius=1)
+    cache_key = (:S1_basis, radius)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    cs = basis_coordsys(b)
+    coord0 = get_coords(cs)[1]
+    Nphi = b.shape[1]
+    bounds = (0.0, 2 * pi)
+    dal = b.dealias_tuple[1]
+    if b.dtype === ComplexF64
+        s1 = ComplexFourier(coord0, Nphi, bounds; dealias=dal, library=b.azimuth_library)
+    elseif b.dtype === Float64
+        s1 = RealFourier(coord0, Nphi, bounds; dealias=dal, library=b.azimuth_library)
+    else
+        throw(ErrorException("Unsupported dtype: $(b.dtype)"))
+    end
+    # Apply m permutations
+    s1.forward_coeff_permutation  = b.forward_m_perm
+    s1.backward_coeff_permutation = b.backward_m_perm
+    b._cache[cache_key] = s1
+    return s1
+end
+
+"""
+    global_shape(b::PolarBasis, grid_space, scales)
+
+Compute the global data shape for the given grid/coeff space and scale factors.
+"""
+function global_shape(b::PolarBasis, grid_space, scales)
+    gs = grid_shape(b, scales)
+    if grid_space[1]
+        # grid-grid space
+        if b.mmax == 0
+            return (1, gs[2])
+        else
+            return gs
+        end
+    elseif grid_space[2]
+        # coeff-grid space
+        return (b.shape[1], gs[2])
+    else
+        # coeff-coeff space
+        Nphi = b.shape[1]
+        if b.dtype === ComplexF64
+            return b.shape
+        elseif b.dtype === Float64
+            if Nphi > 1
+                return b.shape
+            else
+                return (2, b.shape[2])
+            end
+        end
+    end
+end
+
+"""
+    chunk_shape(b::PolarBasis, grid_space)
+
+Compute the chunk shape for distribution.
+"""
+function chunk_shape(b::PolarBasis, grid_space)
+    if grid_space[1]
+        # grid-grid space
+        return (1, 1)
+    elseif grid_space[2]
+        # coeff-grid space
+        if b.dtype === ComplexF64
+            return (1, 1)
+        elseif b.dtype === Float64
+            if b.mmax == 0
+                return (1, 1)
+            else
+                return (2, 1)
+            end
+        end
+    else
+        # coeff-coeff space
+        if b.dtype === ComplexF64
+            return (1, 1)
+        elseif b.dtype === Float64
+            return (2, 1)
+        end
+    end
+end
+
+"""
+    elements_to_groups(b::PolarBasis, grid_space, elements)
+
+Convert element indices to group indices (m, n pairs).
+In coeff-coeff space, elements below `_nmin(m)` are masked.
+"""
+function elements_to_groups(b::PolarBasis, grid_space, elements)
+    s1_groups = elements_to_groups(b.azimuth_basis, grid_space, elements[1:1])
+    radial_groups = elements[2]
+    if isa(s1_groups, Tuple)
+        groups = [s1_groups..., radial_groups]
+    else
+        groups = [s1_groups, radial_groups]
+    end
+    if !grid_space[2]
+        # coeff-coeff space: mask invalid elements
+        m = groups[1]
+        n = groups[end]
+        nmin = _nmin(b, m)
+        # Elements below nmin are invalid (would be masked in Python)
+        # For Julia, we return the groups as-is; validity is checked by valid_elements
+    end
+    return groups
+end
+
+"""
+    n_size(b::PolarBasis, m::Int) -> Int
+
+Return the number of valid radial modes for azimuthal wavenumber `m`.
+"""
+function n_size(b::PolarBasis, m::Int)
+    cache_key = (:n_size, m)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    nmin_val = _nmin(b, m)
+    nmax = b.shape[2] - 1  # Nmax
+    val = nmax - nmin_val + 1
+    b._cache[cache_key] = val
+    return val
+end
+
+"""
+    n_slice(b::PolarBasis, m::Int) -> UnitRange{Int}
+
+Return the range of valid radial mode indices for azimuthal wavenumber `m`.
+Returns a 1-based range.
+"""
+function n_slice(b::PolarBasis, m::Int)
+    cache_key = (:n_slice, m)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    nmin_val = _nmin(b, m)
+    nmax = b.shape[2] - 1
+    val = (nmin_val+1):(nmax+1)  # 1-based range
+    b._cache[cache_key] = val
+    return val
+end
+
+# -- Azimuth transform methods --
+
+"""
+    forward_transform_azimuth_Mmax0(b::PolarBasis, field, axis, gdata, cdata)
+
+Forward azimuth transform when mmax == 0 (copy the single m=0 slice).
+"""
+function forward_transform_azimuth_Mmax0(b::PolarBasis, field, axis, gdata, cdata)
+    slice_axis = axis + length(field.tensorsig)
+    idx = axslice(slice_axis, 1, 1)  # 1-based: first element only
+    copyto!(view(cdata, idx...), gdata)
+    return nothing
+end
+
+"""
+    forward_transform_azimuth(b::PolarBasis, field, axis, gdata, cdata)
+
+Forward azimuth transform: delegate to the azimuth Fourier basis.
+Permutation is handled by the azimuth_basis's own permutation arrays.
+"""
+function forward_transform_azimuth(b::PolarBasis, field, axis, gdata, cdata)
+    forward_transform(b.azimuth_basis, field, axis, gdata, cdata)
+    return nothing
+end
+
+"""
+    backward_transform_azimuth_Mmax0(b::PolarBasis, field, axis, cdata, gdata)
+
+Backward azimuth transform when mmax == 0 (copy from the single m=0 slice).
+"""
+function backward_transform_azimuth_Mmax0(b::PolarBasis, field, axis, cdata, gdata)
+    slice_axis = axis + length(field.tensorsig)
+    idx = axslice(slice_axis, 1, 1)
+    copyto!(gdata, view(cdata, idx...))
+    return nothing
+end
+
+"""
+    backward_transform_azimuth(b::PolarBasis, field, axis, cdata, gdata)
+
+Backward azimuth transform: delegate to the azimuth Fourier basis.
+"""
+function backward_transform_azimuth(b::PolarBasis, field, axis, cdata, gdata)
+    backward_transform(b.azimuth_basis, field, axis, cdata, gdata)
+    return nothing
+end
+
+# -- Grid methods --
+
+"""
+    global_grids(b::PolarBasis, dist, scales)
+
+Return tuple of (azimuth_grid, radius_grid) at the given scales.
+Delegates to the azimuth sub-basis and the concrete subtype's
+`global_grid_radius` method.
+"""
+function global_grids(b::PolarBasis, dist, scales)
+    return (global_grid(b.azimuth_basis, dist, scales[1]),
+            global_grid_radius(b, dist, scales[2]))
+end
+
+"""
+    local_grids(b::PolarBasis, dist, scales)
+
+Return tuple of (local_azimuth_grid, local_radius_grid).
+"""
+function local_grids(b::PolarBasis, dist, scales)
+    return (local_grid(b.azimuth_basis, dist, scales[1]),
+            local_grid_radius(b, dist, scales[2]))
+end
+
+"""
+    global_grid_radius(b::PolarBasis, dist, scale)
+
+Return the global radial grid.  Must be implemented by concrete subtypes.
+"""
+function global_grid_radius end
+
+"""
+    local_grid_radius(b::PolarBasis, dist, scale)
+
+Return the local radial grid.  Must be implemented by concrete subtypes.
+"""
+function local_grid_radius end
+
+# -- m_maps for distribution --
+
+"""
+    m_maps(b::PolarBasis, dist)
+
+Compute a tuple of `(m, mg_slice, mc_slice, n_slice)` entries for all
+local m values.  Used for radial transforms and local element iteration.
+
+Must be implemented by concrete subtypes or overridden once the
+distribution infrastructure is in place.
+"""
+function m_maps(b::PolarBasis, dist)
+    cache_key = (:m_maps, objectid(dist))
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    # Placeholder: will be implemented when distributor infrastructure is complete.
+    # For serial (non-distributed) usage, iterate over all m values.
+    error("m_maps not yet implemented for $(typeof(b)); requires distributor infrastructure")
+end
+
+"""
+    ell_reversed(b::PolarBasis, dist)
+
+Return a dictionary mapping m -> Bool indicating whether the ell ordering
+is reversed for each m.  Default: all false.
+"""
+function ell_reversed(b::PolarBasis, dist)
+    cache_key = (:ell_reversed, objectid(dist))
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    result = Dict{Int, Bool}()
+    for (m, mg_slice, mc_slice, ns) in m_maps(b, dist)
+        result[m] = false
+    end
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    derivative_basis(b::PolarBasis; order::Int=1)
+
+Return the derivative basis with regularity parameter `k` incremented by `order`.
+Delegates to `clone_with(b; k=b.k + order)`.
+"""
+function derivative_basis(b::PolarBasis; order::Int=1)
+    k_new = b.k + order
+    return clone_with(b; k=k_new)
+end
+
+# ============================================================================
 # Exports
 # ============================================================================
 
@@ -2013,4 +3010,38 @@ export AffineCOV,
        AbstractTransformPlan,
        MatrixTransformPlan,
        forward!,
-       backward!
+       backward!,
+       MultidimensionalBasis,
+       reduced_view_5,
+       recombine_forward!,
+       recombine_backward!,
+       SpinRecombinationTrait,
+       HasSpinRecombination,
+       NoSpinRecombination,
+       spin_recombination_trait,
+       spin_ordering,
+       spin_recombination_factors,
+       spin_recombination_matrix,
+       forward_spin_recombination!,
+       backward_spin_recombination!,
+       SpinBasis,
+       get_mmax,
+       get_azimuth_basis,
+       spin_weights,
+       spintotal,
+       PolarBasis,
+       polar_basis_dims,
+       compute_forward_m_perm_complex,
+       compute_forward_m_perm_real,
+       compute_backward_m_perm,
+       S1_basis,
+       n_size,
+       n_slice,
+       forward_transform_azimuth_Mmax0,
+       forward_transform_azimuth,
+       backward_transform_azimuth_Mmax0,
+       backward_transform_azimuth,
+       global_grid_radius,
+       local_grid_radius,
+       m_maps,
+       ell_reversed
