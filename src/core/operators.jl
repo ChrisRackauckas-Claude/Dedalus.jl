@@ -2213,6 +2213,12 @@ export AbstractOperator, AbstractLinearOperator, SpectralOperator, SpectralOpera
        DirectProductGradient, DirectProductDivergence, DirectProductCurl,
        DirectProductLaplacian, DirectProductComponent,
        AdvectiveCFL,
+       SpectralOperatorS2, SeparableSphereOperator, PolarMOperator,
+       spinindex_out, l_matrix, m_matrix,
+       symbol, local_symbols,
+       radial_matrix, _output_basis,
+       polar_m_operator_subaxis_dependence, polar_m_operator_subaxis_coupling,
+       init_polar_m_operator!,
        gradient, divergence, curl, laplacian,
        trace_op, transpose_components, grid_op, coeff_op,
        time_derivative, component,
@@ -2242,4 +2248,615 @@ end
 
 function basis_matrix_dependence(basis, axis)
     return false
+end
+
+# ============================================================================
+# SpectralOperatorS2 — abstract base for linear operators on the 2-sphere
+# ============================================================================
+
+"""
+    SpectralOperatorS2 <: SpectralOperator
+
+Abstract base type for linear operators acting on the 2-sphere (S2).
+Subtypes operate on SpinBasis bases and build their matrix representation
+from per-ell matrix blocks (`l_matrix`) or per-m matrix blocks (`m_matrix`).
+
+## Subtypes must implement
+- `spinindex_out(op, spinindex_in)` — return tuple of valid output spin indices
+- `l_matrix(op, input_basis, output_basis, spinindex_in, spinindex_out, ell)` — per-ell block
+- `m_matrix(op, spinindex_in, spinindex_out, m)` — per-m block (for ell-coupled operators)
+
+## Subtypes must have fields
+- `operand`, `input_basis`, `output_basis`, `first_axis`, `last_axis`
+- `tensorsig`, `dtype`, `domain`, `dist`
+- `subaxis_dependence::Vector{Bool}`, `subaxis_coupling::Vector{Bool}`
+- `args::Vector{Any}`
+"""
+abstract type SpectralOperatorS2 <: SpectralOperator end
+
+"""
+    spinindex_out(op, spinindex_in)
+
+Return a tuple of valid output spin indices for the given input spin index.
+Must be implemented by concrete SpectralOperatorS2 subtypes.
+"""
+function spinindex_out(op::SpectralOperatorS2, spinindex_in)
+    error("spinindex_out not implemented for type $(typeof(op))")
+end
+
+"""
+    l_matrix(op, input_basis, output_basis, spinindex_in, spinindex_out, ell)
+
+Return the per-ell matrix block for a SpectralOperatorS2.
+Must be implemented by concrete subtypes.
+"""
+function l_matrix(op::SpectralOperatorS2, input_basis, output_basis, spinindex_in, spinindex_out, ell)
+    error("l_matrix not implemented for type $(typeof(op))")
+end
+
+"""
+    m_matrix(op, spinindex_in, spinindex_out, m)
+
+Return the per-m matrix block for ell-coupled SpectralOperatorS2 operators.
+Must be implemented by concrete subtypes that couple in ell.
+"""
+function m_matrix(op::SpectralOperatorS2, spinindex_in, spinindex_out, m)
+    error("m_matrix not implemented for type $(typeof(op))")
+end
+
+"""
+    subproblem_matrix(op::SpectralOperatorS2, subproblem)
+
+Build operator matrix for a specific subproblem.
+
+Loops over spin components, constructing per-ell or per-m blocks and
+assembling them into a block-diagonal structure via Kronecker products.
+"""
+function subproblem_matrix(op::SpectralOperatorS2, subproblem)
+    operand = op.args[1]
+    if op.input_basis === nothing
+        basis = op.output_basis
+        domain = op.domain
+    else
+        basis = op.input_basis
+        domain = operand.domain
+    end
+    S_in = spin_weights(basis, operand.tensorsig)
+    S_out = spin_weights(basis, op.tensorsig)
+    # subproblem.group is 1-based; last_axis-1 and last_axis give m and ell
+    m = subproblem.group[op.last_axis - 1]
+    l = subproblem.group[op.last_axis]
+    m_coupled = (m === nothing)
+    l_coupled = (l === nothing)
+    if op.subaxis_coupling[1] && !m_coupled
+        error("SpectralOperatorS2: m must be coupled (group[m_axis] === nothing) " *
+              "when subaxis_coupling[1] is true.")
+    end
+    if op.subaxis_coupling[2] && !l_coupled
+        error("SpectralOperatorS2: ell must be coupled (group[ell_axis] === nothing) " *
+              "when subaxis_coupling[2] is true.")
+    end
+    m_dep = op.subaxis_dependence[1]
+    l_dep = op.subaxis_dependence[2]
+    m_axis = first_axis(op.dist, basis)
+    # Loop over spin components
+    submatrices = []
+    for si_out in CartesianIndices(size(S_out))
+        spintotal_out = S_out[si_out]
+        submatrix_row = []
+        for si_in in CartesianIndices(size(S_in))
+            spintotal_in = S_in[si_in]
+            subshape_in = coeff_shape(subproblem, operand.domain)
+            subshape_out = coeff_shape(subproblem, op.domain)
+            if Tuple(si_out) in spinindex_out(op, Tuple(si_in))
+                # Build identity matrices for each axis
+                factors = [sparse(1.0I, subshape_out[i], subshape_in[i]) for i in eachindex(subshape_out)]
+                # Substitute factor for the operator's last axis
+                if l_coupled && op.subaxis_coupling[2]
+                    matrix = m_matrix(op, Tuple(si_in), Tuple(si_out), m)
+                elseif l_coupled || (!m_dep)
+                    if l_coupled
+                        local_groups = local_group_arrays(op.dist.coeff_layout, domain; scales=1)
+                        local_m = local_groups[m_axis]
+                        local_ell = local_groups[m_axis + 1]
+                        ell_list = local_ell[local_m .== m][:]
+                    elseif !m_dep
+                        ell_list = [l]
+                    end
+                    blocks = []
+                    for ell in ell_list
+                        if abs(spintotal_in) <= ell && abs(spintotal_out) <= ell
+                            block = l_matrix(op, op.input_basis, op.output_basis,
+                                             Tuple(si_in), Tuple(si_out), ell)
+                        else
+                            block = spzeros(1, 1)  # HACK: placeholder for invalid ell
+                        end
+                        push!(blocks, block)
+                    end
+                    matrix = sparse_block_diag(blocks)
+                else
+                    error("SpectralOperatorS2: unsupported subaxis configuration")
+                end
+                factors[op.last_axis] = matrix
+                comp_matrix = reduce(kron, factors; init=sparse(ones(1, 1)))
+            else
+                # Build zero matrix
+                comp_matrix = spzeros(prod(subshape_out), prod(subshape_in))
+            end
+            push!(submatrix_row, comp_matrix)
+        end
+        push!(submatrices, submatrix_row)
+    end
+    # Assemble block matrix [submatrices[i][j] for i in rows, j in cols]
+    nrows = length(submatrices)
+    ncols = length(submatrices[1])
+    block_mat = hvcat(
+        ntuple(_ -> ncols, nrows),
+        [submatrices[i][j] for i in 1:nrows for j in 1:ncols]...
+    )
+    return sparse(block_mat)
+end
+
+"""
+    operate(op::SpectralOperatorS2, out)
+
+Explicit evaluation of an S2 spectral operator.
+
+For operators without ell-coupling, loops over spin components and applies
+the subspace matrix via `apply_matrix`.
+"""
+function operate(op::SpectralOperatorS2, out)
+    operand = op.args[1]
+    input_basis = op.input_basis
+    layout = operand.layout
+    axis = op.first_axis
+    dim_val = 2  # S2 has 2 sub-axes
+    if op.subaxis_coupling[2]
+        error("Explicit evaluation not implemented for ell-coupled S2 operators.")
+    end
+    # Set output layout
+    preset_layout!(out, layout)
+    out.data .= 0
+    # Return for size-zero data
+    if length(operand.data) == 0 || length(out.data) == 0
+        return
+    end
+    # Apply operator over spin components
+    S_in = spin_weights(input_basis, operand.tensorsig)
+    for si_in in CartesianIndices(size(S_in))
+        spintotal_in = S_in[si_in]
+        comp_in = operand.data[Tuple(si_in)...]
+        reduced_in = reduced_view_3(comp_in, axis)
+        for si_out_tuple in spinindex_out(op, Tuple(si_in))
+            comp_out = out.data[si_out_tuple...]
+            reduced_out = reduced_view_3(comp_out, axis)
+            matrix = subspace_matrix(op, layout, Tuple(si_in), si_out_tuple)
+            reduced_out .+= apply_matrix(matrix, reduced_in, 1)
+        end
+    end
+end
+
+# ============================================================================
+# SeparableSphereOperator — abstract base for separable (diagonal) S2 ops
+# ============================================================================
+
+"""
+    SeparableSphereOperator <: SpectralOperator
+
+Abstract base type for sphere operators that are separable (diagonal) in
+the (m, ell) spectral space. These operators are defined by scalar symbols
+that multiply each (m, ell) mode independently.
+
+`subaxis_coupling = [false, false]` — no coupling in either m or ell.
+
+## Subtypes must implement
+- `symbol(op, spinindex_in, spinindex_out, spintotal_in, spintotal_out, ...)` — per-mode symbol
+- `spinindex_out(op, spinindex_in)` — valid output spin indices
+
+## Subtypes must have fields
+- `operand`, `input_basis`, `output_basis`, `first_axis`, `last_axis`
+- `tensorsig`, `dtype`, `domain`, `dist`
+- `subaxis_dependence::Vector{Bool}`, `subaxis_coupling::Vector{Bool}`
+- `complex_operator::Bool`
+- `args::Vector{Any}`
+"""
+abstract type SeparableSphereOperator <: SpectralOperator end
+
+"""
+    spinindex_out(op::SeparableSphereOperator, spinindex_in)
+
+Return a tuple of valid output spin indices.
+Must be implemented by concrete subtypes.
+"""
+function spinindex_out(op::SeparableSphereOperator, spinindex_in)
+    error("spinindex_out not implemented for type $(typeof(op))")
+end
+
+"""
+    symbol(op::SeparableSphereOperator, spinindex_in, spinindex_out, spintotal_in, spintotal_out, args...)
+
+Return the scalar symbol for a given spin component at the given mode.
+Must be implemented by concrete subtypes.
+"""
+function symbol(op::SeparableSphereOperator, spinindex_in, spinindex_out,
+                spintotal_in, spintotal_out, args...)
+    error("symbol not implemented for type $(typeof(op))")
+end
+
+"""
+    local_symbols(op::SeparableSphereOperator, layout, spinindex_in, spinindex_out,
+                  spintotal_in, spintotal_out)
+
+Return the array of symbols for all local (m, ell) groups in the given layout.
+Dispatches based on `subaxis_dependence`:
+- `[false, true]`: symbols depend on ell only (most common, e.g. SphereEllProduct)
+- `[false, false]`: symbols are constant (depend only on spin indices and radius)
+- `[true, ...]`: not yet implemented
+"""
+function local_symbols(op::SeparableSphereOperator, layout, spinindex_in, spinindex_out,
+                       spintotal_in, spintotal_out)
+    operand = op.args[1]
+    if op.input_basis === nothing
+        domain = op.domain
+        radius = op.output_basis.radius
+    else
+        domain = operand.domain
+        radius = op.input_basis.radius
+    end
+    if op.subaxis_dependence[1]
+        error("local_symbols not implemented for m-dependent SeparableSphereOperator")
+    elseif op.subaxis_dependence[2]
+        colat_axis = op.first_axis + 1
+        local_ell = local_group_arrays(layout, domain; scales=basis_dealias(domain))[colat_axis]
+        return symbol(op, spinindex_in, spinindex_out, spintotal_in, spintotal_out,
+                      local_ell, radius)
+    else
+        return symbol(op, spinindex_in, spinindex_out, spintotal_in, spintotal_out, radius)
+    end
+end
+
+"""
+    subproblem_matrix(op::SeparableSphereOperator, subproblem)
+
+Build the operator matrix for a specific subproblem.
+
+Since the operator is separable, the matrix is diagonal with entries given
+by the symbol values at each (m, ell) mode.
+"""
+function subproblem_matrix(op::SeparableSphereOperator, subproblem)
+    operand = op.args[1]
+    if op.input_basis === nothing
+        basis = op.output_basis
+        domain = op.domain
+    else
+        basis = op.input_basis
+        domain = operand.domain
+    end
+    layout = op.dist.coeff_layout
+    S_in = spin_weights(basis, operand.tensorsig)
+    S_out = spin_weights(basis, op.tensorsig)
+    groupset_slices_val = local_groupset_slices(op.dist.coeff_layout, subproblem.group, domain; scales=1)
+    # Select overlapping data
+    subshape_in = coeff_shape(subproblem, operand.domain)
+    subshape_out = coeff_shape(subproblem, op.domain)
+    subshape = min.(subshape_in, subshape_out)
+    slices = Tuple(1:n for n in subshape)
+    size_in = prod(subshape_in)
+    size_out = prod(subshape_out)
+    # Build block matrix over spin components
+    submatrices = []
+    for si_out in CartesianIndices(size(S_out))
+        spintotal_out = S_out[si_out]
+        block_row = []
+        for si_in in CartesianIndices(size(S_in))
+            spintotal_in = S_in[si_in]
+            if prod(subshape) > 0 && (Tuple(si_out) in spinindex_out(op, Tuple(si_in)))
+                # Get symbols for overlapping data
+                symbols_val = local_symbols(op, layout, Tuple(si_in), Tuple(si_out),
+                                            spintotal_in, spintotal_out)
+                if isa(symbols_val, Number)
+                    symbols_vec = fill(symbols_val, prod(subshape))
+                else
+                    # Concatenate symbol slices from groupset_slices
+                    symbols_vec = vcat([vec(symbols_val[sl...]) for sl in groupset_slices_val]...)
+                end
+                # Build diagonal component matrix
+                block = spdiagm(0 => symbols_vec)
+                # Ensure correct shape (size_out x size_in)
+                if size(block) != (size_out, size_in)
+                    block_full = spzeros(eltype(symbols_vec), size_out, size_in)
+                    n = min(size(block, 1), size_out, size_in)
+                    for k in 1:n
+                        block_full[k, k] = block[k, k]
+                    end
+                    block = block_full
+                end
+            else
+                # Zeros
+                block = spzeros(size_out, size_in)
+            end
+            push!(block_row, block)
+        end
+        push!(submatrices, block_row)
+    end
+    # Assemble block matrix
+    nrows = length(submatrices)
+    ncols = length(submatrices[1])
+    block_mat = hvcat(
+        ntuple(_ -> ncols, nrows),
+        [submatrices[i][j] for i in 1:nrows for j in 1:ncols]...
+    )
+    return sparse(block_mat)
+end
+
+"""
+    operate(op::SeparableSphereOperator, out)
+
+Explicit evaluation of a separable sphere operator.
+
+Multiplies each spin component of the operand data by the corresponding
+symbol array, accumulating into the output.
+"""
+function operate(op::SeparableSphereOperator, out)
+    operand = op.args[1]
+    layout = operand.layout
+    basis = op.input_basis
+    if basis === nothing
+        basis = op.output_basis
+    end
+    # Set output layout
+    preset_layout!(out, layout)
+    out.data .= 0
+    # Return for size-zero data
+    if length(operand.data) == 0 || length(out.data) == 0
+        return
+    end
+    # Select overlapping data if shapes differ
+    rank_in = length(operand.tensorsig)
+    rank_out = length(out.tensorsig)
+    local_shape_in = size(operand.data)[(rank_in + 1):end]
+    local_shape_out = size(out.data)[(rank_out + 1):end]
+    if local_shape_in == local_shape_out
+        slices = nothing
+        data_in = operand.data
+        data_out = out.data
+    else
+        overlap = min.(local_shape_in, local_shape_out)
+        slices = Tuple(1:n for n in overlap)
+        # Build full index tuples including tensor dimensions
+        in_idx = ntuple(i -> i <= rank_in ? Colon() : slices[i - rank_in], rank_in + length(overlap))
+        out_idx = ntuple(i -> i <= rank_out ? Colon() : slices[i - rank_out], rank_out + length(overlap))
+        data_in = view(operand.data, in_idx...)
+        data_out = view(out.data, out_idx...)
+    end
+    # Apply operator over spin components
+    S_in = spin_weights(basis, operand.tensorsig)
+    for si_in in CartesianIndices(size(S_in))
+        spintotal_in = S_in[si_in]
+        comp_in = data_in[Tuple(si_in)...]
+        for si_out_tuple in spinindex_out(op, Tuple(si_in))
+            # Get symbols
+            spintotal_out = spintotal(basis, out.tensorsig, si_out_tuple)
+            symbols_val = local_symbols(op, layout, Tuple(si_in), si_out_tuple,
+                                        spintotal_in, spintotal_out)
+            if slices !== nothing && !isa(symbols_val, Number)
+                symbols_val = symbols_val[slices...]
+            end
+            # Multiply by symbols and accumulate
+            comp_out = data_out[si_out_tuple...]
+            comp_out .+= symbols_val .* comp_in
+        end
+    end
+end
+
+# ============================================================================
+# PolarMOperator — abstract base for polar/disk/annulus m-dependent operators
+# ============================================================================
+
+"""
+    PolarMOperator <: SpectralOperator
+
+Abstract base type for operators on polar/disk/annulus bases that act in the
+azimuthal-m subspace. These operators couple only in the radial direction,
+with a separate radial matrix for each azimuthal wavenumber m.
+
+`subaxis_dependence = [true, true]` — depends on both m and radial n.
+`subaxis_coupling = [false, true]` — couples only in the radial direction.
+
+## Subtypes must implement
+- `spinindex_out(op, spinindex_in)` — return tuple of valid output spin indices
+- `radial_matrix(op, spinindex_in, spinindex_out, m)` — per-m radial matrix
+- `_output_basis(op, input_basis)` — determine output basis from input
+
+## Subtypes must have fields
+- `operand`, `input_basis`, `output_basis`, `first_axis`, `last_axis`
+- `coordsys`, `radius_axis`
+- `tensorsig`, `dtype`, `domain`, `dist`
+- `args::Vector{Any}`
+"""
+abstract type PolarMOperator <: SpectralOperator end
+
+"""
+    spinindex_out(op::PolarMOperator, spinindex_in)
+
+Return a tuple of valid output spin indices for the given input spin index.
+Must be implemented by concrete PolarMOperator subtypes.
+"""
+function spinindex_out(op::PolarMOperator, spinindex_in)
+    error("spinindex_out not implemented for type $(typeof(op))")
+end
+
+"""
+    radial_matrix(op::PolarMOperator, spinindex_in, spinindex_out, m)
+
+Return the radial matrix for the given spin indices and azimuthal wavenumber m.
+Must be implemented by concrete PolarMOperator subtypes.
+"""
+function radial_matrix(op::PolarMOperator, spinindex_in, spinindex_out, m)
+    error("radial_matrix not implemented for type $(typeof(op))")
+end
+
+"""
+    _output_basis(op::PolarMOperator, input_basis)
+
+Determine the output basis given the input basis.
+Must be implemented by concrete PolarMOperator subtypes.
+"""
+function _output_basis(op::PolarMOperator, input_basis)
+    error("_output_basis not implemented for type $(typeof(op))")
+end
+
+"""
+    polar_m_operator_subaxis_dependence(::PolarMOperator) -> Vector{Bool}
+
+Default subaxis_dependence for PolarMOperator: depends on both m and radial n.
+"""
+polar_m_operator_subaxis_dependence(::PolarMOperator) = [true, true]
+
+"""
+    polar_m_operator_subaxis_coupling(::PolarMOperator) -> Vector{Bool}
+
+Default subaxis_coupling for PolarMOperator: couples only in radial direction.
+"""
+polar_m_operator_subaxis_coupling(::PolarMOperator) = [false, true]
+
+"""
+    init_polar_m_operator!(op::PolarMOperator, operand, coordsys)
+
+Common initialization logic for PolarMOperator subtypes.
+Sets `coordsys`, `radius_axis`, `input_basis`, `output_basis`,
+`first_axis`, `last_axis`, and `operand` on the operator.
+
+This should be called from the concrete subtype's constructor.
+Subtypes must have the fields:
+    coordsys, radius_axis, input_basis, output_basis,
+    first_axis, last_axis, operand, dist,
+    subaxis_dependence, subaxis_coupling
+"""
+function init_polar_m_operator!(op, operand, coordsys)
+    op.coordsys = coordsys
+    op.radius_axis = get_axis(op.dist, coordsys.coords[2])
+    input_basis = get_basis(operand.domain, coordsys)
+    if input_basis === nothing
+        input_basis = get_basis(operand.domain, coordsys.radius)
+    end
+    op.input_basis = input_basis
+    op.output_basis = _output_basis(op, input_basis)
+    op.first_axis = first_axis(op.dist, input_basis)
+    op.last_axis = last_axis(op.dist, input_basis)
+    op.operand = operand
+    op.subaxis_dependence = [true, true]
+    op.subaxis_coupling = [false, true]
+    return nothing
+end
+
+"""
+    operate(op::PolarMOperator, out)
+
+Explicit evaluation of a polar m-dependent operator.
+
+Loops over spin components and m-maps, applying the per-m radial matrix
+to each azimuthal slice of the operand data.
+"""
+function operate(op::PolarMOperator, out)
+    operand = op.args[1]
+    if hasfield(typeof(op.output_basis), :m_maps) || hasmethod(m_maps, Tuple{typeof(op.output_basis), Any})
+        basis = op.output_basis
+    else
+        basis = op.input_basis
+    end
+    axis = op.last_axis
+    # Set output layout
+    preset_layout!(out, operand.layout)
+    out.data .= 0
+    # Return for size-zero data
+    if length(operand.data) == 0 || length(out.data) == 0
+        return
+    end
+    # Apply operator
+    S_in = spin_weights(basis, operand.tensorsig)
+    ndim = length(size(operand.data)) - length(operand.tensorsig)
+    for si_in in CartesianIndices(size(S_in))
+        spintotal_in = S_in[si_in]
+        for si_out_tuple in spinindex_out(op, Tuple(si_in))
+            comp_in = operand.data[Tuple(si_in)...]
+            comp_out = out.data[si_out_tuple...]
+            for (m, mg_slice, mc_slice, n_slice_val) in m_maps(basis, op.dist)
+                # Build slice tuple: all colons except axis-1 gets mc_slice,
+                # axis gets n_slice_val (1-based indexing)
+                slices_in = ntuple(i -> i == (axis - 1) ? mc_slice :
+                                        i == axis ? n_slice_val : Colon(), ndim)
+                slices_out = ntuple(i -> i == (axis - 1) ? mc_slice :
+                                         i == axis ? n_slice_val : Colon(), ndim)
+                vec_in = view(comp_in, slices_in...)
+                vec_out = view(comp_out, slices_out...)
+                if length(vec_in) > 0 && length(vec_out) > 0
+                    A = radial_matrix(op, Tuple(si_in), si_out_tuple, m)
+                    vec_out .+= apply_matrix(A, collect(vec_in), axis)
+                end
+            end
+        end
+    end
+end
+
+"""
+    subproblem_matrix(op::PolarMOperator, subproblem)
+
+Build the operator matrix for a specific subproblem.
+
+Constructs a block matrix over spin components, where each nonzero block
+is built from Kronecker products of identity matrices with the per-m
+radial matrix substituted at the radial axis.
+"""
+function subproblem_matrix(op::PolarMOperator, subproblem)
+    operand = op.args[1]
+    if op.input_basis === nothing
+        radial_basis = op.output_basis
+    else
+        radial_basis = op.input_basis
+    end
+    S_in = spin_weights(radial_basis, operand.tensorsig)
+    S_out = spin_weights(radial_basis, op.tensorsig)
+    m = subproblem.group[op.last_axis - 1]
+    # Loop over spin components
+    submatrices = []
+    for si_out in CartesianIndices(size(S_out))
+        spintotal_out = S_out[si_out]
+        submatrix_row = []
+        for si_in in CartesianIndices(size(S_in))
+            spintotal_in = S_in[si_in]
+            # Build identity matrices for each axis
+            subshape_in = coeff_shape(subproblem, operand.domain)
+            subshape_out = coeff_shape(subproblem, op.domain)
+            if (Tuple(si_out) in spinindex_out(op, Tuple(si_in))) &&
+               prod(subshape_out) > 0 && prod(subshape_in) > 0
+                # Build per-axis identity factors
+                factors = [sparse(1.0I, subshape_out[i], subshape_in[i]) for i in eachindex(subshape_out)]
+                # Get the radial matrix for this m
+                rad_matrix = radial_matrix(op, Tuple(si_in), Tuple(si_out), m)
+                # Reverse matrices to match memory order for flipped groups
+                if hasmethod(ell_reversed, Tuple{typeof(radial_basis), typeof(op.dist)})
+                    ell_rev = ell_reversed(radial_basis, op.dist)
+                    if haskey(ell_rev, m) && ell_rev[m]
+                        rad_matrix = rad_matrix[end:-1:1, end:-1:1]
+                    end
+                end
+                factors[op.last_axis] = sparse(rad_matrix)
+                comp_matrix = reduce(kron, factors; init=sparse(ones(1, 1)))
+            else
+                # Build zero matrix
+                comp_matrix = spzeros(prod(subshape_out), prod(subshape_in))
+            end
+            push!(submatrix_row, comp_matrix)
+        end
+        push!(submatrices, submatrix_row)
+    end
+    # Assemble block matrix
+    nrows = length(submatrices)
+    ncols = length(submatrices[1])
+    block_mat = hvcat(
+        ntuple(_ -> ncols, nrows),
+        [submatrices[i][j] for i in 1:nrows for j in 1:ncols]...
+    )
+    return sparse(block_mat)
 end
