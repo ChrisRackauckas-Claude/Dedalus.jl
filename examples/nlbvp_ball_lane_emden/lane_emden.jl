@@ -68,7 +68,7 @@ lift = A -> Lift(A, ball, -1)
 
 # Problem
 problem = NLBVP([f, tau]; namespace=@locals)
-add_equation!(problem, "lap(f) + lift(tau) = - f**n")
+add_equation!(problem, "lap(f) + lift(tau) = - f^n")
 add_equation!(problem, "f(r=1) = 0")
 
 # Initial guess

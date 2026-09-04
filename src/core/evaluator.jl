@@ -1101,7 +1101,7 @@ function setup_file(h::H5FileHandlerBase, file)
             if basis === nothing
                 attrs(dset)["scale_name_$(axis)"] = "constant"
             else
-                subaxis = axis - get_basis_axis(h.dist, basis)
+                subaxis = axis - get_basis_axis(h.dist, basis) + 1
                 if layout.grid_space[axis]
                     sn = get_coord_name(basis, subaxis)
                 else
@@ -1616,7 +1616,7 @@ function _virtual_setup_joint_file(h::H5FileHandlerBase, file)
             if basis === nothing
                 attrs(dset)["scale_name_$(axis)"] = "constant"
             else
-                subaxis = axis - get_basis_axis(h.dist, basis)
+                subaxis = axis - get_basis_axis(h.dist, basis) + 1
                 if layout.grid_space[axis]
                     sn = get_coord_name(basis, subaxis)
                 else

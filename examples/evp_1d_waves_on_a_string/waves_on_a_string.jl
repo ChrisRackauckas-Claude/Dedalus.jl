@@ -58,7 +58,7 @@ add_equation!(problem, "u(x=Lx) = 0")
 # Solve
 solver = build_solver(problem)
 solve_dense!(solver, solver.subproblems[1])
-evals = sort(solver.eigenvalues)
+evals = sort(solver.eigenvalues; by=x -> (real(x), imag(x)))
 n = 1:length(evals)
 true_evals = (n .* pi ./ Lx).^2
 relative_error = abs.(evals .- true_evals) ./ true_evals

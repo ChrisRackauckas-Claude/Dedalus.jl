@@ -919,7 +919,7 @@ function _last_axis_component_ncc_matrix(ncc_basis::JacobiBasis, arg_basis, out_
     da = Int(round(out_basis.a - arg_basis.a))
     db = Int(round(out_basis.b - arg_basis.b))
     # Pad for dealiasing with conversion
-    Nmat = 3 * ((N + 1) ÷ 2) + min((N + 1) ÷ 2, (da + db + 1) ÷ 2)
+    Nmat = 3 * ((N + 1) ÷ 2) + min((N + 1) ÷ 2, fld(da + db + 1, 2))
     J = jacobi_recurrence_matrix(arg_basis; size=Nmat)
     A, B = jacobi_recursion(Nmat, a_ncc, b_ncc, J)
     # f0 = P_0^{(a_ncc, b_ncc)}(1) * I
@@ -2881,7 +2881,7 @@ Must be implemented by concrete subtypes or overridden once the
 distribution infrastructure is in place.
 """
 function m_maps(b::PolarBasis, dist)
-    cache_key = (:m_maps, objectid(dist))
+    cache_key = (:m_maps, dist)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -2898,7 +2898,7 @@ Return a dictionary mapping m -> Bool indicating whether the ell ordering
 is reversed for each m.  Default: all false.
 """
 function ell_reversed(b::PolarBasis, dist)
-    cache_key = (:ell_reversed, objectid(dist))
+    cache_key = (:ell_reversed, dist)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -3384,7 +3384,7 @@ end
 Build (or retrieve cached) a transform plan for the annulus radial direction.
 """
 function transform_plan(b::AnnulusBasis, dist, grid_size, k)
-    cache_key = (:transform_plan, objectid(dist), grid_size, k)
+    cache_key = (:transform_plan, dist, grid_size, k)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -4952,7 +4952,7 @@ end
 Compute a tuple of (m, mg_slice, mc_slice, ell_slice) for all local m values.
 """
 function m_maps(b::SphereBasis, dist)
-    cache_key = (:m_maps, objectid(dist))
+    cache_key = (:m_maps, dist)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -4966,7 +4966,7 @@ end
 Return a dictionary mapping m -> Bool indicating whether ell ordering is reversed.
 """
 function ell_reversed(b::SphereBasis, dist)
-    cache_key = (:ell_reversed, objectid(dist))
+    cache_key = (:ell_reversed, dist)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -4988,7 +4988,7 @@ end
 Compute a tuple of (ell, m_slice, ell_slice) for all local ells in coeff space.
 """
 function ell_maps(b::SphereBasis, dist)
-    cache_key = (:ell_maps, objectid(dist))
+    cache_key = (:ell_maps, dist)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -5232,7 +5232,7 @@ Compute ell maps by delegating to the same logic as SphereBasis.ell_maps.
 In Python this calls SphereBasis.ell_maps(self, dist) as an unbound method.
 """
 function ell_maps(b::AbstractRegularityBasis, dist)
-    cache_key = (:ell_maps, objectid(dist))
+    cache_key = (:ell_maps, dist)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -5783,7 +5783,7 @@ function Base.:(==)(a::ShellRadialBasis, b::ShellRadialBasis)
     return a.coordsys == b.coordsys && a.grid_params == b.grid_params && a.k == b.k
 end
 
-Base.hash(b::ShellRadialBasis, h::UInt) = hash(objectid(b), h)
+Base.hash(b::ShellRadialBasis, h::UInt) = hash((b.coordsys, b.grid_params, b.k), h)
 
 # -- Basis algebra --
 
@@ -5944,7 +5944,7 @@ end
 Build (or retrieve cached) a transform plan for the shell radial direction.
 """
 function transform_plan(b::ShellRadialBasis, dist, grid_size, k)
-    cache_key = (:transform_plan, objectid(dist), grid_size, k)
+    cache_key = (:transform_plan, dist, grid_size, k)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -6293,7 +6293,7 @@ function Base.:(==)(a::BallRadialBasis, b::BallRadialBasis)
     return a.coordsys == b.coordsys && a.grid_params == b.grid_params && a.k == b.k
 end
 
-Base.hash(b::BallRadialBasis, h::UInt) = hash(objectid(b), h)
+Base.hash(b::BallRadialBasis, h::UInt) = hash((b.coordsys, b.grid_params, b.k), h)
 
 # -- Basis algebra --
 
@@ -6443,7 +6443,7 @@ Build (or retrieve cached) a transform plan for the ball radial direction.
 Dispatches to the registered transform library.
 """
 function transform_plan(b::BallRadialBasis, dist, grid_shape_val, regindex, axis, regtotal_val, k, alpha)
-    cache_key = (:transform_plan, objectid(dist), grid_shape_val, regindex, axis, regtotal_val, k, alpha)
+    cache_key = (:transform_plan, dist, grid_shape_val, regindex, axis, regtotal_val, k, alpha)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -6789,7 +6789,7 @@ end
 Delegate ell_reversed to the sphere_basis.
 """
 function ell_reversed(b::AbstractSpherical3DBasis, dist)
-    cache_key = (:ell_reversed_3d, objectid(dist))
+    cache_key = (:ell_reversed_3d, dist)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -6890,7 +6890,7 @@ Return the global grid spacing for the given subaxis.
 subaxis is 1-based (1=azimuth, 2=colatitude, 3=radius).
 """
 function global_grid_spacing(b::AbstractSpherical3DBasis, dist, subaxis, scales)
-    cache_key = (:global_grid_spacing, objectid(dist), subaxis, scales)
+    cache_key = (:global_grid_spacing, dist, subaxis, scales)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -6956,7 +6956,7 @@ end
 Return the local grid spacing for the given subaxis.
 """
 function local_grid_spacing(b::AbstractSpherical3DBasis, dist, subaxis, scales)
-    cache_key = (:local_grid_spacing, objectid(dist), subaxis, scales)
+    cache_key = (:local_grid_spacing, dist, subaxis, scales)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -7019,20 +7019,6 @@ function conversion_matrix(b::AbstractSpherical3DBasis, l, regtotal_val, dk)
     b._cache[cache_key] = result
     return result
 end
-
-"""
-    n_size(b::AbstractSpherical3DBasis, ell)
-
-Delegate to radial_basis.
-"""
-n_size(b::AbstractSpherical3DBasis, ell) = n_size(b.radial_basis, ell)
-
-"""
-    n_slice(b::AbstractSpherical3DBasis, ell)
-
-Delegate to radial_basis.
-"""
-n_slice(b::AbstractSpherical3DBasis, ell) = n_slice(b.radial_basis, ell)
 
 # -- Shape methods --
 
@@ -7357,7 +7343,7 @@ function Base.:(==)(a::ShellBasis, b::ShellBasis)
     return a.coordsys == b.coordsys && a.grid_params == b.grid_params && a.k == b.k
 end
 
-Base.hash(b::ShellBasis, h::UInt) = hash(objectid(b), h)
+Base.hash(b::ShellBasis, h::UInt) = hash((b.coordsys, b.grid_params, b.k), h)
 
 # -- Basis algebra --
 
@@ -7937,7 +7923,7 @@ function Base.:(==)(a::BallBasis, b::BallBasis)
     return a.coordsys == b.coordsys && a.grid_params == b.grid_params && a.k == b.k
 end
 
-Base.hash(b::BallBasis, h::UInt) = hash(objectid(b), h)
+Base.hash(b::BallBasis, h::UInt) = hash((b.coordsys, b.grid_params, b.k), h)
 
 # -- Basis algebra --
 
@@ -8010,7 +7996,7 @@ Build (or retrieve cached) a transform plan for the ball radial direction
 using the 3D ell maps.
 """
 function transform_plan(b::BallBasis, dist, grid_shape_val, regindex, axis, regtotal_val, k, alpha)
-    cache_key = (:transform_plan_ball_3d, objectid(dist), grid_shape_val, regindex, axis, regtotal_val, k, alpha)
+    cache_key = (:transform_plan_ball_3d, dist, grid_shape_val, regindex, axis, regtotal_val, k, alpha)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
