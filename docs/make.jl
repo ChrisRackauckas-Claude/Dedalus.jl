@@ -22,8 +22,7 @@ function preprocess_example(content::AbstractString)
     m_open = match(r"^(\s*)\"\"\"", content)
     m_open === nothing && return content
 
-    leading_ws = m_open.captures[1]
-    open_end   = m_open.offset + length(m_open.match)  # position right after opening """
+    open_end   = m_open.offset + ncodeunits(m_open.match)  # position right after opening """
 
     # Locate the closing """ that ends the docstring
     close_idx = findnext("\"\"\"", content, open_end)
@@ -165,7 +164,7 @@ makedocs(;
         ],
     ],
     doctest  = false,
-    warnonly = [:missing_docs, :cross_references, :parse_error],
+    warnonly = [:missing_docs, :parse_error],
 )
 
 @info "Documentation build complete"

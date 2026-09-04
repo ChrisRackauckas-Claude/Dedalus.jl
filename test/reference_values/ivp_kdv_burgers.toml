@@ -2,6 +2,7 @@
 example = "ivp_1d_kdv_burgers"
 source = "Analytical: initial condition is exact; early evolution should preserve smoothness"
 tolerance_rtol = 1e-3
+relative_change_tolerance = 0.1
 
 [parameters]
 Lx = 10.0

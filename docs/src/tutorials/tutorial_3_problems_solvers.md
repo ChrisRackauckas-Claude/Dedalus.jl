@@ -183,7 +183,7 @@ eigenvectors are generally complex.
 
 **After solving**: The eigenvalues are accessible through `solver.eigenvalues`,
 and the eigenvectors can be loaded into the problem fields using
-`solver.set_state(index)`.
+`set_state!(solver, index)`.
 
 ## Initial Value Problems (IVP)
 
@@ -253,7 +253,7 @@ b["g"] .*= z .* (Lz .- z)   # Damp noise at walls
 b["g"] .+= Lz .- z           # Add linear background
 
 # Main loop
-while solver.proceed
+while proceed(solver)
     step!(solver, max_timestep)
     if solver.iteration % 100 == 0
         @info "Iteration=$(solver.iteration), Time=$(solver.sim_time)"
@@ -278,8 +278,8 @@ built in and does not need to be defined in the namespace (unlike for EVP,
 where `dt` must be redefined to map to the eigenvalue).
 
 **Stopping conditions**: Set `solver.stop_sim_time`, `solver.stop_wall_time`,
-or `solver.stop_iteration` to control when the loop ends.  The `solver.proceed`
-property checks all stopping conditions.
+or `solver.stop_iteration` to control when the loop ends.  The `proceed(solver)`
+function checks all stopping conditions.
 
 **Time stepping**: Call `step!(solver, dt)` to advance by one timestep of size
 `dt`.  For adaptive time-stepping, use the `CFL` object (see
@@ -306,32 +306,36 @@ using Dedalus
 coords = SphericalCoordinates("phi", "theta", "r")
 dist = Distributor(coords; dtype=Float64)
 ball = BallBasis(coords, (1, 1, 64), Float64; radius=1.0)
-# ... (see the nlbvp_ball_lane_emden example for the full setup)
+
+# Fields
+f = Field(dist, bases=ball; dtype=Float64)
+tau = Field(dist; dtype=Float64)
+n = 3.0
+
+# Initial guess
+_, _, r = local_grids(dist, ball)
+R0 = 1.0
+f["g"] = @. R0^(2/(n-1)) * (1 - r^2)^2
+
+# Problem and equations
+problem = NLBVP([f, tau]; namespace=@locals)
+add_equation!(problem, "lap(f) - f^n + lift(tau, -1) = 0")
+add_equation!(problem, "f(r=0) = 1")
+
+# Newton iteration
+solver = build_solver(problem)
+for i in 1:20
+    newton_iteration!(solver)
+    if solver.perturbation_norm < 1e-10
+        break
+    end
+end
 ```
 
 For NLBVPs, the key difference is that **all terms go on the left-hand side**
-and the right-hand side is zero:
-
-```julia
-problem = NLBVP([f, tau]; namespace=@locals)
-add_equation!(problem, "lap(f) + f^n + lift(tau, -1) = 0")
-add_equation!(problem, "f(r=0) = 1")
-```
-
-The solver iterates until convergence:
-
-```julia
-solver = build_solver(problem)
-
-# Set initial guess
-f["g"] = 1.0  # Uniform initial guess
-
-# Newton iteration
-for i in 1:20
-    solve!(solver)
-    # Check convergence (the solver updates fields in-place)
-end
-```
+and the right-hand side is zero.  The solver uses Newton iteration via
+`newton_iteration!(solver)` and converges when `solver.perturbation_norm`
+drops below a tolerance.
 
 ## Equation Syntax Reference
 

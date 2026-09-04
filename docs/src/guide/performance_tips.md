@@ -123,8 +123,8 @@ loop:
 # Good: pre-allocated outside the loop
 flow = GlobalArrayReducer(dist)
 
-while solver.proceed
-    solver.step!(dt)
+while proceed(solver)
+    step!(solver, dt)
     if solver.iteration % 10 == 0
         max_u = reduce_scalar(flow, abs.(u["g"]), maximum)
     end
@@ -151,8 +151,13 @@ If compile times are a pain during development, consider using
 ## Matrix Solver Selection
 
 The implicit solve at each time step (or Runge-Kutta stage) factors and solves a
-sparse linear system. Dedalus.jl defaults to `SuperLUColamdSpsolve`. For some
-problems, other solvers may be faster:
+sparse linear system. Dedalus.jl defaults to `SuperLUColamdSpsolve`. Available
+alternatives include:
+
+- **`UmfpackSpsolve`** -- UMFPACK-based solver; can be faster for certain sparsity patterns.
+- **`BandedLAPACK`** -- efficient for banded matrices arising from 1D problems.
+- **`SPQRSolve`** -- QR-based sparse solver; useful for least-squares problems.
+- **`SparseInverse`** -- sparse inverse solver for specialized use cases.
 
 Configure in `dedalus.toml`:
 

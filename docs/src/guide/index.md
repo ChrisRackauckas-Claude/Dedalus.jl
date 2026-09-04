@@ -1,4 +1,4 @@
-# Guide
+# User Guide
 
 Welcome to the Dedalus.jl guide. These pages cover the core concepts, techniques, and
 practical considerations for solving PDEs with Dedalus.jl.

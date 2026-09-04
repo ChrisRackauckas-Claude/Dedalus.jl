@@ -38,7 +38,8 @@ const REFDIR = joinpath(@__DIR__, "reference_values")
 
         for i in eachindex(expected)
             if expected[i] == 0.0
-                @test abs(computed[i]) < 1e-10
+                atol_zero = ref["metadata"]["tolerance_atol_zero"]
+                @test abs(computed[i]) < atol_zero
             else
                 @test isapprox(computed[i], expected[i]; rtol=rtol)
             end
@@ -134,7 +135,7 @@ const REFDIR = joinpath(@__DIR__, "reference_values")
         # Time-step a few iterations
         solver = build_solver(problem, SBDF2)
         solver.stop_sim_time = dt * num_steps
-        while solver.proceed
+        while proceed(solver)
             step!(solver, dt)
         end
 
@@ -148,7 +149,8 @@ const REFDIR = joinpath(@__DIR__, "reference_values")
         # (at t=0.02 with small viscosity and dispersion, the soliton should
         # only have shifted slightly)
         relative_change = norm(u_data_final - u_initial) / norm(u_initial)
-        @test relative_change < 0.1
+        drift_tol = ref["metadata"]["relative_change_tolerance"]
+        @test relative_change < drift_tol
     end
 
     @testset "NLBVP: Lane-Emden n=3 (R against Boyd reference)" begin
@@ -173,13 +175,13 @@ const REFDIR = joinpath(@__DIR__, "reference_values")
         add_equation!(problem, "lap(f) + lift(tau) = - f^n")
         add_equation!(problem, "f(r=1) = 0")
 
-        phi, theta, r = local_grids(dist, ball)
+        _, _, r = local_grids(dist, ball)
         R0 = 5
         f["g"] = @. R0^(2/(n-1)) * (1 - r^2)^2
 
         solver = build_solver(problem; ncc_cutoff=1e-3)
         pert_norm = Inf
-        max_iter = 30
+        max_iter = ref["parameters"]["max_iter"]
         iter_count = 0
         while pert_norm > tol && iter_count < max_iter
             newton_iteration!(solver)

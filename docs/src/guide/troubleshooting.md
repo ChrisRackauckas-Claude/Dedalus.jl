@@ -106,7 +106,7 @@ for several reasons:
 
 ```julia
 for iter in 1:max_iterations
-    solver.newton_iteration!()
+    newton_iteration!(solver)
     @info "Iteration $iter: perturbation = $(solver.perturbation_norm)"
     if solver.perturbation_norm < tolerance
         break

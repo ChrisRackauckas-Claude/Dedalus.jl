@@ -29,7 +29,7 @@ install in development mode:
 
 ```julia
 using Pkg
-Pkg.develop(url="https://github.com/your-org/Dedalus.jl.git")
+Pkg.develop(url="https://github.com/DedalusProject/Dedalus.jl.git")
 ```
 
 Or, if you have already cloned the repository locally:

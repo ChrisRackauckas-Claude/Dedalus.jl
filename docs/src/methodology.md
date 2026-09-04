@@ -67,7 +67,7 @@ and ``P_k`` are polynomials from an appropriate basis.  The tau variables are
 determined jointly with the solution coefficients by the full system (PDE
 equations + boundary conditions).
 
-In Dedalus.jl, tau terms are added using the [`lift`](@ref) function, which
+In Dedalus.jl, tau terms are added using the [`Lift`](@ref) operator, which
 lifts a lower-dimensional field (the tau variable) into the equation's function
 space:
 

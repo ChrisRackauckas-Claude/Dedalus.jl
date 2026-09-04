@@ -1,4 +1,4 @@
-# Tutorial 4: Analysis and Output
+# [Tutorial 4: Analysis and Output](@id tutorial_analysis)
 
 This tutorial covers Dedalus.jl's analysis framework for saving simulation
 data and monitoring flow properties during time-stepping.
@@ -54,7 +54,7 @@ cfl = CFL(
 add_velocity!(cfl, u)
 
 # In the time-stepping loop:
-while solver.proceed
+while proceed(solver)
     dt = compute_timestep(cfl)
     step!(solver, dt)
 end
@@ -78,7 +78,7 @@ flow = GlobalFlowProperty(solver; cadence=10)
 add_property!(flow, sqrt(DotProduct(u, u)) / nu; name="Re")
 
 # In the time-stepping loop:
-while solver.proceed
+while proceed(solver)
     dt = compute_timestep(cfl)
     step!(solver, dt)
     if (solver.iteration - 1) % 10 == 0
@@ -131,7 +131,7 @@ add_property!(flow, sqrt(DotProduct(u, u)) / nu; name="Re")
 # Main loop
 try
     @info "Starting main loop"
-    while solver.proceed
+    while proceed(solver)
         timestep = compute_timestep(cfl)
         step!(solver, timestep)
         if (solver.iteration - 1) % 10 == 0

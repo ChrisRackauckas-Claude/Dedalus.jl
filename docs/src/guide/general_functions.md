@@ -67,8 +67,8 @@ configuration key `ncc_cutoff` (default `1e-6`). This keeps the product matrices
 sparse.
 
 The maximum number of retained NCC terms can also be limited with `max_ncc_terms`.
-Both settings live in the `dedalus.toml` configuration file under the
-`[linear_algebra]` section. See [Configuration](@ref configuration) for details.
+Both are keyword arguments to the solver constructors (e.g.,
+`build_solver(problem, ts; ncc_cutoff=1e-8, max_ncc_terms=20)`).
 
 !!! warning "Insufficient NCC resolution"
     If the NCC has fine spatial structure, the default cutoff may discard important
@@ -112,3 +112,36 @@ and `curl` in curvilinear coordinates work without user intervention.
 5. **Check NCC bandwidth.** After building the solver, inspect the NCC product
    matrices to verify they are sufficiently sparse. Dense NCC matrices dominate
    the cost of implicit solves.
+
+## The GeneralFunction Wrapper
+
+For operations that cannot be expressed as NCCs or built-in operators, Dedalus.jl
+provides the `UnaryGridFunction` type for wrapping arbitrary pointwise functions
+that operate on grid data.
+
+### UnaryGridFunction
+
+`UnaryGridFunction` wraps a Julia function that applies elementwise to a field's
+grid data:
+
+```julia
+using Dedalus
+
+abs_op = UnaryGridFunction(abs, u)
+```
+
+The wrapped function receives the field's grid-space data and must return an array
+of the same shape. `UnaryGridFunction` is used internally by the framework for
+operations like `abs`, `sign`, and other pointwise transformations.
+
+### GeneralFunction
+
+`GeneralFunction` is a more flexible wrapper intended for user-defined operations
+that may depend on multiple arguments and layouts. It takes keyword arguments
+specifying the function, the arguments, and the expected layout:
+
+```julia
+gf = GeneralFunction(func, args...; kw...)
+```
+
+Refer to the example scripts and API reference for detailed usage.

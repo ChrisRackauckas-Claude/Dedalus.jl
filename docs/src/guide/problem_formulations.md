@@ -95,7 +95,7 @@ of them. The system is assembled once and solved with a sparse direct solver.
 problem = LBVP(variables; namespace=@locals)
 add_equation!(problem, "L*u = f")
 solver = build_solver(problem)
-solver.solve!()
+solve!(solver)
 ```
 
 Typical uses include Poisson problems, Helmholtz equations, and computing initial
@@ -129,7 +129,7 @@ add_equation!(problem, "G(u) = H(u)")
 solver = build_solver(problem)
 
 for iteration in 1:max_iterations
-    solver.newton_iteration!()
+    newton_iteration!(solver)
     if solver.perturbation_norm < tolerance
         break
     end

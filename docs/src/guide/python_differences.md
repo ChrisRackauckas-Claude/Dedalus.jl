@@ -55,8 +55,8 @@ Python Dedalus, mutation is implicit:
 | Add equation | `problem.add_equation("...")` | `add_equation!(problem, "...")` |
 | Fill random | `f.fill_random('g')` | `fill_random!(f; layout="g")` |
 | Build solver | `solver = problem.build_solver(ts)` | `solver = build_solver(problem, ts)` |
-| Solver step | `solver.step(dt)` | `solver.step!(dt)` |
-| Newton step | `solver.newton_iteration()` | `solver.newton_iteration!()` |
+| Solver step | `solver.step(dt)` | `step!(solver, dt)` |
+| Newton step | `solver.newton_iteration()` | `newton_iteration!(solver)` |
 
 ## Problem Construction
 
