@@ -137,6 +137,9 @@ export CNAB1, CNAB2, MCNAB2, CNLF2, SBDF1, SBDF2, SBDF3, SBDF4,
 export SphericalEllOperator, SphericalGradient, SphericalDivergence,
        SphericalCurl, SphericalLaplacian, SphericalEllProduct
 
+# Spherical basis helpers (Milestone 3)
+export S2_basis, radial_basis, get_radial_basis
+
 # MPI distribution
 export GlobalArrayReducer, AlltoallvTranspose
 

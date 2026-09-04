@@ -6747,6 +6747,13 @@ Return the radial basis component.
 get_radial_basis(b::AbstractSpherical3DBasis) = b.radial_basis
 
 """
+    radial_basis(b::AbstractSpherical3DBasis)
+
+Return the radial basis component (convenience alias for get_radial_basis).
+"""
+radial_basis(b::AbstractSpherical3DBasis) = b.radial_basis
+
+"""
     S2_basis(b::AbstractSpherical3DBasis; radius=nothing)
 
 Return (or construct) the SphereBasis for this 3D basis at the given radius.
@@ -8228,6 +8235,7 @@ export AbstractSpherical3DBasis,
        BallBasis,
        ConvertRegularity,
        S2_basis,
+       radial_basis,
        ell_maps,
        ell_reversed,
        meridional_basis,

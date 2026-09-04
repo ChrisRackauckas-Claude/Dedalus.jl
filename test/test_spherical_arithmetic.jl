@@ -82,7 +82,7 @@ using Dedalus
             dealias in dealias_range
         try
             c, d, b, phi, theta, r, x, y, z = build_shell(Nphi, Ntheta, Nr, dealias, ComplexF64)
-            c_S2 = S2coordsys(c)
+            c_S2 = c.S2coordsys
             v0 = VectorField(d, c, bases=(b,), dtype=ComplexF64)
             preset_scales!(v0, dealias)
             phi2, theta2, r2 = local_grids(d, b, scales=dealias)
@@ -121,7 +121,7 @@ using Dedalus
             c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, ComplexF64)
             f = Field(d, bases=(b,), dtype=ComplexF64)
             f["g"] = z
-            ez = evaluate(Gradient(f, c))
+            ez = evaluate(gradient(f, c))
             u = VectorField(d, c, bases=(b,), dtype=ComplexF64)
             u["g"][3, :, :, :] = @. (6 * x^2 + 4 * y * z) / r
             u["g"][2, :, :, :] = @. -2 * (y^3 + x^2 * (y - 3 * z) - y * z^2) / (r^2 * sin(theta))
@@ -151,7 +151,7 @@ using Dedalus
             c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, ComplexF64)
             f = Field(d, bases=(b,), dtype=ComplexF64)
             f["g"] = z
-            ez = evaluate(Gradient(f, c))
+            ez = evaluate(gradient(f, c))
             u = VectorField(d, c, bases=(b,), dtype=ComplexF64)
             u["g"][3, :, :, :] = @. (6 * x^2 + 4 * y * z) / r
             u["g"][2, :, :, :] = @. -2 * (y^3 + x^2 * (y - 3 * z) - y * z^2) / (r^2 * sin(theta))
@@ -295,7 +295,7 @@ using Dedalus
             f = Field(d, bases=(b,), dtype=ComplexF64)
             preset_scales!(f, dealias)
             f["g"] = @. x2^3 + 2 * y2^3 + 3 * z2^3
-            u = evaluate(Gradient(f, c))
+            u = evaluate(gradient(f, c))
             v = evaluate(f * u)
             # vg = f['g'][None,...] * u['g']  =>  broadcast scalar over component dim
             vg = reshape(f["g"], 1, size(f["g"])...) .* u["g"]
@@ -319,7 +319,7 @@ using Dedalus
             c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, ComplexF64)
             f = Field(d, bases=(b,), dtype=ComplexF64)
             f["g"] = @. x^3 + 2 * y^3 + 3 * z^3
-            u = evaluate(Gradient(f, c))
+            u = evaluate(gradient(f, c))
             T = evaluate(u * u)
             # Python: Tg = u['g'][None,...] * u['g'][:,None,...]
             # u is [3, Nphi, Ntheta, Nr], result is [3, 3, Nphi, Ntheta, Nr]
@@ -345,8 +345,8 @@ using Dedalus
             c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, ComplexF64)
             f = Field(d, bases=(b,), dtype=ComplexF64)
             f["g"] = @. x^3 + 2 * y^3 + 3 * z^3
-            u = evaluate(Gradient(f, c))
-            T = evaluate(Gradient(u, c))
+            u = evaluate(gradient(f, c))
+            T = evaluate(gradient(u, c))
             Q = evaluate(u * T)
             # Python: Qg = u['g'][:,None,None,...] * T['g'][None,...]
             # u is [3, Nphi, Ntheta, Nr], T is [3, 3, Nphi, Ntheta, Nr]
@@ -374,8 +374,8 @@ using Dedalus
             c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, dealias, ComplexF64)
             f = Field(d, bases=(b,), dtype=ComplexF64)
             f["g"] = @. x^3 + 2 * y^3 + 3 * z^3
-            u = evaluate(Gradient(f, c))
-            T = evaluate(Gradient(u, c))
+            u = evaluate(gradient(f, c))
+            T = evaluate(gradient(u, c))
             Q = evaluate(T * T)
             # Python: Qg = T['g'][:,:,None,None,...] * T['g'][None,None,...]
             # T is [3, 3, Nphi, Ntheta, Nr]

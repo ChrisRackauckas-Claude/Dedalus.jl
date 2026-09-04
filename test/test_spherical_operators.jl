@@ -89,7 +89,7 @@ using Dedalus
             f = Field(d, bases=(b,), dtype=T)
             preset_scales!(f, dealias)
             f["g"] = @. 3 * x^2 + 2 * y * z
-            u = evaluate(Gradient(f, c))
+            u = evaluate(gradient(f, c))
             uk0 = VectorField(d, c, bases=(b,), dtype=T)
             preset_scales!(uk0, dealias)
             uk0["g"] = u["g"]
@@ -125,7 +125,7 @@ using Dedalus
             c, d, b, phi, theta, r, x, y, z = basis_fn(Nphi, Ntheta, Nr, k, dealias, T)
             f = Field(d, dtype=T)
             f["g"] = 1
-            g = evaluate(Convert(f, b))
+            g = evaluate(convert_operand(f, b))
             @test isapprox(f["g"], g["g"], atol=1e-12)
         catch e
             @test_broken false
@@ -151,7 +151,7 @@ using Dedalus
                 f["g"][1, 1, :, :, :] .= 1
                 f["g"][2, 2, :, :, :] .= 1
                 f["g"][3, 3, :, :, :] .= 1
-                g = evaluate(Convert(f, b))
+                g = evaluate(convert_operand(f, b))
                 isapprox(f["g"], g["g"], atol=1e-12)
             end
         catch e
@@ -177,7 +177,7 @@ using Dedalus
             f = Field(d, bases=(b,), dtype=T)
             preset_scales!(f, dealias)
             f["g"] = @. 3 * x^2 + 2 * y * z
-            g = evaluate(Laplacian(f, c))
+            g = evaluate(laplacian(f, c))
             change_layout!(f, layout)
             change_layout!(g, layout)
             h = evaluate(f + g)
@@ -208,7 +208,7 @@ using Dedalus
             u["g"][3, :, :, :] = @. r^2 * st * (2 * ct^2 * cp - r * ct^3 * sp + r^3 * cp^3 * st^5 * sp^3 + r * ct * st^2 * (cp^3 + sp^3))
             u["g"][2, :, :, :] = @. r^2 * (2 * ct^3 * cp - r * cp^3 * st^4 + r^3 * ct * cp^3 * st^5 * sp^3 - 1 / 16 * r * sin(2 * theta)^2 * (-7 * sp + sin(3 * phi)))
             u["g"][1, :, :, :] = @. r^2 * sp * (-2 * ct^2 + r * ct * cp * st^2 * sp - r^3 * cp^2 * st^5 * sp^3)
-            v = evaluate(Laplacian(u, c))
+            v = evaluate(laplacian(u, c))
             change_layout!(u, layout)
             change_layout!(v, layout)
             w = evaluate(u + v)
@@ -239,10 +239,10 @@ using Dedalus
             u["g"][3, :, :, :] = @. r^2 * st * (2 * ct^2 * cp - r * ct^3 * sp + r^3 * cp^3 * st^5 * sp^3 + r * ct * st^2 * (cp^3 + sp^3))
             u["g"][2, :, :, :] = @. r^2 * (2 * ct^3 * cp - r * cp^3 * st^4 + r^3 * ct * cp^3 * st^5 * sp^3 - 1 / 16 * r * sin(2 * theta)^2 * (-7 * sp + sin(3 * phi)))
             u["g"][1, :, :, :] = @. r^2 * sp * (-2 * ct^2 + r * ct * cp * st^2 * sp - r^3 * cp^2 * st^5 * sp^3)
-            Tf = evaluate(Gradient(u, c))
+            Tf = evaluate(gradient(u, c))
             fg = Tf["g"][1, 1, :, :, :] .+ Tf["g"][2, 2, :, :, :] .+ Tf["g"][3, 3, :, :, :]
             change_layout!(Tf, layout)
-            f = evaluate(Trace(Tf))
+            f = evaluate(trace_op(Tf))
             @test isapprox(f["g"], fg, atol=1e-12)
         catch e
             @test_broken false
@@ -271,7 +271,6 @@ using Dedalus
             I_field["g"][1, 1, :, :, :] .= 1
             I_field["g"][2, 2, :, :, :] .= 1
             I_field["g"][3, 3, :, :, :] .= 1
-            trace_op = A -> Trace(A)
             problem = LBVP([f])
             add_equation!(problem, (trace_op(I_field * f), 3 * g))
             solver = build_solver(problem)
@@ -303,7 +302,6 @@ using Dedalus
                 g["g"] = @. 3 * x^2 + 2 * y * z
                 I_field = TensorField(d, (c, c), dtype=T)
                 I_field["g"][1, 1] = 1; I_field["g"][2, 2] = 1; I_field["g"][3, 3] = 1
-                trace_op = A -> Trace(A)
                 problem = LBVP([f])
                 add_equation!(problem, (trace_op(I_field * f), 3 * g))
                 solver = build_solver(problem)
@@ -336,12 +334,12 @@ using Dedalus
             u["g"][3, :, :, :] = @. r^2 * st * (2 * ct^2 * cp - r * ct^3 * sp + r^3 * cp^3 * st^5 * sp^3 + r * ct * st^2 * (cp^3 + sp^3))
             u["g"][2, :, :, :] = @. r^2 * (2 * ct^3 * cp - r * cp^3 * st^4 + r^3 * ct * cp^3 * st^5 * sp^3 - 1 / 16 * r * sin(2 * theta)^2 * (-7 * sp + sin(3 * phi)))
             u["g"][1, :, :, :] = @. r^2 * sp * (-2 * ct^2 + r * ct * cp * st^2 * sp - r^3 * cp^2 * st^5 * sp^3)
-            Tf = evaluate(Gradient(u, c))
+            Tf = evaluate(gradient(u, c))
             # Python: np.transpose(T['g'], (1,0,2,3,4))
             # In Julia: permutedims(T, (2,1,3,4,5))
             Tg = permutedims(copy(Tf["g"]), (2, 1, 3, 4, 5))
             change_layout!(Tf, layout)
-            Tf = evaluate(TransposeComponents(Tf))
+            Tf = evaluate(transpose_components(Tf))
             @test isapprox(Tf["g"], Tg, atol=1e-12)
         catch e
             @test_broken false
@@ -371,7 +369,7 @@ using Dedalus
             f = Field(d, bases=(b,), dtype=T)
             preset_scales!(f, dealias)
             f["g"] = @. r^2 + x + z
-            h = evaluate(Average(f, azimuth_coord(c)))
+            h = evaluate(average(f, c.azimuth))
             hg = @. r^2 + z
             @test isapprox(h["g"], hg, atol=1e-12)
         catch e
@@ -394,7 +392,7 @@ using Dedalus
             f = Field(d, bases=(b,), dtype=T)
             preset_scales!(f, dealias)
             f["g"] = @. r^2 + x + z
-            h = evaluate(Average(f, S2coordsys(c)))
+            h = evaluate(average(f, c.S2coordsys))
             hg = @. r^2
             @test isapprox(h["g"], hg, atol=1e-12)
         catch e
@@ -418,7 +416,7 @@ using Dedalus
             f = Field(d, bases=(b,), dtype=T)
             preset_scales!(f, dealias)
             f["g"] = @. r^(2 * n)
-            h = evaluate(Integrate(f, c))
+            h = evaluate(integrate(f, c))
             if bname == "ball"
                 r_inner, r_outer = 0.0, radius_ball
             else
@@ -749,7 +747,7 @@ using Dedalus
             u["g"][3, :, :, :] = @. r^2 * st * (2 * ct^2 * cp - r * ct^3 * sp + r^3 * cp^3 * st^5 * sp^3 + r * ct * st^2 * (cp^3 + sp^3))
             u["g"][2, :, :, :] = @. r^2 * (2 * ct^3 * cp - r * cp^3 * st^4 + r^3 * ct * cp^3 * st^5 * sp^3 - 1 / 16 * r * sin(2 * theta)^2 * (-7 * sp + sin(3 * phi)))
             u["g"][1, :, :, :] = @. r^2 * sp * (-2 * ct^2 + r * ct * cp * st^2 * sp - r^3 * cp^2 * st^5 * sp^3)
-            v = evaluate(RadialComponent(interpolate(u; r=rad)))
+            v = evaluate(radial_component(interpolate(u; r=rad)))
             vg = @. rad^2 * st * (2 * ct^2 * cp - rad * ct^3 * sp + rad^3 * cp^3 * st^5 * sp^3 + rad * ct * st^2 * (cp^3 + sp^3))
             @test isapprox(v["g"], vg, atol=1e-12)
         catch e
@@ -781,7 +779,7 @@ using Dedalus
             Tf["g"][2, 1, :, :, :] = @. -2 * x * (x^2 + y^2 + 3 * y * z) / (r^3 * sin(theta)^2)
             Tf["g"][1, 2, :, :, :] = Tf["g"][2, 1, :, :, :]
             Tf["g"][1, 1, :, :, :] = @. 6 * y^2 / (x^2 + y^2)
-            A = evaluate(RadialComponent(interpolate(Tf; r=rad)))
+            A = evaluate(radial_component(interpolate(Tf; r=rad)))
             Ag = zero(A["g"])
             # The radial component is the last row (index 3 in Julia = index 2 in Python)
             # of the tensor evaluated at r=radius, which does not depend on r for this test function.
@@ -813,7 +811,7 @@ using Dedalus
             u["g"][3, :, :, :] = @. r^2 * st * (2 * ct^2 * cp - r * ct^3 * sp + r^3 * cp^3 * st^5 * sp^3 + r * ct * st^2 * (cp^3 + sp^3))
             u["g"][2, :, :, :] = @. r^2 * (2 * ct^3 * cp - r * cp^3 * st^4 + r^3 * ct * cp^3 * st^5 * sp^3 - 1 / 16 * r * sin(2 * theta)^2 * (-7 * sp + sin(3 * phi)))
             u["g"][1, :, :, :] = @. r^2 * sp * (-2 * ct^2 + r * ct * cp * st^2 * sp - r^3 * cp^2 * st^5 * sp^3)
-            v = evaluate(AngularComponent(interpolate(u; r=rad)))
+            v = evaluate(angular_component(interpolate(u; r=rad)))
             vg = zero(v["g"])
             vg[1, :, :] = @. rad^2 * sp * (-2 * ct^2 + rad * ct * cp * st^2 * sp - rad^3 * cp^2 * st^5 * sp^3)
             vg[2, :, :] = @. rad^2 * (2 * ct^3 * cp - rad * cp^3 * st^4 + rad^3 * ct * cp^3 * st^5 * sp^3 - 1 / 16 * rad * sin(2 * theta)^2 * (-7 * sp + sin(3 * phi)))
@@ -847,7 +845,7 @@ using Dedalus
             Tf["g"][2, 1, :, :, :] = @. -2 * x * (x^2 + y^2 + 3 * y * z) / (r^3 * sin(theta)^2)
             Tf["g"][1, 2, :, :, :] = Tf["g"][2, 1, :, :, :]
             Tf["g"][1, 1, :, :, :] = @. 6 * y^2 / (x^2 + y^2)
-            A = evaluate(AngularComponent(interpolate(Tf; r=rad); index=2))
+            A = evaluate(angular_component(interpolate(Tf; r=rad); index=2))
             Ag = zero(A["g"])
             # Angular component with index=1 (Python index=1) extracts the angular-radial block
             # In Python: A['g'][2,1], A['g'][2,0], A['g'][1,1], A['g'][1,0], A['g'][0,1], A['g'][0,0]

@@ -51,7 +51,7 @@ using Dedalus
         elseif rank == 1
             return DotProduct(field_val, field_val)
         elseif rank == 2
-            return Trace(DotProduct(field_val, field_val))
+            return trace_op(DotProduct(field_val, field_val))
         end
     end
 
