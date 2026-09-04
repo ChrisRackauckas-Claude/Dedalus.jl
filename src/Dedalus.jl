@@ -90,6 +90,8 @@ include("core/evaluator.jl")
 # Layer 9: Extras
 # ============================================================
 include("extras/flow_tools.jl")
+include("extras/plot_tools.jl")
+include("extras/quick_domains.jl")
 
 # ============================================================
 # Public API exports (matching Python dedalus/public.py)
@@ -112,10 +114,13 @@ export differentiate, interpolate, integrate, average, lift,
        radial_component, angular_component, azimuthal_component,
        grid_op, coeff_op, time_derivative, convert_operand
 
-# Basis types (1D from Milestone 1, 2D curvilinear from Milestone 2)
+# Basis types (1D from Milestone 1, 2D curvilinear from Milestone 2, 3D from Milestone 3)
 export Jacobi, ChebyshevT, ChebyshevU, Legendre, Ultraspherical,
        ComplexFourier, RealFourier, Fourier,
-       DiskBasis, AnnulusBasis, SphereBasis
+       DiskBasis, AnnulusBasis, SphereBasis,
+       ShellBasis, BallBasis,
+       AbstractRegularityBasis, ShellRadialBasis, BallRadialBasis,
+       AbstractSpherical3DBasis, ConvertRegularity
 
 # Problems
 export IVP, EVP, LBVP, NLBVP
@@ -128,8 +133,31 @@ export LinearBoundaryValueSolver, EigenvalueSolver,
 export CNAB1, CNAB2, MCNAB2, CNLF2, SBDF1, SBDF2, SBDF3, SBDF4,
        RK111, RK222, RK443, RKSMR, RKGFY
 
-# Extras
+# Spherical operators (Milestone 3)
+export SphericalEllOperator, SphericalGradient, SphericalDivergence,
+       SphericalCurl, SphericalLaplacian, SphericalEllProduct
+
+# Spherical basis helpers (Milestone 3)
+export S2_basis, radial_basis, get_radial_basis
+
+# MPI distribution
+export GlobalArrayReducer, AlltoallvTranspose
+
+# Extras – flow tools
 export CFL, GlobalFlowProperty
+
+# Extras – plot tools
+export FieldWrapper, DimWrapper,
+       PlotBox, xbox, ybox,
+       PlotFrame, bottom_left, top_right,
+       MultiFigure, subfigure_axes,
+       get_1d_vertices, quad_mesh, pad_limits, get_plane,
+       plot_bot, plot_bot_2d, plot_bot_3d
+
+# Extras – quick domains
+export quick_fourier, quick_chebyshev,
+       quick_fourier_2d, quick_fourier_3d,
+       quick_channel_2d, quick_channel_3d
 
 # Warn if threading is not disabled
 if get(ENV, "OMP_NUM_THREADS", "") != "1"

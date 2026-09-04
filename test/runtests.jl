@@ -40,6 +40,25 @@ using Dedalus
         @test isdefined(Dedalus, :Intertwiner)
     end
 
+    @testset "Milestone 3 types exist" begin
+        @test isdefined(Dedalus, :BallBasis)
+        @test isdefined(Dedalus, :ShellBasis)
+        @test isdefined(Dedalus, :SphericalCoordinates)
+        @test isdefined(Dedalus, :SphericalGradient)
+        @test isdefined(Dedalus, :SphericalDivergence)
+        @test isdefined(Dedalus, :SphericalCurl)
+        @test isdefined(Dedalus, :SphericalLaplacian)
+        @test isdefined(Dedalus, :SphericalEllProduct)
+        @test isdefined(Dedalus, :CrossProduct)
+        @test isdefined(Dedalus, :DotProduct)
+        @test isdefined(Dedalus, :CartesianTransposeComponents)
+        @test isdefined(Dedalus, :CartesianTrace)
+        @test isdefined(Dedalus, :RadialComponent)
+        @test isdefined(Dedalus, :AngularComponent)
+        @test isdefined(Dedalus, :S2_basis)
+        @test hasfield(SphericalCoordinates, :S2coordsys)
+    end
+
     # Individual test files (test_transforms.jl, test_lbvp.jl, etc.) are
     # present in test/ but require full operator/basis wiring to run.
     # They will be enabled as the operator framework matures.
@@ -52,4 +71,10 @@ using Dedalus
     include("test_sphere_calculus.jl")
     include("test_sphere_ncc.jl")
     include("test_cylinder_calculus.jl")
+
+    # Milestone 3 test files: 3D spherical (ball/shell) arithmetic, calculus, operators, NCC
+    include("test_spherical_arithmetic.jl")
+    include("test_spherical_calculus.jl")
+    include("test_spherical_operators.jl")
+    include("test_spherical_ncc.jl")
 end

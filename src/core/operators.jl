@@ -2076,7 +2076,9 @@ function curl(field; index=1)
         return 0
     end
     cs = field.tensorsig[index]
-    if isa(cs, CartesianCoordinates)
+    if isa(cs, SphericalCoordinates)
+        return SphericalCurl(field; index=index)
+    elseif isa(cs, CartesianCoordinates)
         return CartesianCurl(field; index=index)
     elseif isa(cs, DirectProduct)
         return DirectProductCurl(field; index=index)
@@ -2207,6 +2209,11 @@ export AbstractOperator, AbstractLinearOperator, SpectralOperator, SpectralOpera
        # Sphere differential operators (Group 5)
        SphereGradient, SphereDivergence, SphereLaplacian,
        sphere_basis_k,
+       # 3D Spherical operators (Group 6)
+       SphericalEllOperator,
+       SphericalGradient, SphericalDivergence, SphericalCurl,
+       SphericalLaplacian, SphericalEllProduct,
+       regindex_out,
        gradient, divergence, curl, laplacian,
        trace_op, transpose_components, grid_op, coeff_op,
        time_derivative, component,
@@ -3304,9 +3311,9 @@ function operate(op::SphericalTransposeComponents, out)
             out.data .= operand.data
             radial_basis = op.radial_basis
             ell_maps_val = ell_maps(op.input_basis, op.dist)
-            backward_regularity_recombination!(operand.tensorsig, radius_axis, out.data; ell_maps=ell_maps_val)
+            backward_regularity_recombination!(radial_basis, operand.tensorsig, radius_axis, out.data; ell_maps=ell_maps_val)
             out.data .= permutedims(out.data, collect(op.new_axis_order))
-            forward_regularity_recombination!(operand.tensorsig, radius_axis, out.data; ell_maps=ell_maps_val)
+            forward_regularity_recombination!(radial_basis, operand.tensorsig, radius_axis, out.data; ell_maps=ell_maps_val)
         end
     end
 end
@@ -4395,13 +4402,16 @@ end
 
 gradient(field, cs::PolarCoordinates) = PolarGradient(field, cs)
 gradient(field, cs::S2Coordinates) = SphereGradient(field, cs)
+gradient(field, cs::SphericalCoordinates) = SphericalGradient(field, cs)
 
 function divergence(field; index=1)
     if isa(field, Number) || field == 0
         return 0
     end
     cs = field.tensorsig[index]
-    if isa(cs, S2Coordinates)
+    if isa(cs, SphericalCoordinates)
+        return SphericalDivergence(field; index=index)
+    elseif isa(cs, S2Coordinates)
         return SphereDivergence(field; index=index)
     elseif isa(cs, PolarCoordinates)
         return PolarDivergence(field; index=index)
@@ -4418,7 +4428,9 @@ function laplacian(field, cs)
     if isa(field, Number) || field == 0
         return 0
     end
-    if isa(cs, S2Coordinates)
+    if isa(cs, SphericalCoordinates)
+        return SphericalLaplacian(field, cs)
+    elseif isa(cs, S2Coordinates)
         return SphereLaplacian(field, cs)
     elseif isa(cs, PolarCoordinates)
         return PolarLaplacian(field, cs)
@@ -4819,6 +4831,934 @@ function enforce_conditions(op::SphereLaplacian)
 end
 
 # ============================================================================
+# Group 6: 3D Spherical operators (SphericalEllOperator family)
+# ============================================================================
+
+# --------------------------------------------------------------------------
+# SphericalEllOperator — abstract base for 3D spherical operators
+# --------------------------------------------------------------------------
+
+"""
+    SphericalEllOperator <: SpectralOperator
+
+Abstract base type for operators on 3D spherical bases (ShellBasis, BallBasis)
+that depend on the spherical harmonic degree ell and couple only in the radial
+direction. These are the 3D analogues of PolarMOperator.
+
+`subaxis_dependence = [false, true, true]` — depends on ell and radial n.
+`subaxis_coupling = [false, false, true]` — couples only in radial direction.
+
+## Subtypes must implement
+- `regindex_out(op, regindex_in)` — return tuple of valid output regularity indices
+- `radial_matrix(op, regindex_in, regindex_out, ell)` — per-ell radial matrix
+- `_output_basis(input_basis)` — determine output basis from input
+
+## Subtypes must have fields
+- `operand`, `input_basis`, `output_basis`, `first_axis`, `last_axis`
+- `coordsys`, `radius_axis`
+- `tensorsig`, `dtype`, `domain`, `dist`
+- `args::Vector{Any}`
+"""
+abstract type SphericalEllOperator <: SpectralOperator end
+
+"""
+    regindex_out(op::SphericalEllOperator, regindex_in)
+
+Return a tuple of valid output regularity indices for the given input regularity index.
+Must be implemented by concrete SphericalEllOperator subtypes.
+"""
+function regindex_out(op::SphericalEllOperator, regindex_in)
+    error("regindex_out not implemented for type $(typeof(op))")
+end
+
+"""
+    radial_matrix(op::SphericalEllOperator, regindex_in, regindex_out, ell)
+
+Return the radial matrix for the given regularity indices and spherical harmonic degree ell.
+Must be implemented by concrete SphericalEllOperator subtypes.
+"""
+function radial_matrix(op::SphericalEllOperator, regindex_in, regindex_out, ell)
+    error("radial_matrix not implemented for type $(typeof(op))")
+end
+
+"""
+    _spherical_ell_get_radial_basis(op::SphericalEllOperator)
+
+Get the radial basis for a SphericalEllOperator.
+"""
+function _spherical_ell_get_radial_basis(op::SphericalEllOperator)
+    return get_radial_basis(op.input_basis)
+end
+
+"""
+    _spherical_ell_get_S2_basis(op::SphericalEllOperator)
+
+Get the S2 (sphere) basis for a SphericalEllOperator.
+"""
+function _spherical_ell_get_S2_basis(op::SphericalEllOperator)
+    return S2_basis(op.input_basis)
+end
+
+"""
+    operate(op::SphericalEllOperator, out)
+
+Explicit evaluation of a 3D spherical operator.
+
+Loops over regularity components and ell-maps, applying the per-ell radial matrix
+to each (m, ell) slice of the operand data.
+"""
+function operate(op::SphericalEllOperator, out)
+    operand = op.args[1]
+    if op.input_basis === nothing
+        basis = op.output_basis
+    else
+        basis = op.input_basis
+    end
+    radial_basis = _spherical_ell_get_radial_basis(op)
+    axis = last_axis(op.dist, radial_basis)
+    # Set output layout
+    preset_layout!(out, operand.layout)
+    out.data .= 0
+    # Apply operator
+    R_in = regularity_classes(radial_basis, operand.tensorsig)
+    ndim = length(size(operand.data)) - length(operand.tensorsig)
+    for idx_in in CartesianIndices(size(R_in))
+        regindex_in = Tuple(idx_in)
+        for regindex_out_val in regindex_out(op, regindex_in)
+            comp_in = operand.data[regindex_in...]
+            comp_out = out.data[regindex_out_val...]
+            for (ell, m_ind, ell_ind) in ell_maps(basis, op.dist)
+                allowed_in = regularity_allowed(radial_basis, ell, regindex_in)
+                allowed_out = regularity_allowed(radial_basis, ell, regindex_out_val)
+                if allowed_in && allowed_out
+                    n_sl = n_slice(radial_basis, ell)
+                    # Build slice tuple: axis-2 gets m_ind, axis-1 gets ell_ind, axis gets n_slice
+                    slices = ntuple(i -> i == (axis - 2) ? m_ind :
+                                        i == (axis - 1) ? ell_ind :
+                                        i == axis ? n_sl : Colon(), ndim)
+                    vec_in = view(comp_in, slices...)
+                    vec_out = view(comp_out, slices...)
+                    if length(vec_in) > 0 && length(vec_out) > 0
+                        A = radial_matrix(op, regindex_in, regindex_out_val, ell)
+                        vec_out .+= apply_matrix(A, collect(vec_in), axis)
+                    end
+                end
+            end
+        end
+    end
+end
+
+"""
+    subproblem_matrix(op::SphericalEllOperator, subproblem)
+
+Build the operator matrix for a specific subproblem.
+
+Constructs a block matrix over regularity components, where each nonzero block
+is built from Kronecker products of identity matrices with the per-ell
+radial matrix substituted at the radial axis.
+"""
+function subproblem_matrix(op::SphericalEllOperator, subproblem)
+    operand = op.args[1]
+    radial_basis = _spherical_ell_get_radial_basis(op)
+    R_in = regularity_classes(radial_basis, operand.tensorsig)
+    R_out = regularity_classes(radial_basis, op.tensorsig)
+    # subproblem group indices: last_axis-2 is m, last_axis-1 is ell (1-based)
+    m_val = subproblem.group[op.last_axis - 2]
+    ell_val = subproblem.group[op.last_axis - 1]
+    # Shortcut if empty
+    size_in = field_size(subproblem, op.operand)
+    size_out = field_size(subproblem, op)
+    if size_in == 0 || size_out == 0
+        return spzeros(size_out, size_in)
+    end
+    # Build identity matrices for each axis
+    subshape_in = coeff_shape(subproblem, operand.domain)
+    subshape_out = coeff_shape(subproblem, op.domain)
+    factors_template = [sparse(1.0I, subshape_out[i], subshape_in[i]) for i in eachindex(subshape_out)]
+    if ell_val === nothing
+        factors_template[op.last_axis - 1] = sparse(1.0I, 1, 1)
+    end
+    # Assemble block matrix over components
+    zero_block = spzeros(prod(subshape_out), prod(subshape_in))
+    submatrices = []
+    for idx_out in CartesianIndices(size(R_out))
+        regindex_out_val = Tuple(idx_out)
+        block_row = []
+        for idx_in in CartesianIndices(size(R_in))
+            regindex_in = Tuple(idx_in)
+            if ell_val === nothing
+                matrix = _coupled_ell_matrices(op, regindex_in, regindex_out_val, m_val)
+            else
+                matrix = _wrap_radial_matrix(op, regindex_in, regindex_out_val, ell_val; return_zeros=false)
+            end
+            if matrix === nothing
+                block = zero_block
+            else
+                factors = copy(factors_template)
+                factors[op.last_axis] = matrix
+                block = reduce(kron, factors; init=sparse(ones(1, 1)))
+            end
+            push!(block_row, block)
+        end
+        push!(submatrices, block_row)
+    end
+    # Assemble block matrix
+    nrows = length(submatrices)
+    ncols = length(submatrices[1])
+    block_mat = hvcat(
+        ntuple(_ -> ncols, nrows),
+        [submatrices[i][j] for i in 1:nrows for j in 1:ncols]...
+    )
+    return sparse(block_mat)
+end
+
+"""
+    _coupled_ell_matrices(op::SphericalEllOperator, regindex_in, regindex_out, m_val)
+
+Build a block-diagonal matrix over ells for a given m value.
+Used when ell is not specified (ell === nothing) in the subproblem group.
+"""
+function _coupled_ell_matrices(op::SphericalEllOperator, regindex_in, regindex_out_val, m_val)
+    basis = _spherical_ell_get_S2_basis(op)
+    ell_list = collect(abs(m_val):basis.Lmax)
+    ell_rev = ell_reversed(basis, op.dist)
+    if haskey(ell_rev, m_val) && ell_rev[m_val]
+        reverse!(ell_list)
+    end
+    ell_matrices = [_wrap_radial_matrix(op, regindex_in, regindex_out_val, ell; return_zeros=true) for ell in ell_list]
+    return sparse_block_diag(ell_matrices)
+end
+
+"""
+    _wrap_radial_matrix(op::SphericalEllOperator, regindex_in, regindex_out, ell; return_zeros=false)
+
+Get the radial matrix for a given (regindex_in, regindex_out, ell) triple,
+or return a zero matrix if the regularity is not allowed.
+"""
+function _wrap_radial_matrix(op::SphericalEllOperator, regindex_in, regindex_out_val, ell; return_zeros=false)
+    radial_basis = _spherical_ell_get_radial_basis(op)
+    if (regindex_out_val in regindex_out(op, regindex_in)) &&
+       regularity_allowed(radial_basis, ell, regindex_in) &&
+       regularity_allowed(radial_basis, ell, regindex_out_val)
+        return radial_matrix(op, regindex_in, regindex_out_val, ell)
+    elseif return_zeros
+        if basis_dim(op.input_basis) == 2
+            n_in = 1
+        else
+            n_in = n_size(radial_basis, ell)
+        end
+        if basis_dim(op.output_basis) == 2
+            n_out = 1
+        else
+            n_out = n_size(radial_basis, ell)
+        end
+        return spzeros(n_out, n_in)
+    else
+        return nothing
+    end
+end
+
+# --------------------------------------------------------------------------
+# SphericalGradient — gradient on 3D spherical domains
+# --------------------------------------------------------------------------
+
+"""
+    SphericalGradient <: SphericalEllOperator
+
+Gradient on 3D spherical domains (Ball, Shell). Prepends a vector index
+(the SphericalCoordinates) to the tensor signature.
+
+Uses regularity-based radial matrices with D+/D- operators and xi coupling.
+"""
+mutable struct SphericalGradient <: SphericalEllOperator
+    args::Vector{Any}
+    original_args::Tuple
+    out::Any
+    dist::Any
+    domain::Any
+    tensorsig::Tuple
+    dtype::DataType
+    name::String
+    operand::Any
+    coordsys::Any
+    input_basis::Any
+    output_basis::Any
+    first_axis::Int
+    last_axis::Int
+    radius_axis::Int
+    subaxis_dependence::Vector{Bool}
+    subaxis_coupling::Vector{Bool}
+    last_id::Any
+    last_out::Any
+    store_last::Bool
+    scales::Any
+    _radial_matrix_cache::Dict{Any,Any}
+end
+
+function SphericalGradient(operand, coordsys; out=nothing)
+    if isa(operand, Number) || operand == 0
+        return 0
+    end
+    dist = operand.dist
+    input_basis = get_basis(operand.domain, coordsys)
+    if input_basis === nothing
+        input_basis = get_basis(operand.domain, coordsys.radius)
+    end
+    output_basis = derivative_basis(input_basis; order=1)
+    fa = first_axis(dist, input_basis)
+    la = last_axis(dist, input_basis)
+    ra = get_axis(dist, coordsys) + 2  # radius is 3rd coordinate (1-based + 2)
+    new_domain = substitute_basis(operand.domain, input_basis, output_basis)
+    new_tensorsig = (coordsys, operand.tensorsig...)
+    SphericalGradient(Any[operand], (operand,), out, dist, new_domain,
+                      new_tensorsig, operand.dtype, "Grad", operand,
+                      coordsys, input_basis, output_basis, fa, la, ra,
+                      [false, true, true], [false, false, true],
+                      nothing, nothing, false, 1, Dict{Any,Any}())
+end
+
+function regindex_out(op::SphericalGradient, regindex_in)
+    # Regorder: -, +, 0 -> indices 1, 2, 3
+    # Gradient hits - (1) and + (2), not 0 (3)
+    return ((1, regindex_in...), (2, regindex_in...))
+end
+
+function radial_matrix(op::SphericalGradient, regindex_in, regindex_out_val, ell)
+    cache_key = (regindex_in, regindex_out_val, ell)
+    cached = get(op._radial_matrix_cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    radial_basis = _spherical_ell_get_radial_basis(op)
+    regtotal_val = regtotal(regindex_in)
+    # Python: regindex_out[0] != 2 (0-based) -> Julia: regindex_out_val[1] != 3 (1-based)
+    if regindex_out_val[1] != 3 && regindex_in == regindex_out_val[2:end]
+        result = _spherical_gradient_radial_matrix(radial_basis, regindex_out_val[1], regtotal_val, ell)
+    else
+        error("SphericalGradient: invalid regindex_in/regindex_out_val combination")
+    end
+    op._radial_matrix_cache[cache_key] = result
+    return result
+end
+
+function _spherical_gradient_radial_matrix(radial_basis, regindex_out0, regtotal_val, ell)
+    # Python: regindex_out0 == 0 -> Julia: regindex_out0 == 1 (minus component)
+    if regindex_out0 == 1
+        return xi(radial_basis, -1, ell + regtotal_val) * operator_matrix(radial_basis, "D-", ell, regtotal_val)
+    # Python: regindex_out0 == 1 -> Julia: regindex_out0 == 2 (plus component)
+    elseif regindex_out0 == 2
+        return xi(radial_basis, +1, ell + regtotal_val) * operator_matrix(radial_basis, "D+", ell, regtotal_val)
+    else
+        error("SphericalGradient: invalid regindex_out0 = $regindex_out0")
+    end
+end
+
+function check_conditions(op::SphericalGradient)
+    arg = op.args[1]
+    if !isa(arg, AbstractCurrent)
+        return false
+    end
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+end
+
+function enforce_conditions(op::SphericalGradient)
+    arg = op.args[1]
+    if isa(arg, Field)
+        require_coeff_space!(arg, op.radius_axis)
+        require_local!(arg, op.radius_axis)
+    end
+end
+
+function new_operand(op::SphericalGradient, operand; kw...)
+    return SphericalGradient(operand, op.coordsys; kw...)
+end
+
+# --------------------------------------------------------------------------
+# SphericalDivergence — divergence on 3D spherical domains
+# --------------------------------------------------------------------------
+
+"""
+    SphericalDivergence <: SphericalEllOperator
+
+Divergence on 3D spherical domains (Ball, Shell). Contracts the first
+tensor index (SphericalCoordinates) from the tensor signature.
+
+Uses regularity-based radial matrices with D+/D- operators and xi coupling.
+"""
+mutable struct SphericalDivergence <: SphericalEllOperator
+    args::Vector{Any}
+    original_args::Tuple
+    out::Any
+    dist::Any
+    domain::Any
+    tensorsig::Tuple
+    dtype::DataType
+    name::String
+    operand::Any
+    coordsys::Any
+    input_basis::Any
+    output_basis::Any
+    first_axis::Int
+    last_axis::Int
+    radius_axis::Int
+    index::Int
+    subaxis_dependence::Vector{Bool}
+    subaxis_coupling::Vector{Bool}
+    last_id::Any
+    last_out::Any
+    store_last::Bool
+    scales::Any
+    _radial_matrix_cache::Dict{Any,Any}
+end
+
+function SphericalDivergence(operand; index=1, out=nothing)
+    if isa(operand, Number) || operand == 0
+        return 0
+    end
+    if index != 1
+        error("SphericalDivergence only implemented along index 1.")
+    end
+    coordsys = operand.tensorsig[index]
+    dist = operand.dist
+    input_basis = get_basis(operand.domain, coordsys)
+    if input_basis === nothing
+        input_basis = get_basis(operand.domain, coordsys.radius)
+    end
+    output_basis = derivative_basis(input_basis; order=1)
+    fa = first_axis(dist, input_basis)
+    la = last_axis(dist, input_basis)
+    ra = get_axis(dist, coordsys) + 2
+    new_domain = substitute_basis(operand.domain, input_basis, output_basis)
+    new_tensorsig = (operand.tensorsig[1:index-1]..., operand.tensorsig[index+1:end]...)
+    SphericalDivergence(Any[operand], (operand,), out, dist, new_domain,
+                        new_tensorsig, operand.dtype, "Div", operand,
+                        coordsys, input_basis, output_basis, fa, la, ra,
+                        index,
+                        [false, true, true], [false, false, true],
+                        nothing, nothing, false, 1, Dict{Any,Any}())
+end
+
+function regindex_out(op::SphericalDivergence, regindex_in)
+    # Regorder: -, +, 0 -> indices 1, 2, 3
+    # Divergence feels - (1) and + (2), not 0 (3)
+    if regindex_in[1] in (1, 2)
+        return (regindex_in[2:end],)
+    else
+        return ()
+    end
+end
+
+function radial_matrix(op::SphericalDivergence, regindex_in, regindex_out_val, ell)
+    cache_key = (regindex_in, regindex_out_val, ell)
+    cached = get(op._radial_matrix_cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    radial_basis = _spherical_ell_get_radial_basis(op)
+    regtotal_val = regtotal(regindex_in)
+    # Python: regindex_in[0] != 2 (0-based) -> Julia: regindex_in[1] != 3 (1-based)
+    if regindex_in[1] != 3 && regindex_in[2:end] == regindex_out_val
+        result = _spherical_divergence_radial_matrix(radial_basis, regindex_in[1], regtotal_val, ell)
+    else
+        error("SphericalDivergence: invalid regindex_in/regindex_out_val combination")
+    end
+    op._radial_matrix_cache[cache_key] = result
+    return result
+end
+
+function _spherical_divergence_radial_matrix(radial_basis, regindex_in0, regtotal_val, ell)
+    # Python: regindex_in0 == 0 -> Julia: regindex_in0 == 1 (minus component)
+    if regindex_in0 == 1
+        return xi(radial_basis, -1, ell + regtotal_val + 1) * operator_matrix(radial_basis, "D+", ell, regtotal_val)
+    # Python: regindex_in0 == 1 -> Julia: regindex_in0 == 2 (plus component)
+    elseif regindex_in0 == 2
+        return xi(radial_basis, +1, ell + regtotal_val - 1) * operator_matrix(radial_basis, "D-", ell, regtotal_val)
+    else
+        error("SphericalDivergence: invalid regindex_in0 = $regindex_in0")
+    end
+end
+
+function check_conditions(op::SphericalDivergence)
+    arg = op.args[1]
+    if !isa(arg, AbstractCurrent)
+        return false
+    end
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+end
+
+function enforce_conditions(op::SphericalDivergence)
+    arg = op.args[1]
+    if isa(arg, Field)
+        require_coeff_space!(arg, op.radius_axis)
+        require_local!(arg, op.radius_axis)
+    end
+end
+
+function new_operand(op::SphericalDivergence, operand; kw...)
+    return SphericalDivergence(operand; index=op.index, kw...)
+end
+
+# --------------------------------------------------------------------------
+# SphericalCurl — curl on 3D spherical domains
+# --------------------------------------------------------------------------
+
+"""
+    SphericalCurl <: SphericalEllOperator
+
+Curl on 3D spherical domains (Ball, Shell). For vector fields, produces a
+vector output. The tensor index is contracted and a new one is prepended.
+
+Uses regularity-based radial matrices with D+/D- operators, xi coupling,
+and imaginary factors for cross-product structure.
+
+Has special handling for real (Float64) data types where the imaginary
+coupling must be encoded in the matrix structure.
+"""
+mutable struct SphericalCurl <: SphericalEllOperator
+    args::Vector{Any}
+    original_args::Tuple
+    out::Any
+    dist::Any
+    domain::Any
+    tensorsig::Tuple
+    dtype::DataType
+    name::String
+    operand::Any
+    coordsys::Any
+    input_basis::Any
+    output_basis::Any
+    first_axis::Int
+    last_axis::Int
+    radius_axis::Int
+    index::Int
+    subaxis_dependence::Vector{Bool}
+    subaxis_coupling::Vector{Bool}
+    last_id::Any
+    last_out::Any
+    store_last::Bool
+    scales::Any
+    _radial_matrix_cache::Dict{Any,Any}
+end
+
+function SphericalCurl(operand; index=1, out=nothing)
+    if isa(operand, Number) || operand == 0
+        return 0
+    end
+    if index != 1
+        error("SphericalCurl only implemented along index 1.")
+    end
+    coordsys = operand.tensorsig[index]
+    dist = operand.dist
+    input_basis = get_basis(operand.domain, coordsys)
+    if input_basis === nothing
+        input_basis = get_basis(operand.domain, coordsys.radius)
+    end
+    output_basis = derivative_basis(input_basis; order=1)
+    fa = first_axis(dist, input_basis)
+    la = last_axis(dist, input_basis)
+    ra = get_axis(dist, coordsys) + 2
+    new_domain = substitute_basis(operand.domain, input_basis, output_basis)
+    # Curl: contracts index `index` and prepends coordsys
+    new_tensorsig = (coordsys, operand.tensorsig[1:index-1]..., operand.tensorsig[index+1:end]...)
+    SphericalCurl(Any[operand], (operand,), out, dist, new_domain,
+                  new_tensorsig, operand.dtype, "Curl", operand,
+                  coordsys, input_basis, output_basis, fa, la, ra,
+                  index,
+                  [false, true, true], [false, false, true],
+                  nothing, nothing, false, 1, Dict{Any,Any}())
+end
+
+function regindex_out(op::SphericalCurl, regindex_in)
+    # Regorder: -, +, 0 -> indices 1, 2, 3
+    # - (1) and + (2) map to 0 (3)
+    if regindex_in[1] in (1, 2)
+        return ((3, regindex_in[2:end]...),)
+    # 0 (3) maps to - (1) and + (2)
+    else
+        return ((1, regindex_in[2:end]...), (2, regindex_in[2:end]...))
+    end
+end
+
+function radial_matrix(op::SphericalCurl, regindex_in, regindex_out_val, ell)
+    cache_key = (regindex_in, regindex_out_val, ell)
+    cached = get(op._radial_matrix_cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    radial_basis = _spherical_ell_get_radial_basis(op)
+    regtotal_in = regtotal(regindex_in)
+    regtotal_out = regtotal(regindex_out_val)
+    if regindex_in[2:end] == regindex_out_val[2:end]
+        result = _spherical_curl_radial_matrix(radial_basis, regindex_in[1], regindex_out_val[1],
+                                                regtotal_in, regtotal_out, ell)
+    else
+        error("SphericalCurl: invalid regindex_in/regindex_out_val combination")
+    end
+    op._radial_matrix_cache[cache_key] = result
+    return result
+end
+
+function _spherical_curl_radial_matrix(radial_basis, regindex_in0, regindex_out0,
+                                        regtotal_in, regtotal_out, ell)
+    # Python uses 0-based indices (0=-, 1=+, 2=0)
+    # Julia uses 1-based indices (1=-, 2=+, 3=0)
+    if regindex_in0 == 1 && regindex_out0 == 3     # - -> 0
+        return -1im * xi(radial_basis, +1, ell + regtotal_in + 1) *
+               operator_matrix(radial_basis, "D+", ell, regtotal_in)
+    elseif regindex_in0 == 2 && regindex_out0 == 3  # + -> 0
+        return 1im * xi(radial_basis, -1, ell + regtotal_in - 1) *
+               operator_matrix(radial_basis, "D-", ell, regtotal_in)
+    elseif regindex_in0 == 3 && regindex_out0 == 1  # 0 -> -
+        return -1im * xi(radial_basis, +1, ell + regtotal_in) *
+               operator_matrix(radial_basis, "D-", ell, regtotal_in)
+    elseif regindex_in0 == 3 && regindex_out0 == 2  # 0 -> +
+        return 1im * xi(radial_basis, -1, ell + regtotal_in) *
+               operator_matrix(radial_basis, "D+", ell, regtotal_in)
+    else
+        error("SphericalCurl: invalid regindex_in0=$regindex_in0, regindex_out0=$regindex_out0")
+    end
+end
+
+function check_conditions(op::SphericalCurl)
+    arg = op.args[1]
+    if !isa(arg, AbstractCurrent)
+        return false
+    end
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+end
+
+function enforce_conditions(op::SphericalCurl)
+    arg = op.args[1]
+    if isa(arg, Field)
+        require_coeff_space!(arg, op.radius_axis)
+        require_local!(arg, op.radius_axis)
+    end
+end
+
+function new_operand(op::SphericalCurl, operand; kw...)
+    return SphericalCurl(operand; index=op.index, kw...)
+end
+
+"""
+    subproblem_matrix(op::SphericalCurl, subproblem)
+
+Specialized subproblem matrix for SphericalCurl. For complex data types,
+delegates to the generic SphericalEllOperator method. For real data types
+(Float64), encodes the imaginary coupling using the 2x2 block structure
+of the real-valued m Fourier modes.
+"""
+function subproblem_matrix(op::SphericalCurl, subproblem)
+    if op.dtype == ComplexF64
+        # Use generic SphericalEllOperator subproblem_matrix
+        return invoke(subproblem_matrix, Tuple{SphericalEllOperator, typeof(subproblem)}, op, subproblem)
+    end
+    # Real dtype (Float64) — special handling for imaginary factors
+    operand = op.args[1]
+    radial_basis = _spherical_ell_get_radial_basis(op)
+    R_in = regularity_classes(radial_basis, operand.tensorsig)
+    R_out = regularity_classes(radial_basis, op.tensorsig)
+    ell_val = subproblem.group[op.last_axis - 1]
+    # Loop over components
+    submatrices = []
+    for idx_out in CartesianIndices(size(R_out))
+        regindex_out_val = Tuple(idx_out)
+        submatrix_row = []
+        for idx_in in CartesianIndices(size(R_in))
+            regindex_in = Tuple(idx_in)
+            # Build identity matrices for each axis
+            subshape_in = coeff_shape(subproblem, operand.domain)
+            subshape_out = coeff_shape(subproblem, op.domain)
+            if (regindex_out_val in regindex_out(op, regindex_in)) &&
+               regularity_allowed(radial_basis, ell_val, regindex_in) &&
+               regularity_allowed(radial_basis, ell_val, regindex_out_val)
+                factors = [sparse(1.0I, subshape_out[i], subshape_in[i]) for i in eachindex(subshape_out)]
+                rad_matrix = radial_matrix(op, regindex_in, regindex_out_val, ell_val)
+                # Real part
+                factors[op.last_axis] = sparse(real(rad_matrix))
+                comp_matrix_real = reduce(kron, factors; init=sparse(ones(1, 1)))
+                # Imaginary part — encode via 2x2 block structure [[0,-1],[1,0]]
+                m_size = subshape_in[op.first_axis]
+                mult_1j = [0.0 -1.0; 1.0 0.0]
+                m_blocks = sparse(1.0I, fld(m_size, 2), fld(m_size, 2))
+                factors[op.first_axis] = kron(sparse(mult_1j), m_blocks)
+                factors[op.last_axis] = sparse(imag(rad_matrix))
+                comp_matrix_imag = reduce(kron, factors; init=sparse(ones(1, 1)))
+                comp_matrix = comp_matrix_real + comp_matrix_imag
+            else
+                comp_matrix = spzeros(prod(subshape_out), prod(subshape_in))
+            end
+            push!(submatrix_row, comp_matrix)
+        end
+        push!(submatrices, submatrix_row)
+    end
+    # Assemble block matrix
+    nrows = length(submatrices)
+    ncols = length(submatrices[1])
+    matrix = hvcat(
+        ntuple(_ -> ncols, nrows),
+        [submatrices[i][j] for i in 1:nrows for j in 1:ncols]...
+    )
+    return sparse(matrix)
+end
+
+"""
+    operate(op::SphericalCurl, out)
+
+Explicit evaluation of SphericalCurl. For complex data types, uses the
+generic SphericalEllOperator evaluation. For real data types (Float64),
+encodes the imaginary coupling by splitting into cos/sin components.
+"""
+function operate(op::SphericalCurl, out)
+    if op.dtype == ComplexF64
+        return invoke(operate, Tuple{SphericalEllOperator, typeof(out)}, op, out)
+    end
+    # Real dtype (Float64) — special handling
+    operand = op.args[1]
+    input_basis = op.input_basis
+    radial_basis = _spherical_ell_get_radial_basis(op)
+    axis = last_axis(op.dist, radial_basis)
+    # Set output layout
+    preset_layout!(out, operand.layout)
+    out.data .= 0
+    # Apply operator
+    R_in = regularity_classes(radial_basis, operand.tensorsig)
+    ndim = length(size(operand.data)) - length(operand.tensorsig)
+    for idx_in in CartesianIndices(size(R_in))
+        regindex_in = Tuple(idx_in)
+        for regindex_out_val in regindex_out(op, regindex_in)
+            comp_in = operand.data[regindex_in...]
+            comp_out = out.data[regindex_out_val...]
+            for (ell, m_ind, ell_ind) in ell_maps(input_basis, op.dist)
+                allowed_in = regularity_allowed(radial_basis, ell, regindex_in)
+                allowed_out = regularity_allowed(radial_basis, ell, regindex_out_val)
+                if allowed_in && allowed_out
+                    n_sl = n_slice(radial_basis, ell)
+                    slices = ntuple(i -> i == (axis - 2) ? m_ind :
+                                        i == (axis - 1) ? ell_ind :
+                                        i == axis ? n_sl : Colon(), ndim)
+                    # Extract cos and -sin components (even/odd m indices)
+                    cos_sl = axslice(axis - 2, 1, size(comp_in, axis - 2), 2)
+                    msin_sl = axslice(axis - 2, 2, size(comp_in, axis - 2), 2)
+                    vec_in_data = comp_in[slices...]
+                    vec_in_cos = vec_in_data[cos_sl...]
+                    vec_in_msin = vec_in_data[msin_sl...]
+                    vec_in_complex = vec_in_cos .+ 1im .* vec_in_msin
+                    A = radial_matrix(op, regindex_in, regindex_out_val, ell)
+                    vec_out_complex = apply_matrix(A, vec_in_complex, axis)
+                    comp_out_view = view(comp_out, slices...)
+                    cos_view = view(comp_out_view, cos_sl...)
+                    msin_view = view(comp_out_view, msin_sl...)
+                    cos_view .+= real.(vec_out_complex)
+                    msin_view .+= imag.(vec_out_complex)
+                end
+            end
+        end
+    end
+end
+
+# --------------------------------------------------------------------------
+# SphericalLaplacian — Laplacian on 3D spherical domains
+# --------------------------------------------------------------------------
+
+"""
+    SphericalLaplacian <: SphericalEllOperator
+
+Laplacian on 3D spherical domains (Ball, Shell). Preserves the tensor
+signature. Uses derivative_basis(2) for the output basis.
+
+Uses regularity-based radial matrices with the 'L' (Laplacian) operator.
+"""
+mutable struct SphericalLaplacian <: SphericalEllOperator
+    args::Vector{Any}
+    original_args::Tuple
+    out::Any
+    dist::Any
+    domain::Any
+    tensorsig::Tuple
+    dtype::DataType
+    name::String
+    operand::Any
+    coordsys::Any
+    input_basis::Any
+    output_basis::Any
+    first_axis::Int
+    last_axis::Int
+    radius_axis::Int
+    subaxis_dependence::Vector{Bool}
+    subaxis_coupling::Vector{Bool}
+    last_id::Any
+    last_out::Any
+    store_last::Bool
+    scales::Any
+    _radial_matrix_cache::Dict{Any,Any}
+end
+
+function SphericalLaplacian(operand, coordsys; out=nothing)
+    if isa(operand, Number) || operand == 0
+        return 0
+    end
+    dist = operand.dist
+    input_basis = get_basis(operand.domain, coordsys)
+    if input_basis === nothing
+        input_basis = get_basis(operand.domain, coordsys.radius)
+    end
+    output_basis = derivative_basis(input_basis; order=2)
+    fa = first_axis(dist, input_basis)
+    la = last_axis(dist, input_basis)
+    ra = get_axis(dist, coordsys) + 2
+    new_domain = substitute_basis(operand.domain, input_basis, output_basis)
+    SphericalLaplacian(Any[operand], (operand,), out, dist, new_domain,
+                       operand.tensorsig, operand.dtype, "Lap", operand,
+                       coordsys, input_basis, output_basis, fa, la, ra,
+                       [false, true, true], [false, false, true],
+                       nothing, nothing, false, 1, Dict{Any,Any}())
+end
+
+function regindex_out(op::SphericalLaplacian, regindex_in)
+    # Laplacian preserves regularity indices
+    return (regindex_in,)
+end
+
+function radial_matrix(op::SphericalLaplacian, regindex_in, regindex_out_val, ell)
+    cache_key = (regindex_in, regindex_out_val, ell)
+    cached = get(op._radial_matrix_cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    radial_basis = _spherical_ell_get_radial_basis(op)
+    regtotal_val = regtotal(regindex_in)
+    if regindex_in == regindex_out_val
+        result = operator_matrix(radial_basis, "L", ell, regtotal_val)
+    else
+        error("SphericalLaplacian: regindex_in must equal regindex_out_val")
+    end
+    op._radial_matrix_cache[cache_key] = result
+    return result
+end
+
+function check_conditions(op::SphericalLaplacian)
+    arg = op.args[1]
+    if !isa(arg, AbstractCurrent)
+        return false
+    end
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+end
+
+function enforce_conditions(op::SphericalLaplacian)
+    arg = op.args[1]
+    if isa(arg, Field)
+        require_coeff_space!(arg, op.radius_axis)
+        require_local!(arg, op.radius_axis)
+    end
+end
+
+function new_operand(op::SphericalLaplacian, operand; kw...)
+    return SphericalLaplacian(operand, op.coordsys; kw...)
+end
+
+# --------------------------------------------------------------------------
+# SphericalEllProduct — ell-dependent product on 3D spherical domains
+# --------------------------------------------------------------------------
+
+"""
+    SphericalEllProduct <: SphericalEllOperator
+
+Product with an ell-dependent scalar on 3D spherical domains (Ball, Shell).
+The `ell_func(ell + regtotal)` callable defines the per-mode scalar multiplier.
+
+Preserves the tensor signature and the basis. Uses the identity radial matrix
+scaled by the ell-dependent function.
+"""
+mutable struct SphericalEllProduct <: SphericalEllOperator
+    args::Vector{Any}
+    original_args::Tuple
+    out::Any
+    dist::Any
+    domain::Any
+    tensorsig::Tuple
+    dtype::DataType
+    name::String
+    operand::Any
+    coordsys::Any
+    input_basis::Any
+    output_basis::Any
+    first_axis::Int
+    last_axis::Int
+    radius_axis::Int
+    ell_func::Any
+    subaxis_dependence::Vector{Bool}
+    subaxis_coupling::Vector{Bool}
+    last_id::Any
+    last_out::Any
+    store_last::Bool
+    scales::Any
+    _radial_matrix_cache::Dict{Any,Any}
+end
+
+function SphericalEllProduct(operand, coordsys, ell_func; out=nothing)
+    if isa(operand, Number) || operand == 0
+        return 0
+    end
+    dist = operand.dist
+    input_basis = get_basis(operand.domain, coordsys)
+    if input_basis === nothing
+        input_basis = get_basis(operand.domain, coordsys.radius)
+    end
+    output_basis = input_basis  # EllProduct preserves the basis
+    fa = first_axis(dist, input_basis)
+    la = last_axis(dist, input_basis)
+    ra = get_axis(dist, coordsys) + 2
+    SphericalEllProduct(Any[operand], (operand,), out, dist, operand.domain,
+                        operand.tensorsig, operand.dtype, "SphericalEllProduct", operand,
+                        coordsys, input_basis, output_basis, fa, la, ra,
+                        ell_func,
+                        [false, true, true], [false, false, true],
+                        nothing, nothing, false, 1, Dict{Any,Any}())
+end
+
+function regindex_out(op::SphericalEllProduct, regindex_in)
+    # EllProduct preserves regularity indices
+    return (regindex_in,)
+end
+
+function radial_matrix(op::SphericalEllProduct, regindex_in, regindex_out_val, ell)
+    cache_key = (regindex_in, regindex_out_val, ell)
+    cached = get(op._radial_matrix_cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    radial_basis = _spherical_ell_get_radial_basis(op)
+    regtotal_val = regtotal(regindex_in)
+    if regindex_in == regindex_out_val
+        result = op.ell_func(ell + regtotal_val) * operator_matrix(radial_basis, "Id", ell, regtotal_val)
+    else
+        error("SphericalEllProduct: regindex_in must equal regindex_out_val")
+    end
+    op._radial_matrix_cache[cache_key] = result
+    return result
+end
+
+function check_conditions(op::SphericalEllProduct)
+    arg = op.args[1]
+    if !isa(arg, AbstractCurrent)
+        return false
+    end
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+end
+
+function enforce_conditions(op::SphericalEllProduct)
+    arg = op.args[1]
+    if isa(arg, Field)
+        require_coeff_space!(arg, op.radius_axis)
+        require_local!(arg, op.radius_axis)
+    end
+end
+
+function new_operand(op::SphericalEllProduct, operand; kw...)
+    return SphericalEllProduct(operand, op.coordsys, op.ell_func; kw...)
+end
+
+# ============================================================================
 # Display methods for new operator types
 # ============================================================================
 
@@ -4828,7 +5768,9 @@ for T in [SphericalTrace, PolarTrace, DirectProductTrace,
           RadialComponent, AngularComponent, AzimuthalComponent,
           MulCosine, PolarGradient, PolarDivergence, PolarLaplacian,
           SphereEllProduct,
-          SphereGradient, SphereDivergence, SphereLaplacian]
+          SphereGradient, SphereDivergence, SphereLaplacian,
+          SphericalGradient, SphericalDivergence, SphericalCurl,
+          SphericalLaplacian, SphericalEllProduct]
     @eval begin
         function Base.show(io::IO, op::$T)
             print(io, op.name, "(", join(map(string, op.args), ", "), ")")
@@ -4906,12 +5848,12 @@ function ell_maps(basis, dist)
     error("ell_maps not implemented for basis type $(typeof(basis))")
 end
 
-function backward_regularity_recombination!(tensorsig, axis, data; ell_maps=nothing)
-    error("backward_regularity_recombination! not yet implemented — requires Milestone 3 RegularityBasis")
+function backward_regularity_recombination!(basis, tensorsig, axis, data; ell_maps=nothing)
+    backward_regularity_recombination(basis, tensorsig, axis, data, ell_maps)
 end
 
-function forward_regularity_recombination!(tensorsig, axis, data; ell_maps=nothing)
-    error("forward_regularity_recombination! not yet implemented — requires Milestone 3 RegularityBasis")
+function forward_regularity_recombination!(basis, tensorsig, axis, data; ell_maps=nothing)
+    forward_regularity_recombination(basis, tensorsig, axis, data; ell_maps=ell_maps)
 end
 
 function field_shape(subproblem, op)

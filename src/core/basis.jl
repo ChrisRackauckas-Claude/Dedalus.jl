@@ -919,7 +919,7 @@ function _last_axis_component_ncc_matrix(ncc_basis::JacobiBasis, arg_basis, out_
     da = Int(round(out_basis.a - arg_basis.a))
     db = Int(round(out_basis.b - arg_basis.b))
     # Pad for dealiasing with conversion
-    Nmat = 3 * ((N + 1) ÷ 2) + min((N + 1) ÷ 2, (da + db + 1) ÷ 2)
+    Nmat = 3 * ((N + 1) ÷ 2) + min((N + 1) ÷ 2, fld(da + db + 1, 2))
     J = jacobi_recurrence_matrix(arg_basis; size=Nmat)
     A, B = jacobi_recursion(Nmat, a_ncc, b_ncc, J)
     # f0 = P_0^{(a_ncc, b_ncc)}(1) * I
@@ -2881,7 +2881,7 @@ Must be implemented by concrete subtypes or overridden once the
 distribution infrastructure is in place.
 """
 function m_maps(b::PolarBasis, dist)
-    cache_key = (:m_maps, objectid(dist))
+    cache_key = (:m_maps, dist)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -2898,7 +2898,7 @@ Return a dictionary mapping m -> Bool indicating whether the ell ordering
 is reversed for each m.  Default: all false.
 """
 function ell_reversed(b::PolarBasis, dist)
-    cache_key = (:ell_reversed, objectid(dist))
+    cache_key = (:ell_reversed, dist)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -3049,7 +3049,27 @@ export AffineCOV,
        DiskBasis,
        SphereBasis,
        ell_size,
-       latitude_basis
+       latitude_basis,
+       AbstractRegularityBasis,
+       ShellRadialBasis,
+       BallRadialBasis,
+       regularity_constant,
+       regularity_allowed,
+       regtotal,
+       regularity_classes,
+       regularity_indices,
+       regularity_allowed_vectorized,
+       radial_recombinations,
+       forward_regularity_recombination,
+       backward_regularity_recombination,
+       get_radial_basis,
+       constant_mode_value,
+       radial_transform_factor,
+       interpolation,
+       operator_matrix,
+       jacobi_conversion,
+       conversion_matrix,
+       radius_multiplication_matrix
 
 # ============================================================================
 # AnnulusBasis  (concrete polar basis for annular domains)
@@ -3364,7 +3384,7 @@ end
 Build (or retrieve cached) a transform plan for the annulus radial direction.
 """
 function transform_plan(b::AnnulusBasis, dist, grid_size, k)
-    cache_key = (:transform_plan, objectid(dist), grid_size, k)
+    cache_key = (:transform_plan, dist, grid_size, k)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -4932,7 +4952,7 @@ end
 Compute a tuple of (m, mg_slice, mc_slice, ell_slice) for all local m values.
 """
 function m_maps(b::SphereBasis, dist)
-    cache_key = (:m_maps, objectid(dist))
+    cache_key = (:m_maps, dist)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -4946,7 +4966,7 @@ end
 Return a dictionary mapping m -> Bool indicating whether ell ordering is reversed.
 """
 function ell_reversed(b::SphereBasis, dist)
-    cache_key = (:ell_reversed, objectid(dist))
+    cache_key = (:ell_reversed, dist)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
@@ -4968,14 +4988,3253 @@ end
 Compute a tuple of (ell, m_slice, ell_slice) for all local ells in coeff space.
 """
 function ell_maps(b::SphereBasis, dist)
-    cache_key = (:ell_maps, objectid(dist))
+    cache_key = (:ell_maps, dist)
     cached = get(b._cache, cache_key, nothing)
     if cached !== nothing
         return cached
     end
-    error("SphereBasis ell_maps: requires distributor infrastructure not yet available")
+    # Build ell_maps from the coeff-space layout.
+    # In coeff-coeff space, use elements_to_groups to find (m, ell) for each position,
+    # then group by ell to produce (ell, m_slice, ell_slice) entries.
+    cl = coeff_layout(dist)
+    domain = make_domain(dist, (b,))
+    azimuth_axis = first_axis(dist, b)          # 1-based axis for azimuth
+    colatitude_axis = first_axis(dist, b) + 1    # 1-based axis for colatitude
+
+    # Get local elements (0-based) in coeff space
+    le = local_elements(cl, domain, Tuple(b.dealias_tuple); broadcast=true)
+
+    # Build element index arrays for this basis's axes
+    fa = first_axis(dist, b)
+    la = last_axis(dist, b)
+    basis_le = [le[ax] for ax in fa:la]  # (azimuth_elements, colatitude_elements)
+
+    # Create meshgrid of 0-based element indices
+    n_az = length(basis_le[1])
+    n_co = length(basis_le[2])
+    i_grid = repeat(reshape(basis_le[1], n_az, 1), 1, n_co)
+    j_grid = repeat(reshape(basis_le[2], 1, n_co), n_az, 1)
+
+    # Convert to (m, ell) groups
+    gs = cl.grid_space[fa:la]
+    groups = elements_to_groups(b, gs, [i_grid, j_grid])
+    m_arr = groups[1]
+    ell_arr = groups[2]
+
+    # Build ell_maps: for each unique ell, collect the data indices
+    # m_ind and ell_ind are 1-based Julia indices into the local data array
+    result = Tuple{Int, Any, Any}[]
+    seen_ells = Dict{Int, Bool}()
+    for j in 1:n_co
+        for i in 1:n_az
+            ell_val = ell_arr[i, j]
+            m_val = m_arr[i, j]
+            if abs(m_val) > ell_val
+                continue  # invalid mode
+            end
+            if !haskey(seen_ells, ell_val)
+                seen_ells[ell_val] = true
+                # Find all positions with this ell
+                m_indices = Int[]
+                ell_indices = Int[]
+                for jj in 1:n_co
+                    for ii in 1:n_az
+                        if ell_arr[ii, jj] == ell_val && abs(m_arr[ii, jj]) <= ell_arr[ii, jj]
+                            push!(m_indices, ii)
+                            push!(ell_indices, jj)
+                        end
+                    end
+                end
+                # If all ell_indices are the same (single column), use scalar index
+                unique_ell_inds = unique(ell_indices)
+                if length(unique_ell_inds) == 1
+                    ell_ind = unique_ell_inds[1]
+                else
+                    ell_ind = ell_indices
+                end
+                # For m_indices, check if they form a contiguous range
+                unique_m_inds = sort(unique(m_indices))
+                if length(unique_m_inds) == 1
+                    m_ind = unique_m_inds[1]
+                elseif unique_m_inds == collect(unique_m_inds[1]:unique_m_inds[end])
+                    m_ind = unique_m_inds[1]:unique_m_inds[end]
+                else
+                    m_ind = unique_m_inds
+                end
+                push!(result, (ell_val, m_ind, ell_ind))
+            end
+        end
+    end
+    result_tuple = Tuple(result)
+    b._cache[cache_key] = result_tuple
+    return result_tuple
 end
 
 function Base.show(io::IO, b::SphereBasis)
     print(io, "SphereBasis($(b.coordsys), shape=$(b.shape), radius=$(b.radius), Lmax=$(b.Lmax))")
 end
+
+# ============================================================================
+# AbstractRegularityBasis  (abstract; common for ShellRadialBasis and BallRadialBasis)
+# ============================================================================
+
+"""
+    AbstractRegularityBasis <: MultidimensionalBasis
+
+Abstract base type for 3D regularity-based radial bases.
+Concrete subtypes: `ShellRadialBasis`, `BallRadialBasis`.
+
+These are radial-only bases (shape = (1, 1, radial_size)) that encode the
+regularity structure of vector/tensor fields in spherical geometry.
+Dimensions: ['azimuth', 'colatitude', 'radius'] with subaxis_dependence
+[false, false, true] — only the radial direction carries spectral content.
+"""
+abstract type AbstractRegularityBasis <: MultidimensionalBasis end
+
+# -- Trait: regularity bases support spin recombination --
+spin_recombination_trait(::AbstractRegularityBasis) = HasSpinRecombination()
+
+# -- Class constants --
+basis_dim(::AbstractRegularityBasis) = 3
+basis_subaxis_dependence(::AbstractRegularityBasis) = (false, false, true)
+
+# -- RegularityBasis common interface methods --
+
+"""
+    regularity_constant(b::AbstractRegularityBasis) -> Tuple{Bool,Bool,Bool}
+
+Return which subaxes are constant (azimuth, colatitude are constant; radius is not).
+"""
+function regularity_constant(b::AbstractRegularityBasis)
+    cached = get(b._cache, :regularity_constant, nothing)
+    if cached !== nothing
+        return cached
+    end
+    result = (true, true, false)
+    b._cache[:regularity_constant] = result
+    return result
+end
+
+# Override basis_constant to use regularity_constant
+basis_constant(b::AbstractRegularityBasis) = regularity_constant(b)
+
+"""
+    basis_shape(b::AbstractRegularityBasis)
+
+Return the shape tuple for an AbstractRegularityBasis.
+"""
+basis_shape(b::AbstractRegularityBasis) = b.shape
+
+"""
+    basis_coordsys(b::AbstractRegularityBasis)
+
+Return the coordinate system for an AbstractRegularityBasis.
+"""
+basis_coordsys(b::AbstractRegularityBasis) = b.coordsys
+
+"""
+    grid_shape(b::AbstractRegularityBasis, scales)
+
+Compute grid shape with constant directions pinned to 1.
+"""
+function grid_shape(b::AbstractRegularityBasis, scales)
+    # Build grid shape from basis shape * scales, but pin constant axes to 1
+    bshape = basis_shape(b)
+    shape_arr = [Int(ceil(s * n)) for (s, n) in zip(scales, bshape)]
+    # Set constant directions back to size 1
+    shape_arr[1] = 1
+    shape_arr[2] = 1
+    return Tuple(shape_arr)
+end
+
+"""
+    global_shape(b::AbstractRegularityBasis, grid_space, scales)
+
+Compute global data shape in the given grid/coefficient space.
+"""
+function global_shape(b::AbstractRegularityBasis, grid_space, scales)
+    gshape = grid_shape(b, scales)
+    if grid_space[1]
+        # grid-grid-grid space
+        return gshape
+    elseif grid_space[2] || grid_space[3]
+        # coeff-grid-grid or coeff-coeff-grid space
+        shape = collect(gshape)
+        if b.dtype === Float64
+            shape[1] = 2
+        end
+        return Tuple(shape)
+    else
+        # coeff-coeff-coeff space
+        shape = collect(gshape)
+        if b.dtype === Float64
+            shape[1] = 2
+        end
+        shape[3] = b.shape[3]
+        return Tuple(shape)
+    end
+end
+
+"""
+    chunk_shape(b::AbstractRegularityBasis, grid_space)
+
+Return chunk shape for distribution.
+"""
+function chunk_shape(b::AbstractRegularityBasis, grid_space)
+    if grid_space[1]
+        # grid-grid-grid space
+        return (1, 1, 1)
+    else
+        if b.dtype === ComplexF64
+            return (1, 1, 1)
+        elseif b.dtype === Float64
+            return (2, 1, 1)
+        end
+    end
+end
+
+"""
+    elements_to_groups(b::AbstractRegularityBasis, grid_space, elements)
+
+Convert elements to group indices, masking invalid entries in coeff-coeff-coeff space.
+"""
+function elements_to_groups(b::AbstractRegularityBasis, grid_space, elements)
+    groups = copy(elements)
+    if !grid_space[1]
+        # coeff-*-* space: group azimuthal elements to 0
+        groups[1] = 0
+    end
+    if !grid_space[3]
+        # coeff-coeff-coeff space: mask n < nmin(ell)
+        m = groups[1]
+        ell = groups[2]
+        n = groups[3]
+        nmin_val = _nmin(b, ell)
+        # Mask invalid elements by setting them to -1
+        # Python uses np.ma.masked_array; in Julia we flag with -1
+        invalid = n .< nmin_val
+        for i in 1:length(groups)
+            if groups[i] isa AbstractArray
+                groups[i] = copy(groups[i])
+                groups[i][invalid] .= -1
+            elseif invalid isa Bool && invalid
+                groups[i] = -1
+            end
+        end
+    end
+    return groups
+end
+
+"""
+    ell_maps(b::AbstractRegularityBasis, dist)
+
+Compute ell maps by delegating to the same logic as SphereBasis.ell_maps.
+In Python this calls SphereBasis.ell_maps(self, dist) as an unbound method.
+"""
+function ell_maps(b::AbstractRegularityBasis, dist)
+    cache_key = (:ell_maps, dist)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    # Delegate to SphereBasis.ell_maps logic.
+    # In Python this calls SphereBasis.ell_maps(self, dist) as an unbound method.
+    # The RegularityBasis is 3D (azimuth, colatitude, radius). The ell_maps
+    # only depends on the S2 (azimuth, colatitude) axes, which have the same
+    # data layout. We reuse the SphereBasis ell_maps from the parent 3D basis.
+    #
+    # Find the SphereBasis that shares our coordinate system.
+    # We look it up from the coordsys cache since RegularityBasis doesn't store
+    # a direct reference to its SphereBasis.
+    cl = coeff_layout(dist)
+    domain = make_domain(dist, (b,))
+    azimuth_axis = first_axis(dist, b)
+    colatitude_axis = first_axis(dist, b) + 1
+
+    # Get local elements (0-based) in coeff space
+    le = local_elements(cl, domain, Tuple(b.dealias); broadcast=true)
+
+    # Build element index arrays for the S2 axes
+    fa = first_axis(dist, b)
+    basis_le_az = le[fa]        # azimuth elements
+    basis_le_co = le[fa + 1]    # colatitude elements
+
+    n_az = length(basis_le_az)
+    n_co = length(basis_le_co)
+
+    # For RegularityBasis in coeff-coeff space, the first two axes map to (m, ell)
+    # via elements_to_groups. We need to extract the S2 part.
+    gs = cl.grid_space[fa:fa+1]
+    i_grid = repeat(reshape(basis_le_az, n_az, 1), 1, n_co)
+    j_grid = repeat(reshape(basis_le_co, 1, n_co), n_az, 1)
+
+    # elements_to_groups for RegularityBasis maps (m, ell, n) -> groups
+    # but we only need the S2 part. The first axis in coeff space maps m -> 0
+    # (grouped), second axis gives ell directly.
+    # For the S2 axes: in coeff space, groups[1]=0, groups[2]=ell value
+    # So ell = basis_le_co (0-based element indices = ell values for colatitude axis)
+
+    result = Tuple{Int, Any, Any}[]
+    seen_ells = Dict{Int, Bool}()
+    for j in 1:n_co
+        ell_val = basis_le_co[j]  # 0-based colatitude element = ell value
+        if !haskey(seen_ells, ell_val)
+            seen_ells[ell_val] = true
+            # m_ind covers all azimuth positions (they are all grouped to m=0)
+            if n_az == 1
+                m_ind = 1
+            else
+                m_ind = 1:n_az
+            end
+            ell_ind = j  # 1-based index into colatitude axis
+            push!(result, (ell_val, m_ind, ell_ind))
+        end
+    end
+    result_tuple = Tuple(result)
+    b._cache[cache_key] = result_tuple
+    return result_tuple
+end
+
+"""
+    get_radial_basis(b::AbstractRegularityBasis)
+
+Return the radial basis (self for regularity bases).
+"""
+get_radial_basis(b::AbstractRegularityBasis) = b
+
+"""
+    global_grid(b::AbstractRegularityBasis, dist, scale)
+
+Return the global radial grid reshaped for the full field layout.
+"""
+function global_grid(b::AbstractRegularityBasis, dist, scale)
+    problem_grid = _radius_grid(b, scale)
+    # Python: radial_axis = dist.get_basis_axis(self) + 2
+    # In Julia: get_basis_axis is 1-based, so radial_axis = get_basis_axis(dist, b) + 2
+    radial_axis = get_basis_axis(dist, b) + 2
+    return reshape_vector(problem_grid, get_dim(dist), radial_axis)
+end
+
+"""
+    local_grid(b::AbstractRegularityBasis, dist, scale)
+
+Return the local radial grid (subset of global grid for this process).
+"""
+function local_grid(b::AbstractRegularityBasis, dist, scale)
+    radial_axis = get_basis_axis(dist, b) + 2
+    local_elems = local_elements(grid_layout(dist), basis_domain(b, dist); scales=scale)[radial_axis]
+    problem_grid = _radius_grid(b, scale)[local_elems]
+    return reshape_vector(problem_grid, get_dim(dist), radial_axis)
+end
+
+"""
+    global_weights(b::AbstractRegularityBasis, dist; scale=1)
+
+Return the global quadrature weights reshaped for the full field layout.
+"""
+function global_weights(b::AbstractRegularityBasis, dist; scale=1)
+    radial_axis = get_basis_axis(dist, b) + 2
+    weights = Float64.(_radius_weights(b, scale))
+    return reshape_vector(weights, get_dim(dist), radial_axis)
+end
+
+"""
+    local_weights(b::AbstractRegularityBasis, dist; scale=1)
+
+Return the local quadrature weights.
+"""
+function local_weights(b::AbstractRegularityBasis, dist; scale=1)
+    radial_axis = get_basis_axis(dist, b) + 2
+    local_elems = local_elements(grid_layout(dist), basis_domain(b, dist); scales=scale)[radial_axis]
+    weights = Float64.(_radius_weights(b, scale))
+    return reshape_vector(weights[local_elems], get_dim(dist), radial_axis)
+end
+
+# -- Regularity methods --
+
+"""
+    regularity_allowed(b::AbstractRegularityBasis, l, regularity)
+
+Check whether the given regularity component is allowed at degree l.
+Uses the Intertwiner from dedalus_sphere.spin_operators.
+"""
+function regularity_allowed(b::AbstractRegularityBasis, l, regularity)
+    cache_key = (:regularity_allowed, l, regularity)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    Rb = [-1, 1, 0]
+    if regularity == () || isempty(regularity)
+        result = true
+    else
+        Q = Intertwiner(l; indexing=(-1, +1, 0))
+        reg_vals = Tuple(Rb[r] for r in regularity)
+        result = !forbidden_regularity(Q, reg_vals)
+    end
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    regtotal(regindex)
+
+Compute the total regularity from a regularity multiindex.
+Static method (no basis argument needed).
+"""
+function regtotal(regindex)
+    regorder = [-1, 1, 0]
+    return sum(regorder[i] for i in regindex; init=0)
+end
+
+"""
+    xi(b::AbstractRegularityBasis, mu, l)
+
+Compute the xi coupling factor.
+"""
+function xi(b::AbstractRegularityBasis, mu, l)
+    cache_key = (:xi, mu, l)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    # Python: sqrt( (l + (mu+1)//2 ) / (2*l + 1) )
+    result = sqrt((l + fld(mu + 1, 2)) / (2 * l + 1))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    radial_recombinations(b::AbstractRegularityBasis, tensorsig, ell_list)
+
+Compute the radial recombination Q matrices for each ell in ell_list.
+Only supports tensors over the basis's own coordinate system.
+"""
+function radial_recombinations(b::AbstractRegularityBasis, tensorsig, ell_list)
+    cache_key = (:radial_recombinations, tensorsig, ell_list)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    # Validate: only supports tensors over spherical coords
+    for cs in tensorsig
+        if b.coordsys !== cs
+            throw(ArgumentError("Only supports tensors over spherical coords."))
+        end
+    end
+    order = length(tensorsig)
+    Q_matrices = Dict{Int, Any}()
+    for ell in ell_list
+        if !haskey(Q_matrices, ell)
+            Q = Intertwiner(ell; indexing=(-1, +1, 0))
+            Q_matrices[ell] = _tensor_eval(Q, order)
+        end
+    end
+    b._cache[cache_key] = Q_matrices
+    return Q_matrices
+end
+
+"""
+    regularity_classes(b::AbstractRegularityBasis, tensorsig)
+
+Compute the regularity classes array for the given tensor signature.
+Regularity-component ordering: [-, +, 0] -> [-1, 1, 0].
+"""
+function regularity_classes(b::AbstractRegularityBasis, tensorsig)
+    cache_key = (:regularity_classes, tensorsig)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    Rb = [-1, 1, 0]
+    dims = [get_dim(cs) for cs in tensorsig]
+    if isempty(dims)
+        result = zeros(Int)
+        b._cache[cache_key] = result
+        return result
+    end
+    R = zeros(Int, dims...)
+    for (i, cs) in enumerate(tensorsig)
+        if b.coordsys === cs
+            # axslice(i, 1, get_dim(cs)) in Julia is all indices along axis i
+            # reshape_vector(Rb, ndim, axis) reshapes Rb into the right shape
+            R[axslice(i, 1, get_dim(cs))...] .+= reshape_vector(Rb, length(tensorsig), i)
+        end
+    end
+    b._cache[cache_key] = R
+    return R
+end
+
+"""
+    regularity_indices(b::AbstractRegularityBasis, tensorsig)
+
+Return array of regularity multiindices.
+"""
+function regularity_indices(b::AbstractRegularityBasis, tensorsig)
+    indices = []
+    tshape = [get_dim(cs) for cs in tensorsig]
+    for (i, cs) in enumerate(tensorsig)
+        if b.coordsys === cs
+            idx_arr = zeros(Float64, tshape...) .+ reshape_vector(Float64.([-1, 1, 0]), length(tshape), i)
+            push!(indices, idx_arr)
+        end
+    end
+    return cat(indices...; dims=length(tshape) + 1)
+end
+
+"""
+    regularity_allowed_vectorized(b::AbstractRegularityBasis, l, regindex)
+
+Vectorized check of which regularity components are allowed.
+"""
+function regularity_allowed_vectorized(b::AbstractRegularityBasis, l, regindex)
+    valid = ones(Bool, size(l))
+    walk = copy(l)
+    for dr in reverse(regindex)
+        walk = walk .+ dr
+        valid[walk .< 0] .= false
+        if dr == 0
+            valid[walk .== 0] .= false
+        end
+    end
+    return valid
+end
+
+# -- Transform recombination methods --
+
+"""
+    forward_regularity_recombination(b::AbstractRegularityBasis, tensorsig, axis, gdata; ell_maps)
+
+Apply forward regularity recombination (component-to-regularity).
+Modifies gdata in-place.
+"""
+function forward_regularity_recombination(b::AbstractRegularityBasis, tensorsig, axis, gdata; ell_maps)
+    rank = length(tensorsig)
+    ell_list = Tuple(map_entry[1] for map_entry in ell_maps)
+    # Apply radial recombinations
+    if rank > 0
+        Q = radial_recombinations(b, tensorsig, ell_list)
+        # Flatten tensor axes
+        shp = size(gdata)
+        temp = reshape(gdata, (prod(shp[1:rank]),  shp[rank+1:end]...))
+        slices = [Colon() for _ in 1:ndims(temp)]
+        # Apply Q transformations for each ell to flattened tensor data
+        for (ell, m_ind, ell_ind) in ell_maps
+            # Python: slices[axis-2+1] = m_ind, slices[axis-1+1] = ell_ind
+            # axis is 1-based in Julia (the basis axis within the non-tensor part)
+            # With 1 prepended tensor axis after flattening:
+            slices_copy = copy(slices)
+            slices_copy[axis - 1] = m_ind
+            slices_copy[axis] = ell_ind
+            temp_ell = view(temp, slices_copy...)
+            apply_matrix(transpose(Q[ell]), temp_ell, 1; out=temp_ell)
+        end
+    end
+end
+
+"""
+    backward_regularity_recombination(b::AbstractRegularityBasis, tensorsig, axis, gdata, ell_maps)
+
+Apply backward regularity recombination (regularity-to-component).
+Modifies gdata in-place.
+"""
+function backward_regularity_recombination(b::AbstractRegularityBasis, tensorsig, axis, gdata, ell_maps)
+    rank = length(tensorsig)
+    ell_list = Tuple(map_entry[1] for map_entry in ell_maps)
+    # Apply radial recombinations
+    if rank > 0
+        Q = radial_recombinations(b, tensorsig, ell_list)
+        # Flatten tensor axes
+        shp = size(gdata)
+        temp = reshape(gdata, (prod(shp[1:rank]), shp[rank+1:end]...))
+        slices = [Colon() for _ in 1:ndims(temp)]
+        # Apply Q^T transformations for each ell to flattened tensor data
+        for (ell, m_ind, ell_ind) in ell_maps
+            slices_copy = copy(slices)
+            slices_copy[axis - 1] = m_ind
+            slices_copy[axis] = ell_ind
+            temp_ell = view(temp, slices_copy...)
+            apply_matrix(Q[ell], temp_ell, 1; out=temp_ell)
+        end
+    end
+end
+
+# -- Azimuth and colatitude transforms --
+
+"""
+    forward_transform_azimuth_regularity(b::AbstractRegularityBasis, field, axis, gdata, cdata)
+
+Forward azimuth transform for regularity basis.
+Copies real part of m=0 over; zeros out remaining modes.
+"""
+function forward_transform_azimuth_regularity(b::AbstractRegularityBasis, field, axis, gdata, cdata)
+    # Copy over real part of m = 0
+    data_axis = length(field.tensorsig) + axis
+    # axslice(data_axis, 1, 1) selects first element along data_axis (1-based)
+    copyto!(view(cdata, axslice(data_axis, 1, 1)...), gdata)
+    # Zero out remaining modes
+    if size(cdata, data_axis) > 1
+        view(cdata, axslice(data_axis, 2, size(cdata, data_axis))...) .= 0
+    end
+end
+
+"""
+    forward_transform_colatitude_regularity(b::AbstractRegularityBasis, field, axis, gdata, cdata)
+
+Forward colatitude transform for regularity basis.
+Applies spin recombination.
+"""
+function forward_transform_colatitude_regularity(b::AbstractRegularityBasis, field, axis, gdata, cdata)
+    # Spin recombination
+    temp = zeros(eltype(gdata), size(gdata))
+    forward_spin_recombination!(b, field.tensorsig, axis, gdata, temp)
+    copyto!(cdata, temp)
+end
+
+"""
+    backward_transform_colatitude_regularity(b::AbstractRegularityBasis, field, axis, cdata, gdata)
+
+Backward colatitude transform for regularity basis.
+Applies inverse spin recombination.
+"""
+function backward_transform_colatitude_regularity(b::AbstractRegularityBasis, field, axis, cdata, gdata)
+    # Spin recombination
+    temp = copy(cdata)
+    backward_spin_recombination!(b, field.tensorsig, axis, temp, gdata)
+end
+
+"""
+    backward_transform_azimuth_regularity(b::AbstractRegularityBasis, field, axis, cdata, gdata)
+
+Backward azimuth transform for regularity basis.
+Copies real part of m=0 back.
+"""
+function backward_transform_azimuth_regularity(b::AbstractRegularityBasis, field, axis, cdata, gdata)
+    # Copy over real part of m = 0
+    data_axis = length(field.tensorsig) + axis
+    copyto!(gdata, view(cdata, axslice(data_axis, 1, 1)...))
+end
+
+# -- n_size and n_slice for regularity bases --
+
+"""
+    n_size(b::AbstractRegularityBasis, ell)
+
+Return the number of valid radial modes for degree ell.
+"""
+function n_size(b::AbstractRegularityBasis, ell)
+    cache_key = (:n_size, ell)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    nmin_val = _nmin(b, ell)
+    nmax = b.Nmax
+    val = nmax - nmin_val + 1
+    b._cache[cache_key] = val
+    return val
+end
+
+"""
+    n_slice(b::AbstractRegularityBasis, ell)
+
+Return the range of valid radial mode indices for degree ell.
+Returns a 1-based range (Python's slice(nmin, nmax+1) -> Julia (nmin+1):(nmax+1)).
+"""
+function n_slice(b::AbstractRegularityBasis, ell)
+    cache_key = (:n_slice, ell)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    nmin_val = _nmin(b, ell)
+    nmax = b.Nmax
+    val = (nmin_val + 1):(nmax + 1)  # 1-based range
+    b._cache[cache_key] = val
+    return val
+end
+
+
+# ============================================================================
+# ShellRadialBasis  (concrete regularity basis for spherical shell)
+# ============================================================================
+
+"""
+    ShellRadialBasis <: AbstractRegularityBasis
+
+Radial basis for spherical shell domains using Jacobi polynomials.
+Shape is (1, 1, radial_size) — a 3D basis with only the radial dimension
+carrying spectral content.
+"""
+mutable struct ShellRadialBasis <: AbstractRegularityBasis
+    coordsys::SphericalCoordinates
+    radial_size::Int
+    shape::Tuple{Int,Int,Int}
+    k::Int
+    dealias::Tuple{Float64,Float64,Float64}
+    Nmax::Int
+    dtype::DataType
+    group_shape::Tuple{Int,Int,Int}
+    radii::Tuple{Float64,Float64}
+    volume::Float64
+    dR::Float64
+    rho::Float64
+    alpha::Tuple{Float64,Float64}
+    radius_library::String
+    grid_params::Tuple
+    forward_transforms::Vector
+    backward_transforms::Vector
+    _cache::Dict{Any,Any}
+end
+
+# -- Constructor caching --
+const _shell_radial_cache = Dict{Any,WeakRef}()
+
+"""
+    ShellRadialBasis(coordsys, radial_size, dtype; radii=(1,2),
+                     alpha=(-0.5,-0.5), dealias=(1,), k=0, radius_library=nothing)
+
+Construct (or retrieve cached) a ShellRadialBasis.
+"""
+function ShellRadialBasis(coordsys::SphericalCoordinates, radial_size::Int, dtype::DataType;
+                          radii=(1.0, 2.0),
+                          alpha=(-0.5, -0.5),
+                          dealias=(1.0,),
+                          k::Int=0,
+                          radius_library=nothing)
+    # Validate
+    radii = (Float64(radii[1]), Float64(radii[2]))
+    if radii[1] <= 0
+        throw(ArgumentError("Inner radius must be positive."))
+    end
+    alpha = (Float64(alpha[1]), Float64(alpha[2]))
+
+    if radius_library === nothing
+        if alpha[1] == alpha[2] == -0.5
+            radius_library = JACOBI_DEFAULT_DCT
+        else
+            radius_library = JACOBI_DEFAULT_LIBRARY
+        end
+    end
+
+    # Process dealias: pad to 3 dims
+    if length(dealias) == 1
+        dealias_full = (1.0, 1.0, Float64(dealias[1]))
+    else
+        dealias_full = Tuple(Float64.(dealias))
+    end
+
+    # Compute derived
+    shape = (1, 1, radial_size)
+    Nmax = radial_size - 1
+    volume = 4 / 3 * pi * (radii[2]^3 - radii[1]^3)
+    dR = radii[2] - radii[1]
+    rho = (radii[2] + radii[1]) / dR
+
+    if dtype === Float64
+        group_shape = (2, 1, 1)
+    elseif dtype === ComplexF64
+        group_shape = (1, 1, 1)
+    else
+        throw(ArgumentError("Unsupported dtype: $dtype"))
+    end
+
+    grid_params = (coordsys, radii, alpha, dealias_full)
+
+    # Cache lookup
+    cache_key = (coordsys, radial_size, dtype, radii, alpha, dealias_full, k, radius_library)
+    wr = get(_shell_radial_cache, cache_key, nothing)
+    if wr !== nothing
+        inst = wr.value
+        if inst !== nothing
+            return inst::ShellRadialBasis
+        end
+    end
+
+    _cache = Dict{Any,Any}()
+
+    inst = ShellRadialBasis(
+        coordsys, radial_size, shape, k, dealias_full, Nmax, dtype,
+        group_shape, radii, volume, dR, rho, alpha, radius_library,
+        grid_params,
+        Any[], Any[],  # transforms -- set below
+        _cache
+    )
+
+    # Set transform callables
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> forward_transform_azimuth_regularity(inst, field, axis, gdata, cdata))
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> forward_transform_colatitude_regularity(inst, field, axis, gdata, cdata))
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> forward_transform_radius_shell(inst, field, axis, gdata, cdata))
+
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> backward_transform_azimuth_regularity(inst, field, axis, cdata, gdata))
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> backward_transform_colatitude_regularity(inst, field, axis, cdata, gdata))
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> backward_transform_radius_shell(inst, field, axis, cdata, gdata))
+
+    _shell_radial_cache[cache_key] = WeakRef(inst)
+    return inst
+end
+
+# -- _nmin: always 0 for shell --
+_nmin(::ShellRadialBasis, ell) = 0 .* ell
+
+# -- Equality and hashing --
+
+function Base.:(==)(a::ShellRadialBasis, b::ShellRadialBasis)
+    return a.coordsys == b.coordsys && a.grid_params == b.grid_params && a.k == b.k
+end
+
+Base.hash(b::ShellRadialBasis, h::UInt) = hash((b.coordsys, b.grid_params, b.k), h)
+
+# -- Basis algebra --
+
+function basis_add(a::ShellRadialBasis, other)
+    if other === nothing || other === a
+        return a
+    end
+    if other isa ShellRadialBasis
+        if a.grid_params == other.grid_params
+            radial_size = max(a.shape[3], other.shape[3])
+            k_new = max(a.k, other.k)
+            return clone_with(a; radial_size=radial_size, k=k_new)
+        end
+    end
+    return nothing
+end
+
+function basis_mul(a::ShellRadialBasis, other)
+    if other === nothing
+        return a
+    end
+    if other isa ShellRadialBasis
+        if a.grid_params == other.grid_params
+            radial_size = max(a.shape[3], other.shape[3])
+            k_new = a.k + other.k
+            return clone_with(a; radial_size=radial_size, k=k_new)
+        end
+    end
+    if other isa SphereBasis
+        # Combine to form a ShellBasis
+        # Note: direct combination not supported; use ShellBasis constructor
+        return nothing
+    end
+    return nothing
+end
+
+function basis_rmatmul(operand::ShellRadialBasis, ncc)
+    # NCC (ncc) * operand (self)
+    if ncc === nothing
+        return operand
+    end
+    if ncc isa ShellRadialBasis
+        if operand.grid_params == ncc.grid_params
+            radial_size = max(operand.shape[3], ncc.shape[3])
+            k_new = operand.k + ncc.k
+            return clone_with(operand; radial_size=radial_size, k=k_new)
+        end
+    end
+    return nothing
+end
+
+"""
+    _new_k(b::ShellRadialBasis, k)
+
+Return a copy of this basis with a new k value.
+"""
+_new_k(b::ShellRadialBasis, k) = clone_with(b; k=k)
+
+# -- Grid methods --
+
+"""
+    _radius_grid(b::ShellRadialBasis, scale)
+
+Compute radial grid points at the given scale using Jacobi quadrature.
+"""
+function _radius_grid(b::ShellRadialBasis, scale)
+    cache_key = (:_radius_grid, scale)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    N = Int(ceil(scale * b.shape[3]))
+    z, weights = jacobi_quadrature(N, b.alpha[1], b.alpha[2])
+    r = (b.dR / 2) .* (z .+ b.rho)
+    result = Float64.(r)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    _radius_weights(b::ShellRadialBasis, scale)
+
+Compute radial quadrature weights at the given scale.
+"""
+function _radius_weights(b::ShellRadialBasis, scale)
+    cache_key = (:_radius_weights, scale)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    N = Int(ceil(scale * b.shape[3]))
+    z_proj, weights_proj = jacobi_quadrature(N, b.alpha[1], b.alpha[2])
+    z0, weights0 = jacobi_quadrature(N, 0.0, 0.0)
+    Q0 = jacobi_polynomials(N, b.alpha[1], b.alpha[2], z0)
+    Q_proj = jacobi_polynomials(N, b.alpha[1], b.alpha[2], z_proj)
+    normalization = b.dR / 2
+    result = normalization * transpose(Q0 * Diagonal(weights0)) * (Diagonal(weights_proj) * Q_proj)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    constant_mode_value(b::ShellRadialBasis)
+
+Return the value of the zeroth radial mode (constant mode) for k=0.
+"""
+function constant_mode_value(b::ShellRadialBasis)
+    cached = get(b._cache, :constant_mode_value, nothing)
+    if cached !== nothing
+        return cached
+    end
+    Q0 = jacobi_polynomials(1, b.alpha[1], b.alpha[2], [0.0])
+    val = Q0[1, 1]
+    b._cache[:constant_mode_value] = val
+    return val
+end
+
+"""
+    radial_transform_factor(b::ShellRadialBasis, scale, data_axis, dk)
+
+Compute the radial prefactor (dR/r)^dk for transforms.
+"""
+function radial_transform_factor(b::ShellRadialBasis, scale, data_axis, dk)
+    cache_key = (:radial_transform_factor, scale, data_axis, dk)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    r = reshape_vector(_radius_grid(b, scale), data_axis, data_axis - 1)
+    result = (b.dR ./ r) .^ dk
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    interpolation(b::ShellRadialBasis, position)
+
+Build interpolation vector at the given radial position.
+"""
+function interpolation(b::ShellRadialBasis, position)
+    cache_key = (:interpolation, position)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    native_position = position * 2 / b.dR - b.rho
+    a = b.alpha[1] + b.k
+    bp = b.alpha[2] + b.k
+    radial_factor = (b.dR / position)^b.k
+    result = radial_factor .* jacobi_polynomials(n_size(b, 0), a, bp, native_position)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    transform_plan(b::ShellRadialBasis, dist, grid_size, k)
+
+Build (or retrieve cached) a transform plan for the shell radial direction.
+"""
+function transform_plan(b::ShellRadialBasis, dist, grid_size, k)
+    cache_key = (:transform_plan, dist, grid_size, k)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    a = b.alpha[1] + k
+    bp = b.alpha[2] + k
+    a0 = b.alpha[1]
+    b0 = b.alpha[2]
+    # Build matrix transform plan using Jacobi polynomials
+    N = b.Nmax + 1
+    z, w = jacobi_quadrature(grid_size, a0, b0)
+    P = jacobi_polynomials(N, a, bp, z)
+    fwd = transpose(P) * Diagonal(w)
+    bwd = P
+    plan = MatrixTransformPlan(Matrix{Float64}(fwd), Matrix{Float64}(bwd))
+    b._cache[cache_key] = plan
+    return plan
+end
+
+# -- Transform methods --
+
+"""
+    forward_transform_radius_shell(b::ShellRadialBasis, field, axis, gdata, cdata)
+
+Forward radial transform for shell basis.
+"""
+function forward_transform_radius_shell(b::ShellRadialBasis, field, axis, gdata, cdata)
+    data_axis = length(field.tensorsig) + axis
+    grid_size = size(gdata, data_axis)
+    # Multiply by radial factor
+    if b.k > 0
+        gdata = gdata .* radial_transform_factor(b, field.scales[axis], data_axis, -b.k)
+    end
+    # Apply recombinations
+    forward_regularity_recombination(b, field.tensorsig, axis, gdata; ell_maps=ell_maps(b, field.dist))
+    temp = copy(gdata)
+    # Perform radial transforms component-by-component
+    R = regularity_classes(b, field.tensorsig)
+    for (regindex, regtotal_val) in pairs(R)
+        plan = transform_plan(b, field.dist, grid_size, b.k)
+        forward!(plan, view(temp, regindex), view(cdata, regindex), axis)
+    end
+    return nothing
+end
+
+"""
+    backward_transform_radius_shell(b::ShellRadialBasis, field, axis, cdata, gdata)
+
+Backward radial transform for shell basis.
+"""
+function backward_transform_radius_shell(b::ShellRadialBasis, field, axis, cdata, gdata)
+    data_axis = length(field.tensorsig) + axis
+    grid_size = size(gdata, data_axis)
+    # Perform radial transforms component-by-component
+    R = regularity_classes(b, field.tensorsig)
+    temp = zeros(eltype(gdata), size(gdata))
+    for (i, r) in pairs(R)
+        plan = transform_plan(b, field.dist, grid_size, b.k)
+        backward!(plan, view(cdata, i), view(temp, i), axis)
+    end
+    copyto!(gdata, temp)
+    # Regularity recombination
+    backward_regularity_recombination(b, field.tensorsig, axis, gdata, ell_maps(b, field.dist))
+    # Multiply by radial factor
+    if b.k > 0
+        gdata .*= radial_transform_factor(b, field.scales[axis], data_axis, b.k)
+    end
+    return nothing
+end
+
+# -- Operator methods --
+
+"""
+    operator_matrix(b::ShellRadialBasis, op, l, regtotal_val; size=nothing)
+
+Build a radial operator matrix using dedalus_sphere shell operators.
+"""
+function operator_matrix(b::ShellRadialBasis, op, l, regtotal_val; size=nothing)
+    cache_key = (:operator_matrix, op, l, regtotal_val, size)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    l_shifted = l + regtotal_val
+    if op in ("D+", "D-")
+        p = op[end] == '+' ? 1 : -1
+        D = shell_operator(3, b.radii, "D"; alpha=b.alpha)
+        operator = D(p, l_shifted)
+    elseif op == "L"
+        D = shell_operator(3, b.radii, "D"; alpha=b.alpha)
+        operator = compose(D(-1, l_shifted + 1), D(+1, l_shifted))
+    else
+        operator = shell_operator(3, b.radii, op; alpha=b.alpha)
+    end
+    if size === nothing
+        size = n_size(b, l_shifted)
+    end
+    result = Float64.(resize_matrix(operator, size, b.k))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    jacobi_conversion(b::ShellRadialBasis, l, dk; size=nothing)
+
+Build the Jacobi conversion matrix (AB operator) for the shell.
+"""
+function jacobi_conversion(b::ShellRadialBasis, l, dk; size=nothing)
+    cache_key = (:jacobi_conversion, l, dk, size)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    AB = shell_operator(3, b.radii, "AB"; alpha=b.alpha)
+    op = AB
+    for _ in 2:dk
+        op = compose(op, AB)
+    end
+    if size === nothing
+        size = n_size(b, l)
+    end
+    result = Float64.(resize_matrix(op, size, b.k))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    conversion_matrix(b::ShellRadialBasis, l, regtotal_val, dk)
+
+Build the conversion matrix (E operator) for the shell.
+"""
+function conversion_matrix(b::ShellRadialBasis, l, regtotal_val, dk)
+    cache_key = (:conversion_matrix, l, regtotal_val, dk)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    E = shell_operator(3, b.radii, "E"; alpha=b.alpha)
+    op = E
+    for _ in 2:dk
+        op = compose(op, E)
+    end
+    result = Float64.(resize_matrix(op, n_size(b, l), b.k))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    clone_with(b::ShellRadialBasis; kwargs...)
+
+Create a copy of the shell radial basis with some fields replaced.
+"""
+function clone_with(b::ShellRadialBasis; kwargs...)
+    kw = Dict{Symbol,Any}(kwargs)
+    coordsys_val = get(kw, :coordsys, b.coordsys)
+    radial_size_val = get(kw, :radial_size, b.radial_size)
+    dtype_val = get(kw, :dtype, b.dtype)
+    radii_val = get(kw, :radii, b.radii)
+    alpha_val = get(kw, :alpha, b.alpha)
+    dealias_val = get(kw, :dealias, b.dealias)
+    k_val = get(kw, :k, b.k)
+    r_lib = get(kw, :radius_library, b.radius_library)
+    return ShellRadialBasis(coordsys_val, radial_size_val, dtype_val;
+                            radii=radii_val, alpha=alpha_val,
+                            dealias=dealias_val, k=k_val,
+                            radius_library=r_lib)
+end
+
+"""
+    _last_axis_component_ncc_matrix(::Type{ShellRadialBasis}, subproblem, ncc_basis,
+        arg_basis, out_basis, coeffs, ncc_comp, arg_comp, out_comp,
+        ncc_tensorsig, arg_tensorsig, out_tensorsig; cutoff=1e-6)
+
+Build NCC component matrix for shell radial basis via Clenshaw algorithm.
+"""
+function _last_axis_component_ncc_matrix(::Type{ShellRadialBasis}, subproblem, ncc_basis,
+        arg_basis, out_basis, coeffs, ncc_comp, arg_comp, out_comp,
+        ncc_tensorsig, arg_tensorsig, out_tensorsig; cutoff::Float64=1e-6)
+    ell = 0  # HACK: independent of ell for shell
+    arg_radial_basis = arg_basis isa ShellRadialBasis ? arg_basis : arg_basis.radial_basis
+    regtotal_arg = regtotal(arg_comp)
+    # Jacobi parameters
+    a_ncc = ncc_basis.k + ncc_basis.alpha[1]
+    b_ncc = ncc_basis.k + ncc_basis.alpha[2]
+    N = n_size(ncc_basis, ell)
+    N0 = n_size(ncc_basis, 0)
+    # Pad for dealiasing with conversion
+    Nmat = 3 * fld(N0 + 1, 2) + ncc_basis.k
+    J = operator_matrix(arg_radial_basis, "Z", ell, regtotal_arg; size=Nmat)
+    A, B = jacobi_recursion(Nmat, a_ncc, b_ncc, J)
+    p0 = jacobi_polynomials(1, a_ncc, b_ncc, [1.0])
+    f0 = p0[1] * sparse(1.0I, Nmat, Nmat)
+    # Conversions to account for radial prefactors
+    prefactor = jacobi_conversion(arg_radial_basis, ell; dk=ncc_basis.k, size=Nmat)
+    if ncc_basis.dtype === Float64
+        coeffs_cos, coeffs_msin = coeffs
+        if !isa(coeffs_cos[1], Number)
+            error("Recursive Clenshaw not finished for float64.")
+        end
+        matrix_cos = (prefactor * kronecker_clenshaw(coeffs_cos, nothing, A, B, f0, cutoff))[1:N, 1:N]
+        matrix_msin = (prefactor * kronecker_clenshaw(coeffs_msin, nothing, A, B, f0, cutoff))[1:N, 1:N]
+        # Build 2x2 block matrix: [[cos, -msin], [msin, cos]]
+        matrix = sparse(vcat(hcat(matrix_cos, -matrix_msin), hcat(matrix_msin, matrix_cos)))
+    elseif ncc_basis.dtype === ComplexF64
+        if isa(coeffs[1], Number)
+            matrix = (prefactor * matrix_clenshaw(coeffs, A, B, f0, cutoff))[1:N, 1:N]
+        else
+            coeff_vals, coeff_norms = coeffs
+            i0, i1 = size(coeff_vals[1])
+            I0 = sparse(1.0I, i0, i0)
+            I1 = sparse(1.0I, i1, i1)
+            matrix = kron(I0, prefactor) * kronecker_clenshaw(coeff_vals, coeff_norms, A, B, f0, cutoff)
+            dealias0 = kron(I0, sparse(1.0I, N, Nmat))
+            dealias1 = kron(I1, sparse(1.0I, N, Nmat))
+            matrix = dealias0 * matrix * transpose(dealias1)
+        end
+    end
+    return matrix
+end
+
+function Base.show(io::IO, b::ShellRadialBasis)
+    print(io, "ShellRadialBasis($(b.coordsys), radial_size=$(b.radial_size), radii=$(b.radii), k=$(b.k), alpha=$(b.alpha))")
+end
+
+
+# ============================================================================
+# BallRadialBasis  (concrete regularity basis for ball)
+# ============================================================================
+
+"""
+    BallRadialBasis <: AbstractRegularityBasis
+
+Radial basis for ball domains using Zernike polynomials.
+Shape is (1, 1, radial_size) — a 3D basis with only the radial dimension
+carrying spectral content. Employs triangular truncation: nmin(ell) = ell div 2.
+"""
+mutable struct BallRadialBasis <: AbstractRegularityBasis
+    coordsys::SphericalCoordinates
+    radial_size::Int
+    shape::Tuple{Int,Int,Int}
+    k::Int
+    dealias::Tuple{Float64,Float64,Float64}
+    Nmax::Int
+    dtype::DataType
+    group_shape::Tuple{Int,Int,Int}
+    radius::Float64
+    volume::Float64
+    alpha::Int
+    radial_COV::AffineCOV
+    radius_library::String
+    grid_params::Tuple
+    forward_transforms::Vector
+    backward_transforms::Vector
+    _cache::Dict{Any,Any}
+end
+
+# Class-level transforms dict (for registered transform libraries)
+const _ball_radial_transforms = Dict{String,Any}()
+
+# -- Constructor caching --
+const _ball_radial_cache = Dict{Any,WeakRef}()
+
+"""
+    BallRadialBasis(coordsys, radial_size, dtype; radius=1, k=0, alpha=0,
+                    dealias=(1,), radius_library=nothing)
+
+Construct (or retrieve cached) a BallRadialBasis.
+"""
+function BallRadialBasis(coordsys::SphericalCoordinates, radial_size::Int, dtype::DataType;
+                         radius::Real=1.0,
+                         k::Int=0,
+                         alpha::Int=0,
+                         dealias=(1.0,),
+                         radius_library=nothing)
+    # Validate
+    radius = Float64(radius)
+    if radius <= 0
+        throw(ArgumentError("Radius must be positive."))
+    end
+    if radius_library === nothing
+        radius_library = "matrix"
+    end
+
+    # Process dealias: pad to 3 dims
+    if length(dealias) == 1
+        dealias_full = (1.0, 1.0, Float64(dealias[1]))
+    else
+        dealias_full = Tuple(Float64.(dealias))
+    end
+
+    # Compute derived
+    shape = (1, 1, radial_size)
+    Nmax = radial_size - 1
+    volume = 4 / 3 * pi * radius^3
+    radial_COV = AffineCOV((0.0, 1.0), (0.0, radius))
+
+    if dtype === Float64
+        group_shape = (2, 1, 1)
+    elseif dtype === ComplexF64
+        group_shape = (1, 1, 1)
+    else
+        throw(ArgumentError("Unsupported dtype: $dtype"))
+    end
+
+    grid_params = (coordsys, radius, alpha, dealias_full)
+
+    # Cache lookup
+    cache_key = (coordsys, radial_size, dtype, radius, k, alpha, dealias_full, radius_library)
+    wr = get(_ball_radial_cache, cache_key, nothing)
+    if wr !== nothing
+        inst = wr.value
+        if inst !== nothing
+            return inst::BallRadialBasis
+        end
+    end
+
+    _cache = Dict{Any,Any}()
+
+    inst = BallRadialBasis(
+        coordsys, radial_size, shape, k, dealias_full, Nmax, dtype,
+        group_shape, radius, volume, alpha, radial_COV, radius_library,
+        grid_params,
+        Any[], Any[],  # transforms -- set below
+        _cache
+    )
+
+    # Set transform callables
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> forward_transform_azimuth_regularity(inst, field, axis, gdata, cdata))
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> forward_transform_colatitude_regularity(inst, field, axis, gdata, cdata))
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> forward_transform_radius_ball(inst, field, axis, gdata, cdata))
+
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> backward_transform_azimuth_regularity(inst, field, axis, cdata, gdata))
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> backward_transform_colatitude_regularity(inst, field, axis, cdata, gdata))
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> backward_transform_radius_ball(inst, field, axis, cdata, gdata))
+
+    _ball_radial_cache[cache_key] = WeakRef(inst)
+    return inst
+end
+
+# -- _nmin: uses floor division for ball (triangular truncation) --
+_nmin(::BallRadialBasis, ell) = fld.(ell, 2)
+
+# -- Equality and hashing --
+
+function Base.:(==)(a::BallRadialBasis, b::BallRadialBasis)
+    return a.coordsys == b.coordsys && a.grid_params == b.grid_params && a.k == b.k
+end
+
+Base.hash(b::BallRadialBasis, h::UInt) = hash((b.coordsys, b.grid_params, b.k), h)
+
+# -- Basis algebra --
+
+function basis_add(a::BallRadialBasis, other)
+    if other === nothing || other === a
+        return a
+    end
+    if other isa BallRadialBasis
+        if a.grid_params == other.grid_params
+            radial_size = max(a.shape[3], other.shape[3])
+            k_new = max(a.k, other.k)
+            return clone_with(a; radial_size=radial_size, k=k_new)
+        end
+    end
+    return nothing
+end
+
+function basis_mul(a::BallRadialBasis, other)
+    if other === nothing
+        return a
+    end
+    if other isa BallRadialBasis
+        if a.grid_params == other.grid_params
+            radial_size = max(a.shape[3], other.shape[3])
+            k_new = max(a.k, other.k)
+            return clone_with(a; radial_size=radial_size, k=k_new)
+        end
+    end
+    return nothing
+end
+
+function basis_rmatmul(operand::BallRadialBasis, ncc)
+    # NCC (ncc) * operand (self)
+    if ncc === nothing
+        return operand
+    end
+    if ncc isa BallRadialBasis
+        if operand.grid_params == ncc.grid_params
+            radial_size = max(operand.shape[3], ncc.shape[3])
+            k_new = max(operand.k, ncc.k)
+            return clone_with(operand; radial_size=radial_size, k=k_new)
+        end
+    end
+    return nothing
+end
+
+"""
+    _new_k(b::BallRadialBasis, k)
+
+Return a copy of this basis with a new k value.
+"""
+_new_k(b::BallRadialBasis, k) = clone_with(b; k=k)
+
+# -- Grid methods --
+
+"""
+    _radius_grid(b::BallRadialBasis, scale)
+
+Compute radial grid points at the given scale using Zernike quadrature,
+mapped through the radial COV.
+"""
+function _radius_grid(b::BallRadialBasis, scale)
+    cache_key = (:_radius_grid, scale)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    result = problem_coord(b.radial_COV, _native_radius_grid(b, scale))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    _native_radius_grid(b::BallRadialBasis, scale)
+
+Compute native radial grid (in [0,1]) using Zernike quadrature.
+"""
+function _native_radius_grid(b::BallRadialBasis, scale)
+    cache_key = (:_native_radius_grid, scale)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    N = Int(ceil(scale * b.shape[3]))
+    z, weights = zernike_quadrature(3, N; k=b.alpha)
+    r = sqrt.((z .+ 1) ./ 2)
+    result = Float64.(r)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    _radius_weights(b::BallRadialBasis, scale)
+
+Compute radial quadrature weights at the given scale.
+"""
+function _radius_weights(b::BallRadialBasis, scale)
+    cache_key = (:_radius_weights, scale)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    N = Int(ceil(scale * b.shape[3]))
+    z, weights = zernike_quadrature(3, N; k=b.alpha)
+    b._cache[cache_key] = weights
+    return weights
+end
+
+"""
+    constant_mode_value(b::BallRadialBasis)
+
+Return the constant mode value for the ball basis.
+"""
+function constant_mode_value(b::BallRadialBasis)
+    cached = get(b._cache, :constant_mode_value, nothing)
+    if cached !== nothing
+        return cached
+    end
+    Qk = zernike_polynomials(3, 1, b.alpha + b.k, 0, [0.0])
+    val = Qk[1, 1]
+    b._cache[:constant_mode_value] = val
+    return val
+end
+
+"""
+    interpolation(b::BallRadialBasis, ell, regtotal_val, position)
+
+Build the interpolation vector for the ball at the given radial position.
+"""
+function interpolation(b::BallRadialBasis, ell, regtotal_val, position)
+    cache_key = (:interpolation, ell, regtotal_val, position)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    native_position = native_coord(b.radial_COV, position)
+    native_z = 2 * native_position^2 - 1
+    result = zernike_polynomials(3, n_size(b, ell), b.alpha + b.k, ell + regtotal_val, native_z)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    transform_plan(b::BallRadialBasis, dist, grid_shape_val, regindex, axis, regtotal_val, k, alpha)
+
+Build (or retrieve cached) a transform plan for the ball radial direction.
+Dispatches to the registered transform library.
+"""
+function transform_plan(b::BallRadialBasis, dist, grid_shape_val, regindex, axis, regtotal_val, k, alpha)
+    cache_key = (:transform_plan, dist, grid_shape_val, regindex, axis, regtotal_val, k, alpha)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    if !haskey(_ball_radial_transforms, b.radius_library)
+        error("BallRadialBasis transform library '$(b.radius_library)' not registered. Register it in _ball_radial_transforms.")
+    end
+    plan = _ball_radial_transforms[b.radius_library](grid_shape_val, b.Nmax + 1, axis, ell_maps(b, dist), regindex, regtotal_val, k, alpha)
+    b._cache[cache_key] = plan
+    return plan
+end
+
+# -- Transform methods --
+
+"""
+    forward_transform_radius_ball(b::BallRadialBasis, field, axis, gdata, cdata)
+
+Forward radial transform for ball basis.
+"""
+function forward_transform_radius_ball(b::BallRadialBasis, field, axis, gdata, cdata)
+    # Apply recombination
+    forward_regularity_recombination(b, field.tensorsig, axis, gdata; ell_maps=ell_maps(b, field.dist))
+    # Perform radial transforms component-by-component
+    R = regularity_classes(b, field.tensorsig)
+    temp = copy(gdata)
+    for (regindex, regtotal_val) in pairs(R)
+        grid_shape_val = size(gdata[regindex])
+        plan = transform_plan(b, field.dist, grid_shape_val, regindex, axis, regtotal_val, b.k, b.alpha)
+        forward!(plan, view(temp, regindex), view(cdata, regindex), axis)
+    end
+    return nothing
+end
+
+"""
+    backward_transform_radius_ball(b::BallRadialBasis, field, axis, cdata, gdata)
+
+Backward radial transform for ball basis.
+"""
+function backward_transform_radius_ball(b::BallRadialBasis, field, axis, cdata, gdata)
+    # Perform radial transforms component-by-component
+    R = regularity_classes(b, field.tensorsig)
+    temp = zeros(eltype(gdata), size(gdata))
+    for (regindex, regtotal_val) in pairs(R)
+        grid_shape_val = size(gdata[regindex])
+        plan = transform_plan(b, field.dist, grid_shape_val, regindex, axis, regtotal_val, b.k, b.alpha)
+        backward!(plan, view(cdata, regindex), view(temp, regindex), axis)
+    end
+    copyto!(gdata, temp)
+    # Apply recombinations
+    backward_regularity_recombination(b, field.tensorsig, axis, gdata, ell_maps(b, field.dist))
+    return nothing
+end
+
+# -- Operator methods --
+
+"""
+    operator_matrix(b::BallRadialBasis, op, l, deg; size=nothing)
+
+Build a radial operator matrix using dedalus_sphere Zernike operators.
+"""
+function operator_matrix(b::BallRadialBasis, op, l, deg; size=nothing)
+    cache_key = (:operator_matrix, op, l, deg, size)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    if length(op) > 0 && op[end] in ('+', '-')
+        o = op[1:end-1]
+        p = op[end] == '+' ? 1 : -1
+        operator = zernike_operator(3, o; radius=b.radius)
+        mat = operator(p)
+    elseif op == "L"
+        D = zernike_operator(3, "D"; radius=b.radius)
+        mat = compose(D(-1), D(+1))
+    else
+        operator = zernike_operator(3, op; radius=b.radius)
+        mat = operator
+    end
+    if size === nothing
+        size = n_size(b, l)
+    end
+    result = Float64.(resize_matrix(mat, size, b.alpha + b.k, l + deg))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    conversion_matrix(b::BallRadialBasis, ell, regtotal_val, dk; size=nothing)
+
+Build the Zernike conversion matrix for the ball.
+"""
+function conversion_matrix(b::BallRadialBasis, ell, regtotal_val, dk; size=nothing)
+    cache_key = (:conversion_matrix, ell, regtotal_val, dk, size)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    E = zernike_operator(3, "E"; radius=b.radius)
+    op = E(+1)
+    for _ in 2:dk
+        op = compose(op, E(+1))
+    end
+    if size === nothing
+        size = n_size(b, ell)
+    end
+    result = Float64.(resize_matrix(op, size, b.alpha + b.k, ell + regtotal_val))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    radius_multiplication_matrix(b::BallRadialBasis, ell, regtotal_val, order, d; size=nothing)
+
+Build the matrix for multiplying by r^order with additional factor.
+"""
+function radius_multiplication_matrix(b::BallRadialBasis, ell, regtotal_val, order, d; size=nothing)
+    cache_key = (:radius_multiplication_matrix, ell, regtotal_val, order, d, size)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    if order == 0
+        operator = zernike_operator(3, "Id"; radius=b.radius)
+    else
+        R = zernike_operator(3, "R"; radius=1.0)
+        if order < 0
+            op = R(-1)
+            for _ in 2:abs(order)
+                op = compose(op, R(-1))
+            end
+            operator = op
+        else
+            op = R(+1)
+            for _ in 2:abs(order)
+                op = compose(op, R(+1))
+            end
+            operator = op
+        end
+    end
+    if d > 0
+        R = zernike_operator(3, "R"; radius=1.0)
+        R2 = compose(R(-1), R(+1))
+        for _ in 1:fld(d, 2)
+            operator = compose(R2, operator)
+        end
+    end
+    if size === nothing
+        size = n_size(b, ell)
+    end
+    result = Float64.(resize_matrix(operator, size, b.alpha + b.k, ell + regtotal_val))
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    clone_with(b::BallRadialBasis; kwargs...)
+
+Create a copy of the ball radial basis with some fields replaced.
+"""
+function clone_with(b::BallRadialBasis; kwargs...)
+    kw = Dict{Symbol,Any}(kwargs)
+    coordsys_val = get(kw, :coordsys, b.coordsys)
+    radial_size_val = get(kw, :radial_size, b.radial_size)
+    dtype_val = get(kw, :dtype, b.dtype)
+    radius_val = get(kw, :radius, b.radius)
+    k_val = get(kw, :k, b.k)
+    alpha_val = get(kw, :alpha, b.alpha)
+    dealias_val = get(kw, :dealias, b.dealias)
+    r_lib = get(kw, :radius_library, b.radius_library)
+    return BallRadialBasis(coordsys_val, radial_size_val, dtype_val;
+                           radius=radius_val, k=k_val, alpha=alpha_val,
+                           dealias=dealias_val, radius_library=r_lib)
+end
+
+"""
+    _last_axis_component_ncc_matrix(::Type{BallRadialBasis}, subproblem, ncc_basis,
+        arg_basis, out_basis, coeffs, ncc_comp, arg_comp, out_comp,
+        ncc_tensorsig, arg_tensorsig, out_tensorsig; cutoff=1e-6)
+
+Build NCC component matrix for ball radial basis via Clenshaw algorithm.
+"""
+function _last_axis_component_ncc_matrix(::Type{BallRadialBasis}, subproblem, ncc_basis,
+        arg_basis, out_basis, coeffs, ncc_comp, arg_comp, out_comp,
+        ncc_tensorsig, arg_tensorsig, out_tensorsig; cutoff::Float64=1e-6)
+    ell = subproblem.group[2]  # HACK (1-based: group[2] corresponds to Python group[1])
+    if arg_basis isa BallRadialBasis
+        arg_radial_basis = arg_basis
+    elseif arg_basis !== nothing && hasproperty(arg_basis, :radial_basis)
+        arg_radial_basis = arg_basis.radial_basis
+    elseif arg_basis === nothing
+        # Reshape coeffs as column vector
+        matrix = reshape(vec(coeffs), :, 1)
+        return sparse(matrix)
+    else
+        error("Unsupported arg_basis type for BallRadialBasis NCC matrix")
+    end
+    regtotal_ncc = regtotal(ncc_comp)
+    regtotal_arg = regtotal(arg_comp)
+    regtotal_out = regtotal(out_comp)
+    diff_regtotal = regtotal_out - regtotal_arg
+    # Jacobi parameters
+    a_ncc = ncc_basis.alpha + ncc_basis.k
+    b_ncc = regtotal_ncc + 0.5
+    N = n_size(ncc_basis, ell)
+    N0 = n_size(ncc_basis, 0)
+    d = regtotal_ncc - abs(diff_regtotal)
+    dk = max(ncc_basis.k, arg_radial_basis.k) - arg_radial_basis.k
+    # Pad for dealiasing with conversion
+    Nmat = 3 * fld(N0 + 1, 2) + fld(dk + 1, 2)
+    if (d >= 0) && (d % 2 == 0)
+        J = operator_matrix(arg_radial_basis, "Z", ell, regtotal_arg; size=Nmat)
+        A, B = jacobi_recursion(N0, a_ncc, b_ncc, J)
+        p0 = zernike_polynomials(3, 1, a_ncc, regtotal_ncc, [1.0])
+        f0 = p0[1] * sparse(1.0I, Nmat, Nmat)
+        radial_factor = radius_multiplication_matrix(arg_radial_basis, ell, regtotal_arg, diff_regtotal, d; size=Nmat)
+        conversion = conversion_matrix(arg_radial_basis, ell, regtotal_out, dk; size=Nmat)
+        prefactor = conversion * radial_factor
+        if ncc_basis.dtype === Float64
+            coeffs_cos_filter = vec(coeffs[1])[1:N0]
+            coeffs_msin_filter = vec(coeffs[2])[1:N0]
+            matrix_cos = (prefactor * matrix_clenshaw(coeffs_cos_filter, A, B, f0, cutoff))[1:N, 1:N]
+            matrix_msin = (prefactor * matrix_clenshaw(coeffs_msin_filter, A, B, f0, cutoff))[1:N, 1:N]
+            matrix = sparse(vcat(hcat(matrix_cos, -matrix_msin), hcat(matrix_msin, matrix_cos)))
+        elseif ncc_basis.dtype === ComplexF64
+            coeffs_filter = vec(coeffs)[1:N0]
+            matrix = (prefactor * matrix_clenshaw(coeffs_filter, A, B, f0, cutoff))[1:N, 1:N]
+        end
+    else
+        if ncc_basis.dtype === Float64
+            matrix = spzeros(Float64, 2 * N, 2 * N)
+        elseif ncc_basis.dtype === ComplexF64
+            matrix = spzeros(ComplexF64, N, N)
+        end
+    end
+    return matrix
+end
+
+function Base.show(io::IO, b::BallRadialBasis)
+    print(io, "BallRadialBasis($(b.coordsys), radial_size=$(b.radial_size), radius=$(b.radius), k=$(b.k), alpha=$(b.alpha))")
+end
+
+
+# ============================================================================
+# AbstractSpherical3DBasis  (abstract; compound: SphereBasis + radial basis)
+# ============================================================================
+
+"""
+    AbstractSpherical3DBasis <: MultidimensionalBasis
+
+Abstract base type for 3D spherical compound bases that combine a SphereBasis
+(for the angular directions) with a radial basis (ShellRadialBasis or
+BallRadialBasis).
+
+Concrete subtypes: `ShellBasis`, `BallBasis`.
+
+## Type hierarchy
+
+    MultidimensionalBasis
+    +-- AbstractSpherical3DBasis
+        +-- ShellBasis  (SphereBasis + ShellRadialBasis)
+        +-- BallBasis   (SphereBasis + BallRadialBasis)
+
+Delegates angular methods (azimuth, colatitude transforms, grids, ell_maps)
+to the internal `sphere_basis`, and radial methods to `radial_basis`.
+"""
+abstract type AbstractSpherical3DBasis <: MultidimensionalBasis end
+
+# -- Class constants --
+basis_dim(::AbstractSpherical3DBasis) = 3
+basis_subaxis_dependence(::AbstractSpherical3DBasis) = (false, true, true)
+
+# -- Trait: 3D spherical bases support spin recombination --
+spin_recombination_trait(::AbstractSpherical3DBasis) = HasSpinRecombination()
+
+# -- Accessor functions --
+basis_coordsys(b::AbstractSpherical3DBasis) = b.coordsys
+basis_shape(b::AbstractSpherical3DBasis) = b.shape
+basis_dealias(b::AbstractSpherical3DBasis) = b.dealias
+basis_group_shape(b::AbstractSpherical3DBasis) = b.group_shape
+
+"""
+    basis_constant(b::AbstractSpherical3DBasis)
+
+Return tuple of booleans indicating which sub-axes are constant.
+"""
+function basis_constant(b::AbstractSpherical3DBasis)
+    cached = get(b._cache, :constant, nothing)
+    if cached !== nothing
+        return cached
+    end
+    val = (b.shape[1] == 1, b.shape[2] == 1, false)
+    b._cache[:constant] = val
+    return val
+end
+
+"""
+    get_radial_basis(b::AbstractSpherical3DBasis)
+
+Return the radial basis component.
+"""
+get_radial_basis(b::AbstractSpherical3DBasis) = b.radial_basis
+
+"""
+    radial_basis(b::AbstractSpherical3DBasis)
+
+Return the radial basis component (convenience alias for get_radial_basis).
+"""
+radial_basis(b::AbstractSpherical3DBasis) = b.radial_basis
+
+"""
+    S2_basis(b::AbstractSpherical3DBasis; radius=nothing)
+
+Return (or construct) the SphereBasis for this 3D basis at the given radius.
+"""
+function S2_basis(b::AbstractSpherical3DBasis; radius=nothing)
+    if radius === nothing
+        if hasproperty(b, :radius)
+            radius = b.radius
+        elseif hasproperty(b, :radii)
+            radius = max(b.radii...)
+        else
+            error("Cannot determine radius for S2_basis")
+        end
+    end
+    return SphereBasis(b.coordsys, (b.shape[1], b.shape[2]), b.dtype;
+                       radius=radius, dealias=(b.dealias[1], b.dealias[2]),
+                       azimuth_library=b.azimuth_library,
+                       colatitude_library=b.colatitude_library)
+end
+
+"""
+    ell_maps(b::AbstractSpherical3DBasis, dist)
+
+Delegate ell_maps to the sphere_basis.
+"""
+function ell_maps(b::AbstractSpherical3DBasis, dist)
+    return ell_maps(b.sphere_basis, dist)
+end
+
+"""
+    ell_reversed(b::AbstractSpherical3DBasis, dist)
+
+Delegate ell_reversed to the sphere_basis.
+"""
+function ell_reversed(b::AbstractSpherical3DBasis, dist)
+    cache_key = (:ell_reversed_3d, dist)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    result = ell_reversed(S2_basis(b), dist)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    n_size(b::AbstractSpherical3DBasis, ell)
+
+Delegate n_size to the radial_basis (mirrors Python Spherical3DBasis.n_size).
+"""
+function n_size(b::AbstractSpherical3DBasis, ell)
+    return n_size(b.radial_basis, ell)
+end
+
+"""
+    n_slice(b::AbstractSpherical3DBasis, ell)
+
+Delegate n_slice to the radial_basis (mirrors Python Spherical3DBasis.n_slice).
+"""
+function n_slice(b::AbstractSpherical3DBasis, ell)
+    return n_slice(b.radial_basis, ell)
+end
+
+"""
+    matrix_dependence(b::AbstractSpherical3DBasis, matrix_coupling)
+
+If colatitude coupling is present, azimuthal dependence must also be present.
+"""
+function matrix_dependence(b::AbstractSpherical3DBasis, matrix_coupling)
+    md = copy(matrix_coupling)
+    # Python: if matrix_coupling[1]: matrix_dependence[0] = True
+    # 1-based: if matrix_coupling[2]: md[1] = true
+    if matrix_coupling[2]
+        md[1] = true
+    end
+    return md
+end
+
+"""
+    derivative_basis(b::AbstractSpherical3DBasis; order=1)
+
+Return a copy of this basis with k increased by order.
+"""
+function derivative_basis(b::AbstractSpherical3DBasis; order=1)
+    k = b.k + order
+    return clone_with(b; k=k)
+end
+
+"""
+    constant_mode_value(b::AbstractSpherical3DBasis)
+
+Return the constant mode value, adjusted for SWSH normalization.
+"""
+function constant_mode_value(b::AbstractSpherical3DBasis)
+    cached = get(b._cache, :constant_mode_value, nothing)
+    if cached !== nothing
+        return cached
+    end
+    val = constant_mode_value(b.radial_basis) / sqrt(2)
+    b._cache[:constant_mode_value] = val
+    return val
+end
+
+# -- Grid methods --
+
+"""
+    global_grids(b::AbstractSpherical3DBasis, dist, scales)
+
+Return tuple of (azimuth_grid, colatitude_grid, radius_grid).
+"""
+function global_grids(b::AbstractSpherical3DBasis, dist, scales)
+    az_grid = global_grid(b.sphere_basis.azimuth_basis, dist, scales[1])
+    colat_grid = global_grid_colatitude(b.sphere_basis, dist, scales[2])
+    rad_grid = global_grid(b.radial_basis, dist, scales[3])
+    return (az_grid, colat_grid, rad_grid)
+end
+
+"""
+    local_grids(b::AbstractSpherical3DBasis, dist, scales)
+
+Return tuple of (local_azimuth_grid, local_colatitude_grid, local_radius_grid).
+"""
+function local_grids(b::AbstractSpherical3DBasis, dist, scales)
+    az_grid = local_grid(b.sphere_basis.azimuth_basis, dist, scales[1])
+    colat_grid = local_grid_colatitude(b.sphere_basis, dist, scales[2])
+    rad_grid = local_grid(b.radial_basis, dist, scales[3])
+    return (az_grid, colat_grid, rad_grid)
+end
+
+"""
+    global_grid_spacing(b::AbstractSpherical3DBasis, dist, subaxis, scales)
+
+Return the global grid spacing for the given subaxis.
+subaxis is 1-based (1=azimuth, 2=colatitude, 3=radius).
+"""
+function global_grid_spacing(b::AbstractSpherical3DBasis, dist, subaxis, scales)
+    cache_key = (:global_grid_spacing, dist, subaxis, scales)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    grid = global_grids(b, dist, scales)[subaxis]
+    if length(grid) == 1
+        result = Float64[Inf]
+        b._cache[cache_key] = result
+        return result
+    end
+    # Compute gradient along the relevant axis using finite differences (edge_order=2).
+    # numpy.gradient with edge_order=2 uses:
+    #   - Interior: central differences (f[i+1] - f[i-1]) / 2h
+    #   - Boundaries: second-order one-sided differences
+    # The grid is an N-dimensional array with data along one axis.
+    axis = get_basis_axis(dist, b) + subaxis - 1
+    result = _numpy_gradient(grid, axis)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    _numpy_gradient(arr, axis)
+
+Compute the gradient of an N-dimensional array along the given axis
+using second-order finite differences (mimics numpy.gradient with edge_order=2).
+"""
+function _numpy_gradient(arr::AbstractArray, axis::Int)
+    result = similar(arr, Float64)
+    n = size(arr, axis)
+    if n < 2
+        fill!(result, Inf)
+        return result
+    end
+    # Build index helpers
+    ndim = ndims(arr)
+    function make_slice(idx)
+        return ntuple(d -> d == axis ? idx : Colon(), ndim)
+    end
+    if n == 2
+        # Only two points: use simple difference for both
+        d = selectdim(arr, axis, 2) .- selectdim(arr, axis, 1)
+        result .= reshape(d, size(result, 1) == 1 && ndim == 1 ? (1,) : size(d))
+        return result
+    end
+    # Interior: central differences
+    for i in 2:(n-1)
+        h_prev = selectdim(arr, axis, i) .- selectdim(arr, axis, i-1)
+        h_next = selectdim(arr, axis, i+1) .- selectdim(arr, axis, i)
+        view(result, make_slice(i)...) .= (selectdim(arr, axis, i+1) .- selectdim(arr, axis, i-1)) ./ 2
+    end
+    # Boundary: second-order one-sided differences
+    # Left boundary (i=1): (-3f[1] + 4f[2] - f[3]) / 2
+    view(result, make_slice(1)...) .= (-3 .* selectdim(arr, axis, 1) .+ 4 .* selectdim(arr, axis, 2) .- selectdim(arr, axis, 3)) ./ 2
+    # Right boundary (i=n): (3f[n] - 4f[n-1] + f[n-2]) / 2
+    view(result, make_slice(n)...) .= (3 .* selectdim(arr, axis, n) .- 4 .* selectdim(arr, axis, n-1) .+ selectdim(arr, axis, n-2)) ./ 2
+    return result
+end
+
+"""
+    local_grid_spacing(b::AbstractSpherical3DBasis, dist, subaxis, scales)
+
+Return the local grid spacing for the given subaxis.
+"""
+function local_grid_spacing(b::AbstractSpherical3DBasis, dist, subaxis, scales)
+    cache_key = (:local_grid_spacing, dist, subaxis, scales)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    axis = get_basis_axis(dist, b) + subaxis - 1
+    gs = global_grid_spacing(b, dist, subaxis, scales)
+    domain = make_domain(dist, (b,))
+    le = local_elements(grid_layout(dist), domain, Tuple(scales[subaxis] for _ in 1:get_dim(b)); broadcast=true)
+    local_el = le[axis]
+    # Extract local portion from global spacing and reshape
+    flat_gs = vec(gs)
+    local_vals = flat_gs[local_el .+ 1]  # +1 for 0-based to 1-based
+    result = reshape_vector(local_vals, get_dim(dist), axis)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    local_elements(b::AbstractSpherical3DBasis)
+
+Return the local elements. Not yet implemented.
+"""
+function local_elements(b::AbstractSpherical3DBasis)
+    # Not implemented in Python either (raises NotImplementedError).
+    # Local element access for spherical 3D bases should go through the
+    # layout/distributor system: dist.grid_layout.local_elements(domain, scales).
+    error("local_elements(::AbstractSpherical3DBasis): use dist.grid_layout.local_elements(domain, scales) instead")
+end
+
+# -- Delegation to radial basis --
+
+"""
+    operator_matrix(b::AbstractSpherical3DBasis, op, l, regtotal_val; dk=0, size=nothing)
+
+Delegate to radial_basis.operator_matrix.
+"""
+function operator_matrix(b::AbstractSpherical3DBasis, op, l, regtotal_val; dk=0, size=nothing)
+    cache_key = (:operator_matrix_3d, op, l, regtotal_val, dk, size)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    result = operator_matrix(b.radial_basis, op, l, regtotal_val; size=size)
+    b._cache[cache_key] = result
+    return result
+end
+
+"""
+    conversion_matrix(b::AbstractSpherical3DBasis, l, regtotal_val, dk)
+
+Delegate to radial_basis.conversion_matrix.
+"""
+function conversion_matrix(b::AbstractSpherical3DBasis, l, regtotal_val, dk)
+    cache_key = (:conversion_matrix_3d, l, regtotal_val, dk)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    result = conversion_matrix(b.radial_basis, l, regtotal_val, dk)
+    b._cache[cache_key] = result
+    return result
+end
+
+# -- Shape methods --
+
+"""
+    global_shape(b::AbstractSpherical3DBasis, grid_space, scales)
+
+Compute the global data shape for the given grid/coeff space and scale factors.
+"""
+function global_shape(b::AbstractSpherical3DBasis, grid_space, scales)
+    gs = grid_shape(b, scales)
+    s2_shape = global_shape(b.sphere_basis, grid_space, scales)
+    if grid_space[3]
+        # *-*-grid space
+        radial_shape = (gs[3],)
+    else
+        # coeff-coeff-coeff space
+        radial_shape = (b.shape[3],)
+    end
+    return (s2_shape..., radial_shape...)
+end
+
+"""
+    chunk_shape(b::AbstractSpherical3DBasis, grid_space)
+
+Compute the chunk shape for distribution.
+"""
+function chunk_shape(b::AbstractSpherical3DBasis, grid_space)
+    s2_chunk = chunk_shape(b.sphere_basis, grid_space)
+    return (s2_chunk..., 1)
+end
+
+"""
+    valid_elements(b::AbstractSpherical3DBasis, tensorsig, grid_space, elements)
+
+Determine which elements are valid for the given tensor signature.
+"""
+function valid_elements(b::AbstractSpherical3DBasis, tensorsig, grid_space, elements)
+    if grid_space[3]
+        # ggg, cgg, ccg: same as Sphere validity before regularity recombination
+        return valid_elements(S2_basis(b), tensorsig, grid_space, elements)
+    else
+        # coeff-coeff-coeff
+        groups = elements_to_groups(b, grid_space, elements)
+        m = groups[1]
+        l = groups[2]
+        n = groups[3]
+        tshape = tuple((get_dim(cs) for cs in tensorsig)...)
+        valid = ones(Bool, tshape..., size(m)...)
+        # Drop disallowed regularity components
+        if !isempty(tensorsig)
+            regidx = regularity_indices(b.radial_basis, tensorsig)
+            for regcomp in CartesianIndices(tshape)
+                regindex_val = regidx[regcomp]
+                valid[regcomp, axes(m)...] .= regularity_allowed_vectorized(b.radial_basis, l, regindex_val)
+            end
+        end
+        # Drop msin part of ell == 0 for real scalars and vectors
+        if b.dtype === Float64
+            if length(tensorsig) == 0
+                valid[(l .== 0) .& (elements[1] .% 2 .== 1)] .= false
+            elseif length(tensorsig) == 1
+                allcomps = ntuple(_ -> Colon(), 1)
+                valid[allcomps..., (l .== 0) .& (elements[1] .% 2 .== 1)] .= false
+            end
+        end
+        return valid
+    end
+end
+
+"""
+    elements_to_groups(b::AbstractSpherical3DBasis, grid_space, elements)
+
+Convert element indices to group indices (m, ell, n).
+"""
+function elements_to_groups(b::AbstractSpherical3DBasis, grid_space, elements)
+    s2_groups = elements_to_groups(b.sphere_basis, grid_space, elements[1:2])
+    radial_groups = elements[3]
+    groups = [s2_groups..., radial_groups]
+    if !grid_space[3]
+        # coeff-coeff-coeff space: mask n < nmin
+        m = groups[1]
+        ell = groups[2]
+        n = groups[3]
+        nmin_val = _nmin(b.radial_basis, ell)
+        # Mark invalid elements by setting them to -1
+        # Python uses np.ma.masked_array; in Julia we flag with -1
+        invalid = n .< nmin_val
+        for i in 1:length(groups)
+            if groups[i] isa AbstractArray
+                groups[i] = copy(groups[i])
+                groups[i][invalid] .= -1
+            elseif invalid isa Bool && invalid
+                groups[i] = -1
+            end
+        end
+    end
+    return groups
+end
+
+# -- NCC matrix methods --
+
+"""
+    _last_axis_component_ncc_matrix(::Type{<:AbstractSpherical3DBasis}, subproblem,
+        ncc_basis, arg_basis, out_basis, coeffs, args...; kw...)
+
+Build NCC component matrix for 3D spherical basis.
+Delegates to the radial basis NCC matrix builder.
+"""
+function _last_axis_component_ncc_matrix(::Type{T}, subproblem, ncc_basis,
+        arg_basis, out_basis, coeffs, args...; kw...) where T <: AbstractSpherical3DBasis
+    if ncc_basis isa AbstractRegularityBasis
+        return _last_axis_component_ncc_matrix(typeof(ncc_basis), subproblem, ncc_basis,
+            arg_basis, out_basis, coeffs, args...; kw...)
+    elseif ncc_basis.shape[1:2] == (1, 1)
+        # Scale to account for SWSH normalization
+        coeffs = coeffs ./ sqrt(2)
+        return _last_axis_component_ncc_matrix(typeof(ncc_basis.radial_basis), subproblem,
+            ncc_basis, arg_basis, out_basis, coeffs, args...; kw...)
+    else
+        error("Cannot build NCCs of non-radial fields.")
+    end
+end
+
+
+# ============================================================================
+# ShellBasis  (concrete 3D basis: SphereBasis + ShellRadialBasis)
+# ============================================================================
+
+"""
+    ShellBasis <: AbstractSpherical3DBasis
+
+3D compound basis for spherical shell domains, combining a SphereBasis
+(for azimuth and colatitude) with a ShellRadialBasis (for the radial
+direction using Jacobi polynomials).
+
+Fields mirror those of the Python `ShellBasis`:
+coordsys, shape, dtype, radii, k, alpha, dealias, azimuth_library,
+colatitude_library, radius_library, volume, radial_basis, sphere_basis,
+azimuth_basis, mmax, Lmax, group_shape, grid_params, inner_surface,
+outer_surface, forward_transforms, backward_transforms, _cache.
+"""
+mutable struct ShellBasis <: AbstractSpherical3DBasis
+    coordsys::SphericalCoordinates
+    shape::Tuple{Int,Int,Int}
+    dtype::DataType
+    radii::Tuple{Float64,Float64}
+    k::Int
+    alpha::Tuple{Float64,Float64}
+    dealias::Tuple{Float64,Float64,Float64}
+    azimuth_library::String
+    colatitude_library::String
+    radius_library::String
+    volume::Float64
+    radial_basis::ShellRadialBasis
+    sphere_basis::SphereBasis
+    azimuth_basis  # RealFourierBasis or ComplexFourierBasis
+    mmax::Int
+    Lmax::Int
+    group_shape::Tuple{Int,Int,Int}
+    grid_params::Tuple
+    inner_surface::SphereBasis
+    outer_surface::SphereBasis
+    forward_transforms::Vector
+    backward_transforms::Vector
+    _cache::Dict{Any,Any}
+end
+
+# -- Constructor caching --
+const _shell_basis_cache = Dict{Any,WeakRef}()
+
+"""
+    ShellBasis(coordsys, shape, dtype; radii=(1,2), k=0, alpha=(-0.5,-0.5),
+              dealias=(1,1,1), azimuth_library=nothing, colatitude_library=nothing,
+              radius_library=nothing)
+
+Construct (or retrieve cached) a ShellBasis.
+"""
+function ShellBasis(coordsys::SphericalCoordinates, shape, dtype::DataType;
+                    radii=(1.0, 2.0),
+                    k::Int=0,
+                    alpha=(-0.5, -0.5),
+                    dealias=(1.0, 1.0, 1.0),
+                    azimuth_library=nothing,
+                    colatitude_library=nothing,
+                    radius_library=nothing)
+    # Preprocess arguments
+    if !(coordsys isa SphericalCoordinates)
+        throw(ArgumentError("Shell coordsys must be SphericalCoordinates."))
+    end
+    shape = (Int(shape[1]), Int(shape[2]), Int(shape[3]))
+    if length(shape) != 3
+        throw(ArgumentError("Shell shape must have length 3."))
+    end
+    radii = (Float64(radii[1]), Float64(radii[2]))
+    if min(radii...) <= 0
+        throw(ArgumentError("Shell radii must be positive."))
+    end
+    if radii[1] >= radii[2]
+        throw(ArgumentError("Shell radii must be in increasing order."))
+    end
+    k = Int(k)
+    if isa(alpha, Number)
+        alpha = (Float64(alpha), Float64(alpha))
+    else
+        alpha = (Float64(alpha[1]), Float64(alpha[2]))
+    end
+    if length(alpha) != 2
+        throw(ArgumentError("Shell alpha must have length 2."))
+    end
+    if isa(dealias, Number)
+        dealias = (Float64(dealias), Float64(dealias), Float64(dealias))
+    else
+        dealias = Tuple(Float64.(dealias))
+    end
+    if length(dealias) != 3
+        throw(ArgumentError("Shell dealias must have length 3."))
+    end
+    if azimuth_library === nothing
+        azimuth_library = FOURIER_DEFAULT_LIBRARY
+    end
+    if colatitude_library === nothing
+        colatitude_library = JACOBI_DEFAULT_LIBRARY
+    end
+    if radius_library === nothing
+        if alpha[1] == alpha[2] == -0.5
+            radius_library = JACOBI_DEFAULT_DCT
+        else
+            radius_library = JACOBI_DEFAULT_LIBRARY
+        end
+    end
+
+    # Cache lookup
+    cache_key = (coordsys, shape, dtype, radii, k, alpha, dealias,
+                 azimuth_library, colatitude_library, radius_library)
+    wr = get(_shell_basis_cache, cache_key, nothing)
+    if wr !== nothing
+        inst = wr.value
+        if inst !== nothing
+            return inst::ShellBasis
+        end
+    end
+
+    # Derived attributes
+    vol = 4 / 3 * pi * (radii[2]^3 - radii[1]^3)
+
+    # Create radial basis
+    rad_basis = ShellRadialBasis(coordsys, shape[3], dtype;
+                                 radii=radii, alpha=alpha,
+                                 dealias=(dealias[3],), k=k,
+                                 radius_library=radius_library)
+
+    # Create sphere basis (Spherical3DBasis.__init__ logic)
+    sphere_b = SphereBasis(coordsys, (shape[1], shape[2]), dtype;
+                           radius=max(radii...), dealias=(dealias[1], dealias[2]),
+                           azimuth_library=azimuth_library,
+                           colatitude_library=colatitude_library)
+
+    az_basis = sphere_b.azimuth_basis
+    mmax_val = sphere_b.mmax
+    Lmax_val = sphere_b.Lmax
+
+    if dtype === Float64
+        grp_shape = (2, 1, 1)
+    elseif dtype === ComplexF64
+        grp_shape = (1, 1, 1)
+    else
+        throw(ArgumentError("Unsupported dtype: $dtype"))
+    end
+
+    gp = (coordsys, dtype, radii, alpha, dealias,
+          azimuth_library, colatitude_library, radius_library)
+
+    inner_surf = SphereBasis(coordsys, (shape[1], shape[2]), dtype;
+                             radius=radii[1], dealias=(dealias[1], dealias[2]),
+                             azimuth_library=azimuth_library,
+                             colatitude_library=colatitude_library)
+    outer_surf = SphereBasis(coordsys, (shape[1], shape[2]), dtype;
+                             radius=radii[2], dealias=(dealias[1], dealias[2]),
+                             azimuth_library=azimuth_library,
+                             colatitude_library=colatitude_library)
+
+    _cache = Dict{Any,Any}()
+
+    inst = ShellBasis(
+        coordsys, shape, dtype, radii, k, alpha, dealias,
+        azimuth_library, colatitude_library, radius_library,
+        vol, rad_basis, sphere_b, az_basis, mmax_val, Lmax_val,
+        grp_shape, gp, inner_surf, outer_surf,
+        Any[], Any[],  # transforms -- set below
+        _cache
+    )
+
+    # Set transform callables
+    # Azimuth and colatitude transforms delegate to sphere_basis
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> begin
+        forward_transform(inst.sphere_basis, field, axis, gdata, cdata)
+    end)
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> begin
+        forward_transform(inst.sphere_basis, field, axis, gdata, cdata)
+    end)
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> begin
+        forward_transform_radius_shell_3d(inst, field, axis, gdata, cdata)
+    end)
+
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> begin
+        backward_transform(inst.sphere_basis, field, axis, cdata, gdata)
+    end)
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> begin
+        backward_transform(inst.sphere_basis, field, axis, cdata, gdata)
+    end)
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> begin
+        backward_transform_radius_shell_3d(inst, field, axis, cdata, gdata)
+    end)
+
+    _shell_basis_cache[cache_key] = WeakRef(inst)
+    return inst
+end
+
+# -- Equality and hashing --
+
+function Base.:(==)(a::ShellBasis, b::ShellBasis)
+    return a.coordsys == b.coordsys && a.grid_params == b.grid_params && a.k == b.k
+end
+
+Base.hash(b::ShellBasis, h::UInt) = hash((b.coordsys, b.grid_params, b.k), h)
+
+# -- Basis algebra --
+
+function basis_add(a::ShellBasis, other)
+    if other === nothing || other === a
+        return a
+    end
+    if other isa ShellBasis
+        if a.grid_params == other.grid_params
+            shape = (max(a.shape[1], other.shape[1]),
+                     max(a.shape[2], other.shape[2]),
+                     max(a.shape[3], other.shape[3]))
+            k_new = max(a.k, other.k)
+            return clone_with(a; shape=shape, k=k_new)
+        end
+    end
+    return nothing
+end
+
+function basis_mul(a::ShellBasis, other)
+    if other === nothing
+        return a
+    end
+    if other isa ShellBasis
+        if a.grid_params == other.grid_params
+            shape = (max(a.shape[1], other.shape[1]),
+                     max(a.shape[2], other.shape[2]),
+                     max(a.shape[3], other.shape[3]))
+            # k is from radial basis multiplication
+            k_new = basis_mul(a.radial_basis, other.radial_basis)
+            k_val = k_new !== nothing ? k_new.k : a.k
+            return clone_with(a; shape=shape, k=k_val)
+        end
+    end
+    if other isa ShellRadialBasis
+        k_new = basis_mul(other, a.radial_basis)
+        k_val = k_new !== nothing ? k_new.k : a.k
+        return clone_with(a; k=k_val)
+    end
+    return nothing
+end
+
+function basis_rmatmul(operand::ShellBasis, ncc)
+    # NCC (ncc) * operand (self)
+    if ncc === nothing
+        return operand
+    end
+    if ncc isa ShellRadialBasis
+        radial_result = basis_rmatmul(operand.radial_basis, ncc)
+        return _new_k(operand, radial_result.k)
+    end
+    if ncc isa ShellBasis
+        if ncc.shape[1] != 1
+            error("Azimuthal NCCs not yet supported.")
+        end
+        radial_result = basis_rmatmul(operand.radial_basis, ncc.radial_basis)
+        return _new_k(operand, radial_result.k)
+    end
+    return nothing
+end
+
+"""
+    _new_k(b::ShellBasis, k)
+
+Return a copy of this basis with a new k value.
+"""
+_new_k(b::ShellBasis, k) = clone_with(b; k=k)
+
+"""
+    meridional_basis(b::ShellBasis)
+
+Return a meridional (azimuth-collapsed) version of this basis.
+"""
+function meridional_basis(b::ShellBasis)
+    cached = get(b._cache, :meridional_basis, nothing)
+    if cached !== nothing
+        return cached
+    end
+    meridional_shape = (1, b.shape[2], b.shape[3])
+    result = clone_with(b; shape=meridional_shape)
+    b._cache[:meridional_basis] = result
+    return result
+end
+
+# -- Transform methods --
+
+"""
+    forward_transform_radius_shell_3d(b::ShellBasis, field, axis, gdata, cdata)
+
+Forward radial transform for ShellBasis: multiply by radial factor,
+apply regularity recombination using 3D ell maps, then transform.
+"""
+function forward_transform_radius_shell_3d(b::ShellBasis, field, axis, gdata, cdata)
+    radial_basis = b.radial_basis
+    data_axis = length(field.tensorsig) + axis
+    grid_size = size(gdata, data_axis)
+    # Multiply by radial factor
+    if b.k > 0
+        gdata = gdata .* radial_transform_factor(radial_basis, field.scales[axis], data_axis, -b.k)
+    end
+    # Apply regularity recombination using 3D ell maps
+    forward_regularity_recombination(radial_basis, field.tensorsig, axis, gdata;
+                                     ell_maps=ell_maps(b, field.dist))
+    # Perform radial transforms component-by-component
+    R = regularity_classes(radial_basis, field.tensorsig)
+    temp = copy(cdata)
+    for (regindex, regtotal_val) in pairs(R)
+        plan = transform_plan(radial_basis, field.dist, grid_size, b.k)
+        forward!(plan, view(gdata, regindex), view(temp, regindex), axis)
+    end
+    copyto!(cdata, temp)
+    return nothing
+end
+
+"""
+    backward_transform_radius_shell_3d(b::ShellBasis, field, axis, cdata, gdata)
+
+Backward radial transform for ShellBasis.
+"""
+function backward_transform_radius_shell_3d(b::ShellBasis, field, axis, cdata, gdata)
+    radial_basis = b.radial_basis
+    data_axis = length(field.tensorsig) + axis
+    grid_size = size(gdata, data_axis)
+    # Perform radial transforms component-by-component
+    R = regularity_classes(radial_basis, field.tensorsig)
+    temp = copy(gdata)
+    for (i, r) in pairs(R)
+        plan = transform_plan(radial_basis, field.dist, grid_size, b.k)
+        backward!(plan, view(cdata, i), view(temp, i), axis)
+    end
+    copyto!(gdata, temp)
+    # Apply regularity recombinations using 3D ell maps
+    backward_regularity_recombination(radial_basis, field.tensorsig, axis, gdata,
+                                      ell_maps(b, field.dist))
+    # Multiply by radial factor
+    if b.k > 0
+        gdata .*= radial_transform_factor(radial_basis, field.scales[axis], data_axis, b.k)
+    end
+    return nothing
+end
+
+# -- NCC matrix building --
+
+"""
+    _last_axis_field_ncc_matrix(product, subproblem, axis, ncc_basis, arg_basis,
+                                out_basis, coeffs, ncc_cutoff, max_ncc_terms)
+
+Generic NCC matrix builder that loops over tensor components, computes Gamma
+intertwiners, and assembles the block matrix by calling
+`_last_axis_component_ncc_matrix` for each component pair.
+
+`axis` uses 0-based indexing (matching the Python convention):
+  - 0 means "no spatial axes" (constant NCC)
+  - For a 3D basis occupying axes 1-3, `last_axis - 1` gives `axis = 2`.
+
+Translates Python `MultidimensionalBasis._last_axis_field_ncc_matrix`.
+"""
+function _last_axis_field_ncc_matrix(product, subproblem, axis,
+        ncc_basis, arg_basis, out_basis, coeffs, ncc_cutoff, max_ncc_terms)
+    operand = product.operand
+    ncc = product.ncc
+    group = subproblem.group
+    ncc_first = product.ncc_first
+    ncc_group = Tuple(g !== nothing ? 0 * g : nothing for g in group)
+    if ncc_first
+        # axis+1 converts 0-based to Julia 1-based for the Gamma function
+        G = Gamma(product, ncc.tensorsig, operand.tensorsig, product.tensorsig,
+                  ncc_group, group, group, axis + 1)
+    else
+        G = Gamma(product, operand.tensorsig, ncc.tensorsig, product.tensorsig,
+                  group, ncc_group, group, axis + 1)
+        G = permutedims(G, (2, 1, 3))
+    end
+    # Compute M, N from coefficient shapes up to and including this axis
+    # Python: prod(coeff_shape[:axis+1])  ->  Julia: prod(coeff_shape[1:axis+1])
+    # For axis=0, this gives prod(coeff_shape[1:1]) = first element
+    out_cshape = coeff_shape(subproblem, product.domain)
+    arg_cshape = coeff_shape(subproblem, operand.domain)
+    M = prod(out_cshape[1:axis+1])
+    N = prod(arg_cshape[1:axis+1])
+    # Build block matrix over tensor components
+    blocks = Vector{Vector{Any}}()
+    for (ic, out_comp) in enum_indices(product.tensorsig)
+        block_row = Any[]
+        for (ib, arg_comp) in enum_indices(operand.tensorsig)
+            block = spzeros(product.dtype, M, N)
+            # Loop over NCC tensor components
+            for (ia, ncc_comp) in enum_indices(ncc.tensorsig)
+                Gval = G[ia, ib, ic]
+                if abs(Gval) > ncc_cutoff
+                    if ncc_basis === nothing
+                        # Constant NCC: scalar times identity
+                        ncc_coeff = isempty(ncc_comp) ? coeffs : coeffs[ncc_comp...]
+                        if length(ncc_coeff) != 1
+                            error("NotImplementedError: constant NCC with non-scalar coeff")
+                        end
+                        matrix = vec(ncc_coeff)[1] * sparse(1.0I, M, N)
+                    else
+                        # Delegate to component NCC matrix builder
+                        sub_coeffs = isempty(ncc_comp) ? coeffs : coeffs[ncc_comp...]
+                        squeeze_dims = findall(size(sub_coeffs) .== 1)
+                        squeezed = isempty(squeeze_dims) ? sub_coeffs : dropdims(sub_coeffs; dims=tuple(squeeze_dims...))
+                        matrix = _last_axis_component_ncc_matrix(
+                            typeof(out_basis), subproblem, ncc_basis, arg_basis,
+                            out_basis, squeezed, ncc_comp, arg_comp, out_comp,
+                            ncc.tensorsig, operand.tensorsig, product.tensorsig;
+                            cutoff=ncc_cutoff)
+                        # Kron up for real Fourier bases if needed
+                        if size(matrix) != (M, N)
+                            m, n = size(matrix)
+                            matrix = kron(sparse(1.0I, fld(M, m), fld(N, n)), matrix)
+                        end
+                    end
+                    if product.dtype == Float64
+                        if imag(Gval) != 0
+                            error("NotImplementedError: complex Gamma with real dtype")
+                        else
+                            block = block + real(Gval) * matrix
+                        end
+                    else
+                        block = block + Gval * matrix
+                    end
+                end
+            end
+            push!(block_row, block)
+        end
+        push!(blocks, block_row)
+    end
+    # Assemble block matrix
+    nrows = length(blocks)
+    ncols = length(blocks[1])
+    matrix = hvcat(
+        ntuple(_ -> ncols, nrows),
+        [blocks[i][j] for i in 1:nrows for j in 1:ncols]...
+    )
+    return sparse(matrix)
+end
+
+"""
+    _generic_basis_build_ncc_matrix(b, product, subproblem, ncc_cutoff, max_ncc_terms)
+
+Generic NCC matrix builder for bases that only support last-axis NCCs.
+Equivalent to Python `MultidimensionalBasis.build_ncc_matrix`.
+Checks that NCC variation is confined to the last axis, then delegates
+to `_last_axis_field_ncc_matrix`.
+"""
+function _generic_basis_build_ncc_matrix(b, product, subproblem, ncc_cutoff, max_ncc_terms)
+    dist = product.dist
+    fa = first_axis(dist, b)
+    la = last_axis(dist, b)
+    nc = domain_nonconstant(product.ncc.domain)
+    # Check that only the last axis is nonconstant (axes fa to la-1 must be constant)
+    if fa < la && any(nc[fa:la-1])
+        error("NotImplementedError: Only last-axis NCCs implemented for this basis.")
+    end
+    # axis is 0-based for _last_axis_field_ncc_matrix
+    axis = la - 1
+    ncc_basis = get_basis(product.ncc.domain, la)
+    arg_basis = get_basis(product.operand.domain, la)
+    out_basis = get_basis(product.domain, la)
+    coeffs = product._ncc_data
+    return _last_axis_field_ncc_matrix(product, subproblem, axis, ncc_basis,
+        arg_basis, out_basis, coeffs, ncc_cutoff, max_ncc_terms)
+end
+
+"""
+    build_ncc_matrix(b::ShellBasis, product, subproblem, ncc_cutoff, max_ncc_terms)
+
+Build NCC matrix for ShellBasis. Routes based on NCC type:
+- Constant NCC (ncc_basis is nothing): delegate to generic builder
+- Radial NCC (shape[1]==1 && shape[2]==1): delegate to generic builder
+- Meridional NCC (shape[1]==1 && shape[2]!=1): call build_meridional_ncc_matrix
+- Azimuthal NCC: raise NotImplementedError
+"""
+function build_ncc_matrix(b::ShellBasis, product, subproblem, ncc_cutoff, max_ncc_terms)
+    axis = last_axis(product.dist, b)
+    ncc_basis = get_basis(product.ncc.domain, axis)
+    if ncc_basis === nothing
+        # NCC is constant
+        return _generic_basis_build_ncc_matrix(b, product, subproblem, ncc_cutoff, max_ncc_terms)
+    elseif ncc_basis.shape[1] == 1
+        if ncc_basis.shape[2] == 1
+            # NCC is radial
+            return _generic_basis_build_ncc_matrix(b, product, subproblem, ncc_cutoff, max_ncc_terms)
+        else
+            # NCC is meridional
+            return build_meridional_ncc_matrix(b, product, subproblem, ncc_cutoff, max_ncc_terms)
+        end
+    else
+        error("NotImplementedError: Azimuthal NCCs not yet supported.")
+    end
+end
+
+"""
+    build_meridional_ncc_matrix(b::ShellBasis, product, subproblem, ncc_cutoff, max_ncc_terms)
+
+Build meridional NCC matrix for ShellBasis. Converts NCC coefficients to spin
+components, builds deferred S2 NCC sub-matrices for each radial index, applies
+forward Q (regularity) transformations, and passes the result through the
+radial basis Clenshaw algorithm.
+
+Translates Python `ShellBasis.build_meridional_ncc_matrix` (basis.py:4683-4722).
+"""
+function build_meridional_ncc_matrix(b::ShellBasis, product, subproblem, ncc_cutoff, max_ncc_terms)
+    axis = last_axis(product.dist, b)
+    ncc_basis = get_basis(product.ncc.domain, axis)
+    arg_basis = get_basis(product.operand.domain, axis)
+    out_basis = get_basis(product.domain, axis)
+    # Build coefficient norms (same result for all components)
+    coeffs = product._ncc_data
+    # Take Frobenius norm of tensor components
+    tensor_axes = Tuple(1:length(product.ncc.tensorsig))
+    subcoeff_norms = sqrt.(sum(abs.(coeffs).^2; dims=tensor_axes))
+    # Drop the tensor dimensions
+    subcoeff_norms = dropdims(subcoeff_norms; dims=tensor_axes)
+    # Sum over sin and cos for real (first remaining axis, which was the azimuthal dim)
+    subcoeff_norms = sqrt.(sum(subcoeff_norms.^2; dims=1))
+    subcoeff_norms = dropdims(subcoeff_norms; dims=(1,))
+    # Take max over ell (first remaining axis after azimuthal was removed)
+    subcoeff_norms = vec(maximum(subcoeff_norms; dims=1))
+    # Convert NCC coefficients to spin components
+    spin_coeffs = copy(coeffs)
+    backward_regularity_recombination(b.radial_basis, product.ncc.tensorsig,
+        axis, spin_coeffs, ell_maps(ncc_basis, product.dist))
+    # Build deferred S2 NCC for each radial index
+    s2b = S2_basis(b)
+    # axis-1 converts from 1-based last axis to 0-based for _last_axis_field_ncc_matrix
+    # Python: axis-1 where axis is 0-based -> in Julia: (axis-1)-1 = axis-2
+    # But _last_axis_field_ncc_matrix expects 0-based axis, so axis of the S2 sub-call
+    # is (axis-1) in 1-based, which is (axis-2) in 0-based.
+    s2_axis_0based = axis - 2
+    function reg_NCC_matrix(radial_index)
+        # Select radial spin data (last dimension index)
+        # In Julia, radial_index is 1-based (from DeferredTuple)
+        subcoeffs = selectdim(spin_coeffs, ndims(spin_coeffs), radial_index)
+        # Call S2 NCC
+        submatrix = _last_axis_field_ncc_matrix(product, subproblem, s2_axis_0based,
+            S2_basis(ncc_basis), S2_basis(arg_basis), S2_basis(out_basis),
+            subcoeffs, ncc_cutoff, max_ncc_terms)
+        # Apply forward Q (regularity) transformations
+        # Python: m = subproblem.group[axis-2]  (0-based axis, so axis-2)
+        # Julia: group is a tuple, axis is 1-based, equivalent index is axis-2
+        m = subproblem.group[axis - 2]
+        ells = collect(abs(m):b.Lmax)
+        if get(ell_reversed(S2_basis(b), product.dist), m, false)
+            reverse!(ells)
+        end
+        ells_tuple = Tuple(ells)
+        Qout = radial_recombinations(b.radial_basis, product.tensorsig, ells_tuple)
+        Qout_interleaved = interleave_matrices(
+            [sparse(transpose(Qout[ell])) for ell in ells_tuple])
+        Qarg = radial_recombinations(b.radial_basis, product.operand.tensorsig, ells_tuple)
+        Qarg_interleaved = interleave_matrices(
+            [sparse(transpose(Qarg[ell])) for ell in ells_tuple])
+        return Qout_interleaved * submatrix * transpose(Qarg_interleaved)
+    end
+    subcoeff_vals = DeferredTuple(reg_NCC_matrix, length(subcoeff_norms))
+    # Call last-axis Clenshaw via ShellRadialBasis
+    subcoeffs = (subcoeff_vals, subcoeff_norms)
+    ncc_comp = arg_comp = out_comp = ()
+    ncc_tensorsig = arg_tensorsig = out_tensorsig = ()
+    return _last_axis_component_ncc_matrix(typeof(b.radial_basis), subproblem,
+        ncc_basis, arg_basis, out_basis, subcoeffs,
+        ncc_comp, arg_comp, out_comp,
+        ncc_tensorsig, arg_tensorsig, out_tensorsig;
+        cutoff=ncc_cutoff)
+end
+
+"""
+    clone_with(b::ShellBasis; kwargs...)
+
+Create a copy of the ShellBasis with some fields replaced.
+"""
+function clone_with(b::ShellBasis; kwargs...)
+    kw = Dict{Symbol,Any}(kwargs)
+    coordsys_val = get(kw, :coordsys, b.coordsys)
+    shape_val = get(kw, :shape, b.shape)
+    dtype_val = get(kw, :dtype, b.dtype)
+    radii_val = get(kw, :radii, b.radii)
+    k_val = get(kw, :k, b.k)
+    alpha_val = get(kw, :alpha, b.alpha)
+    dealias_val = get(kw, :dealias, b.dealias)
+    az_lib = get(kw, :azimuth_library, b.azimuth_library)
+    co_lib = get(kw, :colatitude_library, b.colatitude_library)
+    r_lib = get(kw, :radius_library, b.radius_library)
+    return ShellBasis(coordsys_val, shape_val, dtype_val;
+                      radii=radii_val, k=k_val, alpha=alpha_val,
+                      dealias=dealias_val, azimuth_library=az_lib,
+                      colatitude_library=co_lib, radius_library=r_lib)
+end
+
+function Base.show(io::IO, b::ShellBasis)
+    print(io, "ShellBasis($(b.coordsys), shape=$(b.shape), radii=$(b.radii), k=$(b.k), alpha=$(b.alpha))")
+end
+
+
+# ============================================================================
+# BallBasis  (concrete 3D basis: SphereBasis + BallRadialBasis)
+# ============================================================================
+
+"""
+    BallBasis <: AbstractSpherical3DBasis
+
+3D compound basis for ball domains, combining a SphereBasis
+(for azimuth and colatitude) with a BallRadialBasis (for the radial
+direction using Zernike polynomials).
+
+Fields mirror those of the Python `BallBasis`:
+coordsys, shape, dtype, radius, k, alpha, dealias, azimuth_library,
+colatitude_library, radius_library, volume, radial_basis, sphere_basis,
+azimuth_basis, mmax, Lmax, group_shape, grid_params, surface,
+forward_transforms, backward_transforms, _cache.
+"""
+mutable struct BallBasis <: AbstractSpherical3DBasis
+    coordsys::SphericalCoordinates
+    shape::Tuple{Int,Int,Int}
+    dtype::DataType
+    radius::Float64
+    k::Int
+    alpha::Int
+    dealias::Tuple{Float64,Float64,Float64}
+    azimuth_library::String
+    colatitude_library::String
+    radius_library::String
+    volume::Float64
+    radial_basis::BallRadialBasis
+    sphere_basis::SphereBasis
+    azimuth_basis  # RealFourierBasis or ComplexFourierBasis
+    mmax::Int
+    Lmax::Int
+    group_shape::Tuple{Int,Int,Int}
+    grid_params::Tuple
+    surface::SphereBasis
+    forward_transforms::Vector
+    backward_transforms::Vector
+    _cache::Dict{Any,Any}
+end
+
+# Class-level transforms dict (for registered transform libraries)
+const _ball_basis_transforms = Dict{String,Any}()
+const BALL_DEFAULT_LIBRARY = "matrix"
+
+# -- Constructor caching --
+const _ball_basis_cache = Dict{Any,WeakRef}()
+
+"""
+    BallBasis(coordsys, shape, dtype; radius=1, k=0, alpha=0,
+             dealias=(1,1,1), azimuth_library=nothing, colatitude_library=nothing,
+             radius_library=nothing)
+
+Construct (or retrieve cached) a BallBasis.
+"""
+function BallBasis(coordsys::SphericalCoordinates, shape, dtype::DataType;
+                   radius::Real=1.0,
+                   k::Int=0,
+                   alpha::Int=0,
+                   dealias=(1.0, 1.0, 1.0),
+                   azimuth_library=nothing,
+                   colatitude_library=nothing,
+                   radius_library=nothing)
+    # Preprocess arguments
+    if !(coordsys isa SphericalCoordinates)
+        throw(ArgumentError("Ball coordsys must be SphericalCoordinates."))
+    end
+    shape = (Int(shape[1]), Int(shape[2]), Int(shape[3]))
+    if length(shape) != 3
+        throw(ArgumentError("Ball shape must have length 3."))
+    end
+    radius = Float64(radius)
+    if radius <= 0
+        throw(ArgumentError("Ball radius must be positive."))
+    end
+    k = Int(k)
+    if isa(dealias, Number)
+        dealias = (Float64(dealias), Float64(dealias), Float64(dealias))
+    else
+        dealias = Tuple(Float64.(dealias))
+    end
+    if length(dealias) != 3
+        throw(ArgumentError("Ball dealias must have length 3."))
+    end
+    if azimuth_library === nothing
+        azimuth_library = FOURIER_DEFAULT_LIBRARY
+    end
+    if colatitude_library === nothing
+        colatitude_library = JACOBI_DEFAULT_LIBRARY
+    end
+    if radius_library === nothing
+        radius_library = BALL_DEFAULT_LIBRARY
+    end
+
+    # Cache lookup
+    cache_key = (coordsys, shape, dtype, radius, k, alpha, dealias,
+                 azimuth_library, colatitude_library, radius_library)
+    wr = get(_ball_basis_cache, cache_key, nothing)
+    if wr !== nothing
+        inst = wr.value
+        if inst !== nothing
+            return inst::BallBasis
+        end
+    end
+
+    # Derived attributes
+    vol = 4 / 3 * pi * radius^3
+
+    # Create radial basis
+    rad_basis = BallRadialBasis(coordsys, shape[3], dtype;
+                                radius=radius, k=k, alpha=alpha,
+                                dealias=(dealias[3],),
+                                radius_library=radius_library)
+
+    # Create sphere basis (Spherical3DBasis.__init__ logic)
+    sphere_b = SphereBasis(coordsys, (shape[1], shape[2]), dtype;
+                           radius=radius, dealias=(dealias[1], dealias[2]),
+                           azimuth_library=azimuth_library,
+                           colatitude_library=colatitude_library)
+
+    az_basis = sphere_b.azimuth_basis
+    mmax_val = sphere_b.mmax
+    Lmax_val = sphere_b.Lmax
+
+    if dtype === Float64
+        grp_shape = (2, 1, 1)
+    elseif dtype === ComplexF64
+        grp_shape = (1, 1, 1)
+    else
+        throw(ArgumentError("Unsupported dtype: $dtype"))
+    end
+
+    gp = (coordsys, dtype, radius, alpha, dealias,
+          azimuth_library, colatitude_library, radius_library)
+
+    surf = SphereBasis(coordsys, (shape[1], shape[2]), dtype;
+                       radius=radius, dealias=(dealias[1], dealias[2]),
+                       azimuth_library=azimuth_library,
+                       colatitude_library=colatitude_library)
+
+    _cache = Dict{Any,Any}()
+
+    inst = BallBasis(
+        coordsys, shape, dtype, radius, k, alpha, dealias,
+        azimuth_library, colatitude_library, radius_library,
+        vol, rad_basis, sphere_b, az_basis, mmax_val, Lmax_val,
+        grp_shape, gp, surf,
+        Any[], Any[],  # transforms -- set below
+        _cache
+    )
+
+    # Set transform callables
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> begin
+        forward_transform(inst.sphere_basis, field, axis, gdata, cdata)
+    end)
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> begin
+        forward_transform(inst.sphere_basis, field, axis, gdata, cdata)
+    end)
+    push!(inst.forward_transforms, (field, axis, gdata, cdata) -> begin
+        forward_transform_radius_ball_3d(inst, field, axis, gdata, cdata)
+    end)
+
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> begin
+        backward_transform(inst.sphere_basis, field, axis, cdata, gdata)
+    end)
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> begin
+        backward_transform(inst.sphere_basis, field, axis, cdata, gdata)
+    end)
+    push!(inst.backward_transforms, (field, axis, cdata, gdata) -> begin
+        backward_transform_radius_ball_3d(inst, field, axis, cdata, gdata)
+    end)
+
+    _ball_basis_cache[cache_key] = WeakRef(inst)
+    return inst
+end
+
+# -- Equality and hashing --
+
+function Base.:(==)(a::BallBasis, b::BallBasis)
+    return a.coordsys == b.coordsys && a.grid_params == b.grid_params && a.k == b.k
+end
+
+Base.hash(b::BallBasis, h::UInt) = hash((b.coordsys, b.grid_params, b.k), h)
+
+# -- Basis algebra --
+
+function basis_add(a::BallBasis, other)
+    if other === nothing || other === a
+        return a
+    end
+    if other isa BallBasis
+        if a.grid_params == other.grid_params
+            shape = (max(a.shape[1], other.shape[1]),
+                     max(a.shape[2], other.shape[2]),
+                     max(a.shape[3], other.shape[3]))
+            k_new = max(a.k, other.k)
+            return clone_with(a; shape=shape, k=k_new)
+        end
+    end
+    return nothing
+end
+
+function basis_mul(a::BallBasis, other)
+    if other === nothing
+        return a
+    end
+    if other isa BallBasis
+        if a.grid_params == other.grid_params
+            shape = (max(a.shape[1], other.shape[1]),
+                     max(a.shape[2], other.shape[2]),
+                     max(a.shape[3], other.shape[3]))
+            k_new = 0  # Python BallBasis.__mul__ sets k=0
+            return clone_with(a; shape=shape, k=k_new)
+        end
+    end
+    if other isa BallRadialBasis
+        k_new = basis_mul(other, a.radial_basis)
+        k_val = k_new !== nothing ? k_new.k : a.k
+        return clone_with(a; k=k_val)
+    end
+    return nothing
+end
+
+function basis_rmatmul(operand::BallBasis, ncc)
+    # NCC (ncc) * operand (self)
+    if ncc === nothing
+        return operand
+    end
+    if ncc isa BallRadialBasis
+        radial_result = basis_rmatmul(operand.radial_basis, ncc)
+        return _new_k(operand, radial_result.k)
+    end
+    if ncc isa BallBasis
+        radial_result = basis_rmatmul(operand.radial_basis, ncc.radial_basis)
+        return _new_k(operand, radial_result.k)
+    end
+    return nothing
+end
+
+"""
+    _new_k(b::BallBasis, k)
+
+Return a copy of this basis with a new k value.
+"""
+_new_k(b::BallBasis, k) = clone_with(b; k=k)
+
+# -- Transform methods --
+
+"""
+    transform_plan(b::BallBasis, dist, grid_shape_val, regindex, axis, regtotal_val, k, alpha)
+
+Build (or retrieve cached) a transform plan for the ball radial direction
+using the 3D ell maps.
+"""
+function transform_plan(b::BallBasis, dist, grid_shape_val, regindex, axis, regtotal_val, k, alpha)
+    cache_key = (:transform_plan_ball_3d, dist, grid_shape_val, regindex, axis, regtotal_val, k, alpha)
+    cached = get(b._cache, cache_key, nothing)
+    if cached !== nothing
+        return cached
+    end
+    radius_lib = b.radial_basis.radius_library
+    Nmax = b.radial_basis.Nmax
+    if haskey(_ball_basis_transforms, radius_lib)
+        plan = _ball_basis_transforms[radius_lib](grid_shape_val, Nmax + 1, axis,
+                                                   ell_maps(b, dist), regindex,
+                                                   regtotal_val, k, alpha)
+    else
+        error("Ball transform library '$radius_lib' not registered. Available: $(keys(_ball_basis_transforms))")
+    end
+    b._cache[cache_key] = plan
+    return plan
+end
+
+"""
+    forward_transform_radius_ball_3d(b::BallBasis, field, axis, gdata, cdata)
+
+Forward radial transform for BallBasis: apply regularity recombination
+using 3D ell maps, then transform.
+"""
+function forward_transform_radius_ball_3d(b::BallBasis, field, axis, gdata, cdata)
+    radial_basis = b.radial_basis
+    # Apply regularity recombination
+    forward_regularity_recombination(radial_basis, field.tensorsig, axis, gdata;
+                                     ell_maps=ell_maps(b, field.dist))
+    # Perform radial transforms component-by-component
+    R = regularity_classes(radial_basis, field.tensorsig)
+    temp = zeros(eltype(cdata), size(cdata))
+    for (regindex, regtotal_val) in pairs(R)
+        gs = size(gdata[regindex])
+        plan = transform_plan(b, field.dist, gs, regindex, axis, regtotal_val,
+                              radial_basis.k, radial_basis.alpha)
+        forward!(plan, view(gdata, regindex), view(temp, regindex), axis)
+    end
+    copyto!(cdata, temp)
+    return nothing
+end
+
+"""
+    backward_transform_radius_ball_3d(b::BallBasis, field, axis, cdata, gdata)
+
+Backward radial transform for BallBasis.
+"""
+function backward_transform_radius_ball_3d(b::BallBasis, field, axis, cdata, gdata)
+    radial_basis = b.radial_basis
+    # Perform radial transforms component-by-component
+    R = regularity_classes(radial_basis, field.tensorsig)
+    temp = zeros(eltype(gdata), size(gdata))
+    for (regindex, regtotal_val) in pairs(R)
+        gs = size(gdata[regindex])
+        plan = transform_plan(b, field.dist, gs, regindex, axis, regtotal_val,
+                              radial_basis.k, radial_basis.alpha)
+        backward!(plan, view(cdata, regindex), view(temp, regindex), axis)
+    end
+    copyto!(gdata, temp)
+    # Apply regularity recombinations
+    backward_regularity_recombination(radial_basis, field.tensorsig, axis, gdata,
+                                      ell_maps(b, field.dist))
+    return nothing
+end
+
+"""
+    clone_with(b::BallBasis; kwargs...)
+
+Create a copy of the BallBasis with some fields replaced.
+"""
+function clone_with(b::BallBasis; kwargs...)
+    kw = Dict{Symbol,Any}(kwargs)
+    coordsys_val = get(kw, :coordsys, b.coordsys)
+    shape_val = get(kw, :shape, b.shape)
+    dtype_val = get(kw, :dtype, b.dtype)
+    radius_val = get(kw, :radius, b.radius)
+    k_val = get(kw, :k, b.k)
+    alpha_val = get(kw, :alpha, b.alpha)
+    dealias_val = get(kw, :dealias, b.dealias)
+    az_lib = get(kw, :azimuth_library, b.azimuth_library)
+    co_lib = get(kw, :colatitude_library, b.colatitude_library)
+    r_lib = get(kw, :radius_library, b.radius_library)
+    return BallBasis(coordsys_val, shape_val, dtype_val;
+                     radius=radius_val, k=k_val, alpha=alpha_val,
+                     dealias=dealias_val, azimuth_library=az_lib,
+                     colatitude_library=co_lib, radius_library=r_lib)
+end
+
+function Base.show(io::IO, b::BallBasis)
+    print(io, "BallBasis($(b.coordsys), shape=$(b.shape), radius=$(b.radius), k=$(b.k), alpha=$(b.alpha))")
+end
+
+# -- NCC matrix building --
+
+"""
+    build_ncc_matrix(b::BallBasis, product, subproblem, ncc_cutoff, max_ncc_terms)
+
+Build NCC matrix for BallBasis. Supports constant and radial NCCs only.
+Meridional and azimuthal NCCs raise NotImplementedError, matching the Python
+behaviour where BallBasis inherits `Spherical3DBasis -> MultidimensionalBasis`
+and has no `build_meridional_ncc_matrix`.
+"""
+function build_ncc_matrix(b::BallBasis, product, subproblem, ncc_cutoff, max_ncc_terms)
+    return _generic_basis_build_ncc_matrix(b, product, subproblem, ncc_cutoff, max_ncc_terms)
+end
+
+
+# ============================================================================
+# ConvertRegularity  (operator for converting between regularity-based bases)
+# ============================================================================
+
+"""
+    ConvertRegularity
+
+Operator-like type for converting between regularity-based bases with
+different k values. This corresponds to the Python
+`ConvertRegularity(operators.Convert, operators.SphericalEllOperator)`.
+
+In the Python implementation, this serves as a basis conversion operator
+that builds the conversion matrix for changing between bases of different
+polynomial families (different k parameters).
+
+# Fields
+- `input_basis::AbstractRegularityBasis` — the input basis
+- `output_basis::AbstractRegularityBasis` — the output basis
+- `radial_basis::AbstractRegularityBasis` — the radial basis (from input_basis)
+"""
+struct ConvertRegularity
+    input_basis::AbstractRegularityBasis
+    output_basis::AbstractRegularityBasis
+    radial_basis::AbstractRegularityBasis
+end
+
+"""
+    ConvertRegularity(input_basis, output_basis)
+
+Construct a ConvertRegularity operator from input and output bases.
+"""
+function ConvertRegularity(input_basis::AbstractRegularityBasis,
+                           output_basis::AbstractRegularityBasis)
+    radial_basis = get_radial_basis(input_basis)
+    return ConvertRegularity(input_basis, output_basis, radial_basis)
+end
+
+"""
+    regindex_out(op::ConvertRegularity, regindex_in)
+
+Return the output regularity indices for the given input regularity index.
+For ConvertRegularity, the output regularity index is the same as the input.
+"""
+function regindex_out(op::ConvertRegularity, regindex_in)
+    return (regindex_in,)
+end
+
+"""
+    radial_matrix(op::ConvertRegularity, regindex_in, regindex_out_val, ell)
+
+Build the radial conversion matrix for the given regularity indices and ell.
+"""
+function radial_matrix(op::ConvertRegularity, regindex_in, regindex_out_val, ell)
+    rb = op.radial_basis
+    regtotal_val = regtotal(regindex_in)
+    dk = op.output_basis.k - rb.k
+    if regindex_in == regindex_out_val
+        return conversion_matrix(rb, ell, regtotal_val, dk)
+    else
+        error("ConvertRegularity: regindex_in != regindex_out should never happen.")
+    end
+end
+
+function Base.show(io::IO, op::ConvertRegularity)
+    print(io, "ConvertRegularity($(op.input_basis) -> $(op.output_basis))")
+end
+
+
+# ============================================================================
+# Spin weights / recombination delegation for AbstractSpherical3DBasis
+# ============================================================================
+
+"""
+    spin_weights(b::AbstractSpherical3DBasis, tensorsig)
+
+Compute spin weights by delegating to the sphere_basis.
+"""
+function spin_weights(b::AbstractSpherical3DBasis, tensorsig)
+    return spin_weights(b.sphere_basis, tensorsig)
+end
+
+"""
+    forward_spin_recombination!(b::AbstractSpherical3DBasis, tensorsig, axis, gdata, out)
+
+Delegate forward spin recombination to the sphere_basis pattern.
+"""
+function forward_spin_recombination!(b::AbstractSpherical3DBasis, tensorsig, axis, gdata, out)
+    forward_spin_recombination!(b.sphere_basis, tensorsig, axis, gdata, out)
+end
+
+"""
+    backward_spin_recombination!(b::AbstractSpherical3DBasis, tensorsig, axis, gdata, out)
+
+Delegate backward spin recombination to the sphere_basis pattern.
+"""
+function backward_spin_recombination!(b::AbstractSpherical3DBasis, tensorsig, axis, gdata, out)
+    backward_spin_recombination!(b.sphere_basis, tensorsig, axis, gdata, out)
+end
+
+# ============================================================================
+# Update ShellRadialBasis basis_mul to support ShellBasis construction
+# ============================================================================
+
+# Fix the error in ShellRadialBasis basis_mul that previously said "not yet implemented"
+function basis_mul_shell_radial_sphere(a::ShellRadialBasis, other::SphereBasis)
+    # Combine to form a ShellBasis
+    error("ShellRadialBasis * SphereBasis -> ShellBasis: use ShellBasis constructor directly")
+end
+
+# ============================================================================
+# Additional exports for the new types
+# ============================================================================
+
+export AbstractSpherical3DBasis,
+       ShellBasis,
+       BallBasis,
+       ConvertRegularity,
+       S2_basis,
+       radial_basis,
+       ell_maps,
+       ell_reversed,
+       meridional_basis,
+       derivative_basis,
+       global_grid_spacing,
+       local_grid_spacing,
+       regindex_out,
+       radial_matrix,
+       forward_transform_radius_shell_3d,
+       backward_transform_radius_shell_3d,
+       forward_transform_radius_ball_3d,
+       backward_transform_radius_ball_3d,
+       _last_axis_field_ncc_matrix,
+       _generic_basis_build_ncc_matrix,
+       build_ncc_matrix,
+       build_meridional_ncc_matrix
