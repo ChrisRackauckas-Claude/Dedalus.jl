@@ -1,0 +1,11 @@
+[metadata]
+example = "lbvp_2d_poisson"
+source = "Residual check: solved LBVP should satisfy equation to near machine precision"
+tolerance_residual_norm = 1e-10
+
+[parameters]
+Lx = 6.283185307179586  # 2*pi
+Ly = 3.141592653589793  # pi
+Nx = 64
+Ny = 32
+seed = 40
