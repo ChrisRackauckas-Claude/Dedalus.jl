@@ -588,8 +588,52 @@ mutable struct Field <: AbstractCurrent
 end
 
 # ============================================================================
+# Field -- type-stable layout accessor
+# ============================================================================
+
+"""
+    _get_layout(f::Union{Field, LockedField})::Layout
+
+Return the layout of `f` with a type assertion, providing type-stability
+even though `Field.layout` is declared `::Any` (forward-reference limitation).
+"""
+@inline _get_layout(f::Field)::Layout = f.layout
+
+# ============================================================================
+# Field -- fast-path layout resolution for "g"/"c" keys
+# ============================================================================
+
+"""
+    _resolve_layout(f::Union{Field, LockedField}, key::AbstractString) -> Layout
+
+Fast-path layout resolution that avoids Dict lookup in `get_layout_object`
+for the two most common string keys ("g" for grid, "c" for coefficients).
+"""
+@inline function _resolve_layout(f::Field, key::AbstractString)
+    if key == "g"
+        return f.dist.grid_layout::Layout
+    elseif key == "c"
+        return f.dist.coeff_layout::Layout
+    else
+        return get_layout_object(f.dist, key)
+    end
+end
+
+# ============================================================================
 # Field -- indexing (getindex / setindex!)
 # ============================================================================
+
+"""
+    Base.getindex(f::Field, key::AbstractString)
+
+Fast path for string layout keys. Bypasses `get_layout_object` Dict lookup
+for the common "g" (grid) and "c" (coefficient) keys.
+"""
+function Base.getindex(f::Field, key::AbstractString)
+    layout = _resolve_layout(f, key)
+    change_layout!(f, layout)
+    return f.data
+end
 
 """
     Base.getindex(f::Field, key)
@@ -609,7 +653,20 @@ function Base.getindex(f::Field, key)
 end
 
 """
-    Base.setitem!(f::Field, key, data)
+    Base.setindex!(f::Field, data, key::AbstractString)
+
+Fast path for string layout keys. Bypasses `get_layout_object` Dict lookup
+for the common "g" (grid) and "c" (coefficient) keys.
+"""
+function Base.setindex!(f::Field, data, key::AbstractString)
+    layout = _resolve_layout(f, key)
+    preset_layout!(f, layout)
+    dedalus_copyto!(f.data, data)
+    return data
+end
+
+"""
+    Base.setindex!(f::Field, data, key)
 
 Set data viewed in the specified layout. If `key` is a tuple
 `(layout, scales)`, preset both scales and layout first.
@@ -774,8 +831,9 @@ function change_scales!(f::Field, scales)::Nothing
     end
     # Forward transform until remaining scales match
     dim = get_dim(f.dist)
+    layout = _get_layout(f)
     for ax in dim:-1:1
-        if !f.layout.grid_space[ax]
+        if !layout.grid_space[ax]
             break
         end
         if old_scales[ax] != new_scales[ax]
@@ -797,12 +855,13 @@ Change data to the specified layout via sequential transforms.
 """
 function change_layout!(f::Field, layout)::Nothing
     layout = get_layout_object(f.dist, layout)
-    if f.layout.index < layout.index
-        while f.layout.index < layout.index
+    current = _get_layout(f)
+    if current.index < layout.index
+        while _get_layout(f).index < layout.index
             towards_grid_space!(f)
         end
-    elseif f.layout.index > layout.index
-        while f.layout.index > layout.index
+    elseif current.index > layout.index
+        while _get_layout(f).index > layout.index
             towards_coeff_space!(f)
         end
     end
@@ -815,7 +874,7 @@ end
 Change to the next layout towards grid space.
 """
 function towards_grid_space!(f::Field)::Nothing
-    index = f.layout.index
+    index = _get_layout(f).index
     increment(f.dist.paths[index], [f])
     return nothing
 end
@@ -826,7 +885,7 @@ end
 Change to the next layout towards coefficient space.
 """
 function towards_coeff_space!(f::Field)::Nothing
-    index = f.layout.index
+    index = _get_layout(f).index
     decrement(f.dist.paths[index - 1], [f])
     return nothing
 end
@@ -838,11 +897,11 @@ Require one axis (default: all axes) to be in grid space.
 """
 function require_grid_space!(f::Field, axis=nothing)::Nothing
     if axis === nothing
-        while !all(f.layout.grid_space)
+        while !all(_get_layout(f).grid_space)
             towards_grid_space!(f)
         end
     else
-        while !f.layout.grid_space[axis]
+        while !_get_layout(f).grid_space[axis]
             towards_grid_space!(f)
         end
     end
@@ -856,11 +915,11 @@ Require one axis (default: all axes) to be in coefficient space.
 """
 function require_coeff_space!(f::Field, axis=nothing)::Nothing
     if axis === nothing
-        while any(f.layout.grid_space)
+        while any(_get_layout(f).grid_space)
             towards_coeff_space!(f)
         end
     else
-        while f.layout.grid_space[axis]
+        while _get_layout(f).grid_space[axis]
             towards_coeff_space!(f)
         end
     end
@@ -873,12 +932,12 @@ end
 Require an axis to be local.
 """
 function require_local!(f::Field, axis::Int)
-    if f.layout.grid_space[axis]
-        while !f.layout.local[axis]
+    if _get_layout(f).grid_space[axis]
+        while !_get_layout(f).local[axis]
             towards_coeff_space!(f)
         end
     else
-        while !f.layout.local[axis]
+        while !_get_layout(f).local[axis]
             towards_grid_space!(f)
         end
     end
@@ -931,7 +990,7 @@ function gather_data(f::Field; root::Int=0, layout=nothing)
     end
     pieces = f.dist.comm.gather(f.data; root=root)
     if f.dist.comm.rank == root
-        ext_mesh = f.layout.ext_mesh
+        ext_mesh = _get_layout(f).ext_mesh
         n = prod(ext_mesh)
         combined = Vector{Any}(undef, n)
         combined .= pieces
@@ -1189,7 +1248,7 @@ Copy data over constant distributed dimensions for arithmetic broadcasting.
 """
 function broadcast_ghosts(f::Field, output_nonconst_dims)
     self_const_dims = collect(domain_constant(f.domain))
-    distributed = .!f.layout.local
+    distributed = .!_get_layout(f).local
     broadcast_dims = output_nonconst_dims .& self_const_dims
     deploy_dims_ext = broadcast_dims .& distributed
     deploy_dims = deploy_dims_ext[distributed]
@@ -1310,9 +1369,8 @@ end
 Override: only allowed if the target layout is in `allowed_layouts`.
 """
 function towards_grid_space!(f::LockedField)::Nothing
-    index = f.layout.index
-    new_index = index + 1
-    new_layout = f.dist.layouts[new_index]
+    index = _get_layout(f).index
+    new_layout = f.dist.layouts[index + 1]
     if new_layout in f.allowed_layouts
         # Delegate to the standard Field logic via the dist paths
         increment(f.dist.paths[index], [f])
@@ -1328,9 +1386,8 @@ end
 Override: only allowed if the target layout is in `allowed_layouts`.
 """
 function towards_coeff_space!(f::LockedField)::Nothing
-    index = f.layout.index
-    new_index = index - 1
-    new_layout = f.dist.layouts[new_index]
+    index = _get_layout(f).index
+    new_layout = f.dist.layouts[index - 1]
     if new_layout in f.allowed_layouts
         decrement(f.dist.paths[index - 1], [f])
     else
@@ -1376,8 +1433,30 @@ end
 # (LockedField has the same struct fields as Field, so these work directly)
 
 # ============================================================================
+# LockedField -- type-stable layout accessor and fast-path resolution
+# ============================================================================
+
+@inline _get_layout(f::LockedField)::Layout = f.layout
+
+@inline function _resolve_layout(f::LockedField, key::AbstractString)
+    if key == "g"
+        return f.dist.grid_layout::Layout
+    elseif key == "c"
+        return f.dist.coeff_layout::Layout
+    else
+        return get_layout_object(f.dist, key)
+    end
+end
+
+# ============================================================================
 # LockedField getindex/setindex!
 # ============================================================================
+
+function Base.getindex(f::LockedField, key::AbstractString)
+    layout = _resolve_layout(f, key)
+    change_layout!(f, layout)
+    return f.data
+end
 
 function Base.getindex(f::LockedField, key)
     if isa(key, Tuple)
@@ -1388,6 +1467,13 @@ function Base.getindex(f::LockedField, key)
         change_layout!(f, key)
     end
     return f.data
+end
+
+function Base.setindex!(f::LockedField, data, key::AbstractString)
+    layout = _resolve_layout(f, key)
+    preset_layout!(f, layout)
+    dedalus_copyto!(f.data, data)
+    return data
 end
 
 function Base.setindex!(f::LockedField, data, key)
@@ -1443,12 +1529,13 @@ end
 
 function change_layout!(f::LockedField, layout)::Nothing
     layout = get_layout_object(f.dist, layout)
-    if f.layout.index < layout.index
-        while f.layout.index < layout.index
+    current = _get_layout(f)
+    if current.index < layout.index
+        while _get_layout(f).index < layout.index
             towards_grid_space!(f)
         end
-    elseif f.layout.index > layout.index
-        while f.layout.index > layout.index
+    elseif current.index > layout.index
+        while _get_layout(f).index > layout.index
             towards_coeff_space!(f)
         end
     end
@@ -1457,11 +1544,11 @@ end
 
 function require_grid_space!(f::LockedField, axis=nothing)
     if axis === nothing
-        while !all(f.layout.grid_space)
+        while !all(_get_layout(f).grid_space)
             towards_grid_space!(f)
         end
     else
-        while !f.layout.grid_space[axis]
+        while !_get_layout(f).grid_space[axis]
             towards_grid_space!(f)
         end
     end
@@ -1470,11 +1557,11 @@ end
 
 function require_coeff_space!(f::LockedField, axis=nothing)
     if axis === nothing
-        while any(f.layout.grid_space)
+        while any(_get_layout(f).grid_space)
             towards_coeff_space!(f)
         end
     else
-        while f.layout.grid_space[axis]
+        while _get_layout(f).grid_space[axis]
             towards_coeff_space!(f)
         end
     end
