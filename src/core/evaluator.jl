@@ -82,13 +82,13 @@ mutable struct Evaluator
     dist::Any
     vars::Dict{String, Any}
     handlers::Vector{Any}
-    groups::Dict{String,Vector{Any}}
+    groups::Dict{Any,Vector{Any}}
     # Pre-allocated buffers to avoid per-evaluation allocations
     _scheduled_buf::Vector{Any}      # reused by evaluate_scheduled
     _tasks_buf::Vector{Dict{String,Any}}  # reused by evaluate_handlers
     _unfinished_buf::Vector{Dict{String,Any}}  # reused by attempt_tasks
 
-    function Evaluator(dist, vars::Dict{String, Any})
+    function Evaluator(dist, vars::Dict)
         return new(dist, vars, Any[], Dict{String,Vector{Any}}(),
                    Any[], Dict{String,Any}[], Dict{String,Any}[])
     end
