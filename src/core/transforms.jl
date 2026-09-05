@@ -413,7 +413,7 @@ function resize_coeffs_complex!(data_in::AbstractArray, data_out::AbstractArray,
         end
     else
         nout = size(data_out, axis)
-        # Positive frequencies: indices 1 through Kmax+1
+        # Positive frequencies: indices 1 through Kmax+1 (Kmax = min(KN, KM) <= nout-1)
         @inbounds for i in 1:Kmax+1
             if rescale === nothing
                 selectdim(data_out, axis, i) .= selectdim(data_in, axis, i)
@@ -709,9 +709,13 @@ function repack_rescale_real!(cdata::AbstractArray, temp::AbstractArray,
         selectdim(temp, axis, 1) .= selectdim(cdata, axis, 1) .* rescale
     end
     # 1 <= k <= Kmax: repack cos and msin into complex
+    ncdata = size(cdata, axis)
     @inbounds for k in 1:Kmax
         cos_idx = 2 * k + 1
         msin_idx = 2 * k + 2
+        if cos_idx > ncdata || msin_idx > ncdata
+            break
+        end
         temp_idx = k + 1
         cos_part = selectdim(cdata, axis, cos_idx)
         msin_part = selectdim(cdata, axis, msin_idx)
@@ -806,15 +810,15 @@ end
 
 function backward!(t::FFTWRealFFT, cdata::AbstractArray{Float64},
                    gdata::AbstractArray{Float64}, axis::Int)
-    _, bwd, _, bwd_cbuf, _ = _get_plans(t, size(gdata), axis)
+    _, bwd, _, bwd_cbuf, bwd_rbuf = _get_plans(t, size(gdata), axis)
     N = t.N
     # Repack into complex form using the cached buffer and rescale
     # irfft includes the 1/N factor, so we pre-multiply by N
     bwd_cbuf .= 0
     repack_rescale_real!(cdata, bwd_cbuf, axis, t.Kmax, Float64(N))
-    # Execute inverse real FFT
-    result = bwd * bwd_cbuf
-    copyto!(gdata, result)
+    # Execute inverse real FFT into preallocated buffer
+    mul!(bwd_rbuf, bwd, bwd_cbuf)
+    copyto!(gdata, bwd_rbuf)
     return gdata
 end
 
