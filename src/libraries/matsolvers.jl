@@ -323,8 +323,10 @@ function solve(s::FactorizedTransposeSolver, vector::AbstractVecOrMat)
         ldiv!(result, s.LU, vector)
     elseif s.trans == :T
         ldiv!(result, transpose(s.LU), vector)
-    else  # :H
+    elseif s.trans == :H
         ldiv!(result, adjoint(s.LU), vector)
+    else
+        error("Unrecognized trans: $(s.trans)")
     end
     return result
 end
@@ -334,8 +336,10 @@ function solve!(result, s::FactorizedTransposeSolver, vector::AbstractVecOrMat)
         ldiv!(result, s.LU, vector)
     elseif s.trans == :T
         ldiv!(result, transpose(s.LU), vector)
-    else  # :H
+    elseif s.trans == :H
         ldiv!(result, adjoint(s.LU), vector)
+    else
+        error("Unrecognized trans: $(s.trans)")
     end
     return result
 end
@@ -346,10 +350,12 @@ function solve_H(s::FactorizedTransposeSolver, vector::AbstractVecOrMat)
         ldiv!(result, adjoint(s.LU), vector)
     elseif s.trans == :H
         ldiv!(result, s.LU, vector)
-    else  # :T
+    elseif s.trans == :T
         conj_vec = conj.(vector)
         ldiv!(result, s.LU, conj_vec)
         result .= conj.(result)
+    else
+        error("Unrecognized trans: $(s.trans)")
     end
     return result
 end
