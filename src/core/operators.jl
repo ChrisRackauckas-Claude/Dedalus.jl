@@ -1290,7 +1290,7 @@ function operate(op::CartesianGradient, out)::Nothing
         layout = op.dist.coeff_layout
     end
     preset_layout!(out, layout)
-    # Copy each component's data into the output vector slots
+    # length(operands) == cs_dim(coordsys) == size(out.data, 1) by Gradient construction
     for (i, comp) in enumerate(operands)
         if isa(comp, AbstractCurrent) && length(comp.data) > 0
             @inbounds out.data[i, ntuple(_ -> Colon(), ndims(out.data) - 1)...] .= comp.data
@@ -1569,6 +1569,7 @@ function operate(op::CartesianTrace, out)::Nothing
     cs = op.coordsys
     d = cs_dim(cs)
     out.data .= 0
+    # d == size(arg.data, 1) == size(arg.data, 2) because Trace requires tensorsig[1]==tensorsig[2]==coordsys
     for i in 1:d
         spatial_idx = ntuple(_ -> Colon(), ndims(arg.data) - 2)
         @inbounds out.data .+= arg.data[i, i, spatial_idx...]
@@ -1794,6 +1795,7 @@ function operate(op::DirectProductGradient, out)::Nothing
         layout = op.dist.coeff_layout
     end
     preset_layout!(out, layout)
+    # sum(get_dim(cs)) over sub-coordsystems == get_dim(op.coordsys) == size(out.data, 1) by preset_layout!
     i0 = 1
     for (cs_grad, cs) in zip(op.args, op.coordsys.coordsystems)
         dim = get_dim(cs)
@@ -2184,7 +2186,7 @@ function operate(op::AdvectiveCFL, out)::Nothing
     # Compute |velocity| / grid_spacing for each component
     # Simplified: just use absolute value of velocity components
     out.data .= 0
-    for i in 1:length(vel.tensorsig)
+    for i in axes(vel.data, 1)
         @inbounds out.data .+= abs.(vel.data[i, fill(:, ndims(vel.data)-1)...])
     end
     return nothing
@@ -2441,6 +2443,7 @@ function operate(op::SpectralOperatorS2, out)::Nothing
         return
     end
     # Apply operator over spin components
+    # size(S_in) matches the leading tensor dimensions of operand.data set by preset_layout!
     S_in = spin_weights(input_basis, operand.tensorsig)
     for si_in in CartesianIndices(size(S_in))
         spintotal_in = S_in[si_in]
@@ -2650,6 +2653,7 @@ function operate(op::SeparableSphereOperator, out)::Nothing
         data_out = view(out.data, out_idx...)
     end
     # Apply operator over spin components
+    # size(S_in) matches the leading tensor dimensions of operand.data set by preset_layout!
     S_in = spin_weights(basis, operand.tensorsig)
     for si_in in CartesianIndices(size(S_in))
         spintotal_in = S_in[si_in]
@@ -2795,6 +2799,7 @@ function operate(op::PolarMOperator, out)::Nothing
         return
     end
     # Apply operator
+    # size(S_in) matches the leading tensor dimensions of operand.data set by preset_layout!
     S_in = spin_weights(basis, operand.tensorsig)
     ndim = length(size(operand.data)) - length(operand.tensorsig)
     for si_in in CartesianIndices(size(S_in))
@@ -2950,6 +2955,7 @@ function operate(op::SphericalTrace, out)::Nothing
     # Perform trace: einsum 'ii...' equivalent
     d = cs_dim(op.coordsys)
     out.data .= 0
+    # d == size(arg.data, 1) == size(arg.data, 2) by Trace tensorsig invariant
     for i in 1:d
         spatial_idx = ntuple(_ -> Colon(), ndims(arg.data) - 2)
         @inbounds out.data .+= arg.data[i, i, spatial_idx...]
@@ -3063,6 +3069,7 @@ function operate(op::PolarTrace, out)::Nothing
     preset_layout!(out, arg.layout)
     d = cs_dim(op.coordsys)
     out.data .= 0
+    # d == size(arg.data, 1) == size(arg.data, 2) by Trace tensorsig invariant
     for i in 1:d
         spatial_idx = ntuple(_ -> Colon(), ndims(arg.data) - 2)
         @inbounds out.data .+= arg.data[i, i, spatial_idx...]
@@ -3143,6 +3150,7 @@ function operate(op::DirectProductTrace, out)::Nothing
     preset_layout!(out, arg.layout)
     d = cs_dim(op.coordsys)
     out.data .= 0
+    # d == size(arg.data, 1) == size(arg.data, 2) by Trace tensorsig invariant
     for i in 1:d
         spatial_idx = ntuple(_ -> Colon(), ndims(arg.data) - 2)
         @inbounds out.data .+= arg.data[i, i, spatial_idx...]
@@ -4957,6 +4965,7 @@ function operate(op::SphericalEllOperator, out)::Nothing
     preset_layout!(out, operand.layout)
     out.data .= 0
     # Apply operator
+    # size(R_in) matches the leading tensor dimensions of operand.data set by preset_layout!
     R_in = regularity_classes(radial_basis, operand.tensorsig)
     ndim = length(size(operand.data)) - length(operand.tensorsig)
     for idx_in in CartesianIndices(size(R_in))
@@ -5560,6 +5569,7 @@ function operate(op::SphericalCurl, out)::Nothing
     preset_layout!(out, operand.layout)
     out.data .= 0
     # Apply operator
+    # size(R_in) matches the leading tensor dimensions of operand.data set by preset_layout!
     R_in = regularity_classes(radial_basis, operand.tensorsig)
     ndim = length(size(operand.data)) - length(operand.tensorsig)
     for idx_in in CartesianIndices(size(R_in))
