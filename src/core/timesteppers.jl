@@ -226,7 +226,7 @@ function _multistep_step!(data::MultistepIMEXData, stepper::MultistepIMEX,
     # Build RHS
     if length(RHS.data) > 0
         # RHS = c[2] * F[1]
-        RHS.data .= c[2] .* F_sys[1].data
+        @. RHS.data = c[2] * F_sys[1].data
         for j in 3:length(c)
             # RHS += c[j] * F[j-1]
             axpy!(c[j], F_sys[j-1].data, RHS.data)
@@ -248,7 +248,7 @@ function _multistep_step!(data::MultistepIMEXData, stepper::MultistepIMEX,
     for sp in subproblems
         if update_LHS
             if STORE_EXPANDED
-                sp.LHS.nzval .= a0 .* sp.M_exp.nzval .+ b0 .* sp.L_exp.nzval
+                @. sp.LHS.nzval = a0 * sp.M_exp.nzval + b0 * sp.L_exp.nzval
             else
                 sp.LHS = a0 * sp.M_min + b0 * sp.L_min
             end
@@ -951,8 +951,7 @@ function _rk_step!(data::RungeKuttaIMEXData, stepper::RungeKuttaIMEX,
         for sp in subproblems
             if update_LHS
                 if STORE_EXPANDED
-                    copyto!(sp.LHS.nzval, sp.M_exp.nzval)
-                    axpy!(k_Hii, sp.L_exp.nzval, sp.LHS.nzval)
+                    @. sp.LHS.nzval = sp.M_exp.nzval + k_Hii * sp.L_exp.nzval
                 else
                     sp.LHS = sp.M_min + k_Hii * sp.L_min
                 end
