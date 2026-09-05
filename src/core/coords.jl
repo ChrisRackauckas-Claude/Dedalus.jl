@@ -156,10 +156,10 @@ Base.hash(c::Coordinate, h::UInt) = hash(c.name, hash(typeof(c), h))
 
 # --- properties ---------------------------------------------------------------
 
-get_dim(::Coordinate) = 1
-get_coords(c::Coordinate) = (c,)
-is_curvilinear(::Coordinate) = false
-default_nonconst_groups(::Coordinate) = (1,)
+@inline get_dim(::Coordinate) = 1
+@inline get_coords(c::Coordinate) = (c,)
+@inline is_curvilinear(::Coordinate) = false
+@inline default_nonconst_groups(::Coordinate) = (1,)
 
 """
     check_bounds(coord::Coordinate, bounds)
@@ -211,10 +211,10 @@ end
 
 Base.hash(c::AzimuthalCoordinate, h::UInt) = hash(c.name, hash(typeof(c), h))
 
-get_dim(::AzimuthalCoordinate) = 1
-get_coords(c::AzimuthalCoordinate) = (c,)
-is_curvilinear(::AzimuthalCoordinate) = false
-default_nonconst_groups(::AzimuthalCoordinate) = (1,)
+@inline get_dim(::AzimuthalCoordinate) = 1
+@inline get_coords(c::AzimuthalCoordinate) = (c,)
+@inline is_curvilinear(::AzimuthalCoordinate) = false
+@inline default_nonconst_groups(::AzimuthalCoordinate) = (1,)
 
 function check_bounds(coord::AzimuthalCoordinate, bounds)
     if coord.cs !== nothing
@@ -257,8 +257,8 @@ function get_coords end
 
 Return whether the coordinate system is curvilinear.
 """
-is_curvilinear(::AbstractCoordinateSystem) = false
-is_curvilinear(::CurvilinearCoordinateSystem) = true
+@inline is_curvilinear(::AbstractCoordinateSystem) = false
+@inline is_curvilinear(::CurvilinearCoordinateSystem) = true
 
 """
     check_bounds(cs::AbstractCoordinateSystem, coord, bounds)
@@ -372,11 +372,11 @@ end
 CartesianCoordinates(names::AbstractVector{<:AbstractString}; kw...) =
     CartesianCoordinates(names...; kw...)
 
-get_dim(cc::CartesianCoordinates) = cc._dim
-get_coords(cc::CartesianCoordinates) = cc.coords
-get_names(cc::CartesianCoordinates) = cc.names
-is_curvilinear(::CartesianCoordinates) = false
-default_nonconst_groups(cc::CartesianCoordinates) = cc._default_nonconst_groups
+@inline get_dim(cc::CartesianCoordinates) = cc._dim
+@inline get_coords(cc::CartesianCoordinates) = cc.coords
+@inline get_names(cc::CartesianCoordinates) = cc.names
+@inline is_curvilinear(::CartesianCoordinates) = false
+@inline default_nonconst_groups(cc::CartesianCoordinates) = cc._default_nonconst_groups
 
 function Base.show(io::IO, cc::CartesianCoordinates)
     print(io, "{", join([c.name for c in cc.coords], ","), "}")
@@ -459,10 +459,10 @@ struct S2Coordinates <: CurvilinearCoordinateSystem
     end
 end
 
-get_dim(::S2Coordinates) = 2
-get_coords(s::S2Coordinates) = s.coords
-get_names(s::S2Coordinates) = s.names
-default_nonconst_groups(::S2Coordinates) = (0, 1)  # ell=0 has different validity
+@inline get_dim(::S2Coordinates) = 2
+@inline get_coords(s::S2Coordinates) = s.coords
+@inline get_names(s::S2Coordinates) = s.names
+@inline default_nonconst_groups(::S2Coordinates) = (0, 1)  # ell=0 has different validity
 
 const S2_SPIN_ORDERING = (-1, +1)
 
@@ -552,10 +552,10 @@ struct PolarCoordinates <: CurvilinearCoordinateSystem
     end
 end
 
-get_dim(::PolarCoordinates) = 2
-get_coords(p::PolarCoordinates) = p.coords
-get_names(p::PolarCoordinates) = p.names
-default_nonconst_groups(::PolarCoordinates) = (0, 0)
+@inline get_dim(::PolarCoordinates) = 2
+@inline get_coords(p::PolarCoordinates) = p.coords
+@inline get_names(p::PolarCoordinates) = p.names
+@inline default_nonconst_groups(::PolarCoordinates) = (0, 0)
 
 const POLAR_SPIN_ORDERING = (-1, +1)
 
@@ -670,10 +670,10 @@ struct SphericalCoordinates <: CurvilinearCoordinateSystem
     end
 end
 
-get_dim(::SphericalCoordinates) = 3
-get_coords(s::SphericalCoordinates) = s.coords
-get_names(s::SphericalCoordinates) = s.names
-default_nonconst_groups(::SphericalCoordinates) = (0, 1, 0)  # ell=0 has different validity
+@inline get_dim(::SphericalCoordinates) = 3
+@inline get_coords(s::SphericalCoordinates) = s.coords
+@inline get_names(s::SphericalCoordinates) = s.names
+@inline default_nonconst_groups(::SphericalCoordinates) = (0, 1, 0)  # ell=0 has different validity
 
 const SPHERICAL_SPIN_ORDERING = (-1, +1, 0)
 const SPHERICAL_REG_ORDERING = (-1, +1, 0)
@@ -897,8 +897,8 @@ mutable struct DirectProduct <: AbstractCoordinateSystem
     end
 end
 
-get_dim(dp::DirectProduct) = dp._dim
-get_coords(dp::DirectProduct) = dp.coords
+@inline get_dim(dp::DirectProduct) = dp._dim
+@inline get_coords(dp::DirectProduct) = dp.coords
 
 function get_names(dp::DirectProduct)
     return Tuple(string(c) for c in dp.coords)

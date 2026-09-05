@@ -71,7 +71,7 @@ v = [1.0, 2.0, 3.0]
 reshape_vector(v, 3, 2)  # size (1, 3, 1)
 ```
 """
-function reshape_vector(data::AbstractVector, dim::Int=2, axis::Int=dim)
+@inline function reshape_vector(data::AbstractVector, dim::Int=2, axis::Int=dim)
     shape = ones(Int, dim)
     shape[axis] = length(data)
     return reshape(data, Tuple(shape))
@@ -93,7 +93,7 @@ A = rand(3, 4, 5)
 A[axindex(2, 3)...]  # equivalent to A[:, 3, :]  -- but note this gives A[:, 3]
 ```
 """
-function axindex(axis::Int, index)
+@inline function axindex(axis::Int, index)
     if axis < 1
         throw(ArgumentError("`axis` must be >= 1 (1-based)"))
     end
@@ -113,7 +113,7 @@ A = rand(10, 10)
 A[axslice(1, 2, 5)...]  # rows 2:5, all columns
 ```
 """
-function axslice(axis::Int, start, stop, step=nothing)
+@inline function axslice(axis::Int, start, stop, step=nothing)
     if step === nothing
         return axindex(axis, start:stop)
     else

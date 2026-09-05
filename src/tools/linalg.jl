@@ -156,13 +156,13 @@ end
 
 function _apply_csr_first!(indptr, indices, entries, x, y, n_row, n_after)
     Threads.@threads for i in 1:n_row
-        @inbounds for k in 1:n_after
+        @inbounds @simd for k in 1:n_after
             y[i, k] = zero(eltype(y))
         end
         @inbounds for jj in indptr[i]:indptr[i+1]-1
             j = indices[jj]
             a = entries[jj]
-            for k in 1:n_after
+            @simd for k in 1:n_after
                 y[i, k] += a * x[j, k]
             end
         end
@@ -193,13 +193,13 @@ function _apply_csr_mid!(indptr, indices, entries, x, y, n_row, n_before, n_afte
     Threads.@threads for hi in 1:total
         h = div(hi - 1, n_row) + 1
         i = mod(hi - 1, n_row) + 1
-        @inbounds for k in 1:n_after
+        @inbounds @simd for k in 1:n_after
             y[h, i, k] = zero(eltype(y))
         end
         @inbounds for jj in indptr[i]:indptr[i+1]-1
             j = indices[jj]
             a = entries[jj]
-            for k in 1:n_after
+            @simd for k in 1:n_after
                 y[h, i, k] += a * x[h, j, k]
             end
         end
@@ -275,12 +275,12 @@ function _solve_upper_csr_first!(indptr, indices, entries, x, n_row, n_after)
         for jj in indptr[i+1]-1:-1:indptr[i]+1
             j = indices[jj]
             a = entries[jj]
-            for k in 1:n_after
+            @simd for k in 1:n_after
                 x[i, k] -= a * x[j, k]
             end
         end
         a = entries[indptr[i]]
-        for k in 1:n_after
+        @simd for k in 1:n_after
             x[i, k] /= a
         end
     end
@@ -310,12 +310,12 @@ function _solve_upper_csr_mid!(indptr, indices, entries, x, n_row, n_before, n_a
             for jj in indptr[i+1]-1:-1:indptr[i]+1
                 j = indices[jj]
                 a = entries[jj]
-                for k in 1:n_after
+                @simd for k in 1:n_after
                     x[h, i, k] -= a * x[h, j, k]
                 end
             end
             a = entries[indptr[i]]
-            for k in 1:n_after
+            @simd for k in 1:n_after
                 x[h, i, k] /= a
             end
         end

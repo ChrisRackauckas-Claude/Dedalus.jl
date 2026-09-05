@@ -63,7 +63,7 @@ CachedAttribute(compute_fn::Function) = CachedAttribute{Any}(compute_fn)
 
 Return the cached value, computing it on first access via `ca.compute_fn()`.
 """
-function get_cached!(ca::CachedAttribute{T})::T where {T}
+@inline function get_cached!(ca::CachedAttribute{T})::T where {T}
     if ca.value === nothing
         ca.value = ca.compute_fn()
     end
@@ -326,7 +326,7 @@ Retrieve (or create) the per-instance [`CachedFunction`](@ref) backing a
 [`CachedMethod`](@ref). Useful for inspecting or clearing an instance's cache
 directly.
 """
-function get_cached_method(cm::CachedMethod, instance)
+@inline function get_cached_method(cm::CachedMethod, instance)
     return get!(cm.instance_caches, instance) do
         CachedFunction(cm.func; max_size=cm.max_size)
     end

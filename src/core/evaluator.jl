@@ -80,12 +80,17 @@ Coordinates evaluation of operator trees through various handlers.
 """
 mutable struct Evaluator
     dist::Any
-    vars::Dict
+    vars::Dict{String, Any}
     handlers::Vector{Any}
     groups::Dict{Any,Vector{Any}}
+    # Pre-allocated buffers to avoid per-evaluation allocations
+    _scheduled_buf::Vector{Any}      # reused by evaluate_scheduled
+    _tasks_buf::Vector{Dict{String,Any}}  # reused by evaluate_handlers
+    _unfinished_buf::Vector{Dict{String,Any}}  # reused by attempt_tasks
 
     function Evaluator(dist, vars::Dict)
-        return new(dist, vars, Any[], Dict{Any,Vector{Any}}())
+        return new(dist, vars, Any[], Dict{String,Vector{Any}}(),
+                   Any[], Dict{String,Any}[], Dict{String,Any}[])
     end
 end
 
@@ -159,19 +164,31 @@ end
 
 Evaluate all handlers belonging to a named group.
 """
-function evaluate_group(ev::Evaluator, group; kw...)
+function evaluate_group(ev::Evaluator, group; kw...)::Nothing
     handlers = get(ev.groups, group, Any[])
     evaluate_handlers(ev, handlers; kw...)
+    return nothing
 end
 
 """
     evaluate_scheduled(ev::Evaluator; kw...)
 
 Evaluate all handlers whose schedules indicate they are due.
+
+Uses a reusable buffer (`_scheduled_buf`) to avoid allocating a new handler
+vector on every evaluation cycle.  The buffer is resized in-place via
+`empty!` / `push!`.
 """
-function evaluate_scheduled(ev::Evaluator; kw...)
-    handlers = [h for h in ev.handlers if check_schedule(h; kw...)]
-    evaluate_handlers(ev, handlers; kw...)
+function evaluate_scheduled(ev::Evaluator; kw...)::Nothing
+    buf = ev._scheduled_buf
+    empty!(buf)
+    for h in ev.handlers
+        if check_schedule(h; kw...)
+            push!(buf, h)
+        end
+    end
+    evaluate_handlers(ev, buf; kw...)
+    return nothing
 end
 
 """Alias: callers in solvers.jl and timesteppers.jl use the bang name."""
@@ -182,6 +199,9 @@ const evaluate_scheduled! = evaluate_scheduled
 
 Evaluate a collection of handlers: attempt all tasks, transform fields
 through layouts until every task is resolved, then process outputs.
+
+Reuses pre-allocated buffers on the Evaluator (`_tasks_buf`, `_unfinished_buf`)
+to avoid creating temporary vectors on every evaluation cycle.
 """
 function evaluate_handlers(ev::Evaluator, handlers; id=nothing, kw...)
     # Default to uuid to cache within evaluation but not across evaluations
@@ -189,19 +209,25 @@ function evaluate_handlers(ev::Evaluator, handlers; id=nothing, kw...)
         id = uuid4()
     end
 
-    # Collect tasks and clear previous outputs
-    tasks = [t for h in handlers for t in h.tasks]
-    for task in tasks
+    # Collect tasks into reusable buffer and clear previous outputs
+    tasks_buf = ev._tasks_buf
+    empty!(tasks_buf)
+    for h in handlers
+        for t in h.tasks
+            push!(tasks_buf, t)
+        end
+    end
+    for task in tasks_buf
         task["out"] = nothing
     end
 
-    # Attempt initial evaluation
-    tasks = attempt_tasks(tasks; id=id)
+    # Attempt initial evaluation (attempt_tasks! filters in-place)
+    attempt_tasks!(ev, tasks_buf; id=id)
 
     # Move all fields to coefficient layout
-    fields = get_task_fields(tasks)
+    fields = get_task_fields(tasks_buf)
     require_coeff_space(ev, fields)
-    tasks = attempt_tasks(tasks; id=id)
+    attempt_tasks!(ev, tasks_buf; id=id)
 
     # Oscillate through layouts until all tasks are evaluated
     # Limit to 10 passes to break on potential infinite loops
@@ -213,14 +239,14 @@ function evaluate_handlers(ev::Evaluator, handlers; id=nothing, kw...)
     end
     current_index, osc_st = osc_state
 
-    while !isempty(tasks)
+    while !isempty(tasks_buf)
         next_result = iterate(osc, osc_st)
         if next_result === nothing
             break
         end
         next_index, osc_st = next_result
         # Transform fields
-        fields = get_task_fields(tasks)
+        fields = get_task_fields(tasks_buf)
         if current_index < next_index
             path = ev.dist.paths[current_index + 1]  # 1-based indexing
             increment(path, fields)
@@ -230,7 +256,7 @@ function evaluate_handlers(ev::Evaluator, handlers; id=nothing, kw...)
         end
         current_index = next_index
         # Attempt evaluation
-        tasks = attempt_tasks(tasks; id=id)
+        attempt_tasks!(ev, tasks_buf; id=id)
     end
 
     # Transform all outputs to coefficient layout to dealias
@@ -268,7 +294,7 @@ end
 
 Move all fields in `fields` to the coefficient layout.
 """
-function require_coeff_space(ev::Evaluator, fields)
+function require_coeff_space(ev::Evaluator, fields)::Nothing
     coeff_layout = ev.dist.coeff_layout
     # Quick return if all fields are already in coeff layout
     if all(f -> f.layout === coeff_layout, fields)
@@ -332,33 +358,37 @@ function get_task_fields(tasks)
     fields = OrderedSet{Any}()
     for task in tasks
         for atom in atoms(task["operator"], Field)
+            # Skip LockedField atoms directly instead of collecting and
+            # removing them in a second pass, avoiding a temporary vector.
+            isa(atom, LockedField) && continue
             push!(fields, atom)
         end
-    end
-    # Drop locked fields
-    locked = [f for f in fields if isa(f, LockedField)]
-    for f in locked
-        delete!(fields, f)
     end
     return fields
 end
 
 """
-    attempt_tasks(tasks; kw...) -> Vector
+    attempt_tasks!(ev::Evaluator, tasks::Vector{Dict{String,Any}}; kw...)
 
-Attempt each task's operator and return only the unfinished tasks.
+In-place variant of `attempt_tasks`: evaluates each task and removes
+finished entries from `tasks`, reusing the Evaluator's `_unfinished_buf`
+to avoid allocating a new vector per call.
 """
-function attempt_tasks(tasks; kw...)
-    unfinished = similar(tasks, 0)
+function attempt_tasks!(ev::Evaluator, tasks::Vector{Dict{String,Any}}; kw...)
+    buf = ev._unfinished_buf
+    empty!(buf)
     for task in tasks
         output = attempt(task["operator"]; kw...)
         if output === nothing
-            push!(unfinished, task)
+            push!(buf, task)
         else
             task["out"] = output
         end
     end
-    return unfinished
+    # Swap contents back into tasks
+    empty!(tasks)
+    append!(tasks, buf)
+    return nothing
 end
 
 # ============================================================================
@@ -2131,5 +2161,5 @@ export Evaluator,
 
 
 # Evaluator-specific dispatches for require_coeff/grid_space!
-require_coeff_space!(ev::Evaluator, fields) = require_coeff_space(ev, fields)
-require_grid_space!(ev::Evaluator, fields) = require_grid_space(ev, fields)
+require_coeff_space!(ev::Evaluator, fields)::Nothing = require_coeff_space(ev, fields)
+require_grid_space!(ev::Evaluator, fields)::Nothing = require_grid_space(ev, fields)

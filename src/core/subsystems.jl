@@ -322,7 +322,7 @@ function check_condition(ss::Subsystem, eqn)
         return false
     end
     # Build group dictionary
-    group_dict = Dict{String, Any}()
+    group_dict = Dict{String, Int}()
     for (axis, ax_group) in enumerate(ss.group)
         if ax_group !== nothing
             coord = ss.dist.coords[axis]
@@ -390,21 +390,21 @@ mutable struct Subproblem
     dist::Any
     domain::Any
     dtype::DataType
-    group_dict::Dict{String, Any}
+    group_dict::Dict{String, Int}
     # Matrices and preconditioners (set by build_matrices!)
-    pre_left::Any
-    pre_left_pinv::Any
-    pre_right::Any
-    pre_right_pinv::Any
-    LHS::Any
+    pre_left::Union{Nothing, SparseMatrixCSC}
+    pre_left_pinv::Union{Nothing, SparseMatrixCSC}
+    pre_right::Union{Nothing, SparseMatrixCSC}
+    pre_right_pinv::Union{Nothing, SparseMatrixCSC}
+    LHS::Union{Nothing, SparseMatrixCSC}
     LHS_solver::Any
     LHS_solvers::Vector{Any}
     update_rank::Int
     # Buffers
-    _input_buffer::Any
-    _input_views::Any
-    _output_buffer::Any
-    _output_views::Any
+    _input_buffer::Union{Nothing, Matrix}
+    _input_views::Union{Nothing, Vector{Vector{Tuple}}}
+    _output_buffer::Union{Nothing, Matrix}
+    _output_views::Union{Nothing, Vector{Vector{Tuple}}}
     _compressed_buffer::Any
     # Per-matrix named attributes (L_min, M_min, etc.)
     _matrix_store::Dict{String, Any}
@@ -420,7 +420,7 @@ function Subproblem(solver, subsystems_vec::Vector{Subsystem}, group)
         ss.subproblem = nothing  # will be set below
     end
     # Build group dictionary
-    group_dict = Dict{String, Any}()
+    group_dict = Dict{String, Int}()
     for (axis, ax_group) in enumerate(group)
         if ax_group !== nothing
             coord = dist.coords[axis]
@@ -565,13 +565,14 @@ end
 
 Precondition and scatter subproblem data out to input-like fields.
 """
-function scatter_inputs!(sp::Subproblem, data, fields)
+function scatter_inputs!(sp::Subproblem, data, fields)::Nothing
     _apply_sparse_axis0!(sp.pre_right, data, sp._input_buffer)
     for (field, buffer_data) in zip(fields, sp._input_views)
         for (buffer_view, field_slcs) in buffer_data
             copyto!(view(field.data, field_slcs...), buffer_view)
         end
     end
+    return nothing
 end
 
 """
@@ -579,13 +580,14 @@ end
 
 Precondition and scatter subproblem data out to output-like fields.
 """
-function scatter_outputs!(sp::Subproblem, data, fields)
+function scatter_outputs!(sp::Subproblem, data, fields)::Nothing
     _apply_sparse_axis0!(sp.pre_left_pinv, data, sp._output_buffer)
     for (field, buffer_data) in zip(fields, sp._output_views)
         for (buffer_view, field_slcs) in buffer_data
             copyto!(view(field.data, field_slcs...), buffer_view)
         end
     end
+    return nothing
 end
 
 """
