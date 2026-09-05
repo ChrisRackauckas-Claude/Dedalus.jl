@@ -703,7 +703,7 @@ end
 Return the global data shape in the current layout and scales.
 """
 function global_shape(f::Field)
-    return global_shape(f.layout, f.domain, f.scales)
+    return global_shape(_get_layout(f), f.domain, f.scales)
 end
 
 """
@@ -714,7 +714,7 @@ Return a deep copy of the field with the same layout, scales, and data.
 function copy_field(f::Field)
     c = Field(f.dist; bases=f.domain.bases, tensorsig=f.tensorsig, dtype=f.dtype)
     preset_scales!(c, f.scales)
-    c[f.layout] = f.data
+    c[_get_layout(f)] = f.data
     return c
 end
 
@@ -733,7 +733,7 @@ end
 Return the local elements in the current layout.
 """
 function local_elements(f::Field)
-    return local_elements(f.layout, f.domain, f.scales)
+    return local_elements(_get_layout(f), f.domain, f.scales)
 end
 
 # ============================================================================
@@ -963,10 +963,11 @@ function allgather_data(f::Field; layout=nothing)
     end
     # Build global buffers
     tensor_shape = Tuple(get_dim(cs) for cs in f.tensorsig)
-    gs = global_shape(f.layout, f.domain, f.scales)
+    cur_layout = _get_layout(f)
+    gs = global_shape(cur_layout, f.domain, f.scales)
     global_shape_full = (tensor_shape..., gs...)
     component_slices = ntuple(_ -> Colon(), length(f.tensorsig))
-    spatial_slices = slices(f.layout, f.domain, f.scales)
+    spatial_slices = slices(cur_layout, f.domain, f.scales)
     local_slices = (component_slices..., spatial_slices...)
     send_buff = zeros(f.dtype, global_shape_full)
     recv_buff = similar(send_buff)
@@ -1098,7 +1099,7 @@ function fill_random!(f::Field; layout=nothing, scales=nothing, seed=nothing,
     global_data = ChunkedRandomArray(shape, seed, chunk_size, distribution)
     # Extract local data
     component_slices = ntuple(_ -> Colon(), length(f.tensorsig))
-    spatial_slices = slices(f.layout, f.domain, f.scales)
+    spatial_slices = slices(_get_layout(f), f.domain, f.scales)
     local_slices = (component_slices..., spatial_slices...)
     local_data = global_data[local_slices...]
     if is_real_operand(f)
@@ -1224,7 +1225,7 @@ end
 Set local data from global data using layout elements.
 """
 function set_global_data!(f::Field, global_data)
-    elements = local_elements(f.layout, f.domain, f.scales)
+    elements = local_elements(_get_layout(f), f.domain, f.scales)
     elements_1based = Tuple(e .+ 1 for e in elements)
     local_data = global_data[elements_1based...]
     dedalus_copyto!(f.data, local_data)
@@ -1425,7 +1426,7 @@ function unlock(f::LockedField)
     field = Field(f.dist; bases=f.domain.bases, name=f.name,
                   tensorsig=f.tensorsig, dtype=f.dtype)
     preset_scales!(field, f.scales)
-    field[f.layout] = f.data
+    field[_get_layout(f)] = f.data
     return field
 end
 
