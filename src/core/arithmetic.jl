@@ -1097,6 +1097,7 @@ function _einsum_contract!(out_data, arg0_data, arg1_data, indices, rank0, rank1
     # Zero the output
     out_data .= 0
     # Sum over the contracted index
+    @assert size(arg1_data, idx1) == contract_size "DotProduct contracted dimension mismatch: size(arg0, $idx0)=$contract_size != size(arg1, $idx1)=$(size(arg1_data, idx1))"
     @inbounds for k in 1:contract_size
         # Build index tuples for arg0: all colons except idx0 = k
         a0_idx = ntuple(i -> i == idx0 ? k : Colon(), ndims(arg0_data))
