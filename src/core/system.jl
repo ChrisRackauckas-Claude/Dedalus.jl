@@ -84,6 +84,7 @@ mutable struct FieldSystem{T}
     buffer::Vector{T}
     group_buffer::SubArray
     field_buffer::SubArray
+    work_buffer::Vector{T}
 end
 
 function FieldSystem(fields, subproblems, coeff_layout)
@@ -105,8 +106,9 @@ function FieldSystem(fields, subproblems, coeff_layout)
 
     group_buffer = @view buffer[1:min(size(perm, 1), n)]
     field_buffer = @view buffer[1:min(size(perm, 2), n)]
+    work_buffer = zeros(T, max(size(perm, 1), size(perm, 2)))
 
-    FieldSystem{T}(collect(fields), buffer, array_views, perm, buffer, group_buffer, field_buffer)
+    FieldSystem{T}(collect(fields), buffer, array_views, perm, buffer, group_buffer, field_buffer, work_buffer)
 end
 
 """
@@ -118,7 +120,8 @@ function gather!(fs::FieldSystem)
     for (field, av) in zip(fs.fields, fs.array_views)
         av .= field["c"]
     end
-    mul!(fs.group_buffer, fs.perm, fs.field_buffer)
+    mul!(fs.work_buffer, fs.perm, fs.field_buffer)
+    fs.group_buffer .= @view fs.work_buffer[1:length(fs.group_buffer)]
 end
 
 """
@@ -127,7 +130,8 @@ end
 Extract fields from system buffer.
 """
 function scatter!(fs::FieldSystem)
-    mul!(fs.field_buffer, transpose(fs.perm), fs.group_buffer)
+    mul!(fs.work_buffer, transpose(fs.perm), fs.group_buffer)
+    fs.field_buffer .= @view fs.work_buffer[1:length(fs.field_buffer)]
     for (field, av) in zip(fs.fields, fs.array_views)
         field["c"] = av
     end
