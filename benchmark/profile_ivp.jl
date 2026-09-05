@@ -203,7 +203,7 @@ function run_benchmark()
         println()
         println("The IVP solver infrastructure may not be fully functional yet.")
         println("Benchmark cannot proceed.")
-        return
+        exit(1)
     end
 
     # ------------------------------------------------------------------
