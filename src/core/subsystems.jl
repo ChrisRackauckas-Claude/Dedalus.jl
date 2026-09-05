@@ -392,19 +392,19 @@ mutable struct Subproblem
     dtype::DataType
     group_dict::Dict{String, Int}
     # Matrices and preconditioners (set by build_matrices!)
-    pre_left::Any
-    pre_left_pinv::Any
-    pre_right::Any
-    pre_right_pinv::Any
-    LHS::Any
+    pre_left::Union{Nothing, SparseMatrixCSC}
+    pre_left_pinv::Union{Nothing, SparseMatrixCSC}
+    pre_right::Union{Nothing, SparseMatrixCSC}
+    pre_right_pinv::Union{Nothing, SparseMatrixCSC}
+    LHS::Union{Nothing, SparseMatrixCSC}
     LHS_solver::Any
     LHS_solvers::Vector{Any}
     update_rank::Int
     # Buffers
-    _input_buffer::Any
-    _input_views::Any
-    _output_buffer::Any
-    _output_views::Any
+    _input_buffer::Union{Nothing, Matrix}
+    _input_views::Union{Nothing, Vector{Vector{Tuple}}}
+    _output_buffer::Union{Nothing, Matrix}
+    _output_views::Union{Nothing, Vector{Vector{Tuple}}}
     _compressed_buffer::Any
     # Per-matrix named attributes (L_min, M_min, etc.)
     _matrix_store::Dict{String, Any}
