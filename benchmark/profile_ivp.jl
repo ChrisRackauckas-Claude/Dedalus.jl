@@ -19,7 +19,6 @@ Usage:
 
 using Profile
 using Printf
-using InteractiveUtils
 using Dates
 
 # ============================================================================

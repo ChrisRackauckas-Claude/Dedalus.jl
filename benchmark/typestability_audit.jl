@@ -30,8 +30,6 @@ Options:
     --runtime   Attempt runtime inference analysis (requires loadable module)
 """
 
-using InteractiveUtils
-
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -774,9 +772,6 @@ function _check_return_types(stats::AuditStats)
     ]
 
     println("Checking inferred return types for $(length(priority_targets)) priority functions...\n")
-
-    runtime_unstable = 0
-    runtime_checked = 0
 
     for (qualified_name, source_file) in priority_targets
         # Resolve the function object from its qualified name

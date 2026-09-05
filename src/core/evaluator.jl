@@ -368,24 +368,6 @@ function get_task_fields(tasks)
 end
 
 """
-    attempt_tasks(tasks; kw...) -> Vector
-
-Attempt each task's operator and return only the unfinished tasks.
-"""
-function attempt_tasks(tasks; kw...)
-    unfinished = similar(tasks, 0)
-    for task in tasks
-        output = attempt(task["operator"]; kw...)
-        if output === nothing
-            push!(unfinished, task)
-        else
-            task["out"] = output
-        end
-    end
-    return unfinished
-end
-
-"""
     attempt_tasks!(ev::Evaluator, tasks::Vector{Dict{String,Any}}; kw...)
 
 In-place variant of `attempt_tasks`: evaluates each task and removes
