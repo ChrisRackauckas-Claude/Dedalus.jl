@@ -1,0 +1,12 @@
+[metadata]
+example = "evp_1d_mathieu"
+source = "Analytical: Mathieu equation at q=0 reduces to simple harmonic, eigenvalues are n^2"
+tolerance_rtol = 1e-6
+tolerance_atol_zero = 1e-10
+
+[parameters]
+N = 32
+q = 0.0
+
+[reference]
+eigenvalues_sorted_real = [0.0, 1.0, 1.0, 4.0, 4.0, 9.0, 9.0, 16.0, 16.0, 25.0]

@@ -258,7 +258,7 @@ Recursively evaluate the operation.
 6. Reset arguments.
 7. Cache result if requested.
 """
-function evaluate_future(f::AbstractFuture; id=nothing, force::Bool=true)
+function evaluate_future(f::AbstractFuture; id=nothing, force::Bool=true)::Union{AbstractCurrent, Nothing}
     # Check storage
     if f.store_last && id !== nothing
         if id == f.last_id
@@ -326,8 +326,18 @@ end
     get_out(f::AbstractFuture)
 
 Get or create the output field for this future.
+
+Output buffer reuse: when `STORE_OUTPUTS` is true (the default), the output
+field built by `build_out` is cached in `f.out` after the first evaluation.
+Subsequent evaluations return the same buffer, so no per-evaluation allocation
+occurs for output fields.  This mirrors the Python Dedalus `@CachedAttribute`
+pattern on the `out` property.
+
+A second caching layer (`store_last` / `last_id` / `last_out`) allows the
+*evaluated result* to be reused across evaluations that share the same `id`,
+short-circuiting the entire recursive evaluation when the cached id matches.
 """
-function get_out(f::AbstractFuture)
+function get_out(f::AbstractFuture)::AbstractCurrent
     if f.out !== nothing
         return f.out
     end
@@ -344,7 +354,7 @@ end
 Build a new output field for this future. Uses `future_type(f)` to
 determine what kind of output to create.
 """
-function build_out(f::AbstractFuture)
+function build_out(f::AbstractFuture)::AbstractCurrent
     bases = f.domain.bases
     ft = future_type(f)
     if any(b !== nothing for b in bases)
@@ -360,7 +370,7 @@ end
 
 Recursively attempt to evaluate operation (non-forcing).
 """
-function attempt(f::AbstractFuture; id=nothing)
+function attempt(f::AbstractFuture; id=nothing)::Union{AbstractCurrent, Nothing}
     return evaluate_future(f; id=id, force=false)
 end
 

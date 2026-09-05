@@ -100,7 +100,7 @@ get_config_bool("transforms", "GROUP_TRANSFORMS")  # false
 get_config_bool("memory", "STORE_OUTPUTS")          # true
 ```
 """
-function get_config_bool(section::AbstractString, key::AbstractString)
+function get_config_bool(section::AbstractString, key::AbstractString)::Bool
     val = config[section][key]
     if isa(val, Bool)
         return val

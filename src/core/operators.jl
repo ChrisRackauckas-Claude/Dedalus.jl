@@ -269,13 +269,14 @@ function enforce_conditions(op::Power)
     end
 end
 
-function operate(op::Power, out)
+function operate(op::Power, out)::Nothing
     arg0 = op.args[1]
     arg1 = op.args[2]
     preset_layout!(out, arg0.layout)
     if length(out.data) > 0
         out.data .= arg0.data .^ arg1
     end
+    return nothing
 end
 
 function new_operands(op::Power, arg0, arg1; kw...)
@@ -333,12 +334,13 @@ _field_copy(arg) = FieldCopy(arg)
 check_conditions(::FieldCopy) = true
 enforce_conditions(::FieldCopy) = nothing
 
-function operate(op::FieldCopy, out)
+function operate(op::FieldCopy, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(out.data) > 0
         out.data .= arg.data
     end
+    return nothing
 end
 
 function new_operand(op::FieldCopy, operand; kw...)
@@ -423,12 +425,13 @@ function enforce_conditions(op::UnaryGridFunction)
     end
 end
 
-function operate(op::UnaryGridFunction, out)
+function operate(op::UnaryGridFunction, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(out.data) > 0
         out.data .= op.func.(arg.data)
     end
+    return nothing
 end
 
 function sym_diff(op::UnaryGridFunction, var)
@@ -492,12 +495,13 @@ function enforce_conditions(op::GridOperator)
     end
 end
 
-function operate(op::GridOperator, out)
+function operate(op::GridOperator, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(out.data) > 0
         out.data .= arg.data
     end
+    return nothing
 end
 
 function new_operand(op::GridOperator, operand; kw...)
@@ -542,12 +546,13 @@ function enforce_conditions(op::CoeffOperator)
     end
 end
 
-function operate(op::CoeffOperator, out)
+function operate(op::CoeffOperator, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(out.data) > 0
         out.data .= arg.data
     end
+    return nothing
 end
 
 function new_operand(op::CoeffOperator, operand; kw...)
@@ -675,7 +680,7 @@ function enforce_conditions(op::Convert)
     end
 end
 
-function operate(op::Convert, out)
+function operate(op::Convert, out)::Nothing
     arg = op.args[1]
     layout = arg.layout
     # Grid space: identity (copy data)
@@ -694,6 +699,7 @@ function operate(op::Convert, out)
             out.data .= 0
         end
     end
+    return nothing
 end
 
 function new_operand(op::Convert, operand; kw...)
@@ -791,7 +797,7 @@ function enforce_conditions(op::Differentiate)
     end
 end
 
-function operate(op::Differentiate, out)
+function operate(op::Differentiate, out)::Nothing
     arg = op.args[1]
     layout = arg.layout
     preset_layout!(out, layout)
@@ -801,6 +807,7 @@ function operate(op::Differentiate, out)
     else
         out.data .= 0
     end
+    return nothing
 end
 
 function new_operand(op::Differentiate, operand; kw...)
@@ -880,7 +887,7 @@ function enforce_conditions(op::Interpolate)
     end
 end
 
-function operate(op::Interpolate, out)
+function operate(op::Interpolate, out)::Nothing
     arg = op.args[1]
     layout = arg.layout
     preset_layout!(out, layout)
@@ -890,6 +897,7 @@ function operate(op::Interpolate, out)
     else
         out.data .= 0
     end
+    return nothing
 end
 
 function new_operand(op::Interpolate, operand; kw...)
@@ -975,7 +983,7 @@ function enforce_conditions(op::Integrate)
     end
 end
 
-function operate(op::Integrate, out)
+function operate(op::Integrate, out)::Nothing
     arg = op.args[1]
     layout = arg.layout
     preset_layout!(out, layout)
@@ -985,6 +993,7 @@ function operate(op::Integrate, out)
     else
         out.data .= 0
     end
+    return nothing
 end
 
 function new_operand(op::Integrate, operand; kw...)
@@ -1070,7 +1079,7 @@ function enforce_conditions(op::Average)
     end
 end
 
-function operate(op::Average, out)
+function operate(op::Average, out)::Nothing
     arg = op.args[1]
     layout = arg.layout
     preset_layout!(out, layout)
@@ -1080,6 +1089,7 @@ function operate(op::Average, out)
     else
         out.data .= 0
     end
+    return nothing
 end
 
 function new_operand(op::Average, operand; kw...)
@@ -1168,7 +1178,7 @@ function enforce_conditions(op::Lift)
     end
 end
 
-function operate(op::Lift, out)
+function operate(op::Lift, out)::Nothing
     arg = op.args[1]
     layout = arg.layout
     preset_layout!(out, layout)
@@ -1178,6 +1188,7 @@ function operate(op::Lift, out)
     else
         out.data .= 0
     end
+    return nothing
 end
 
 function new_operand(op::Lift, operand; kw...)
@@ -1265,7 +1276,7 @@ function enforce_conditions(op::CartesianGradient)
     end
 end
 
-function operate(op::CartesianGradient, out)
+function operate(op::CartesianGradient, out)::Nothing
     operands = op.args
     # Find a layout from the args
     layout = nothing
@@ -1279,14 +1290,15 @@ function operate(op::CartesianGradient, out)
         layout = op.dist.coeff_layout
     end
     preset_layout!(out, layout)
-    # Copy each component's data into the output vector slots
+    # length(operands) == cs_dim(coordsys) == size(out.data, 1) by Gradient construction
     for (i, comp) in enumerate(operands)
         if isa(comp, AbstractCurrent) && length(comp.data) > 0
-            out.data[i, ntuple(_ -> Colon(), ndims(out.data) - 1)...] .= comp.data
+            @inbounds out.data[i, ntuple(_ -> Colon(), ndims(out.data) - 1)...] .= comp.data
         else
-            out.data[i, ntuple(_ -> Colon(), ndims(out.data) - 1)...] .= 0
+            @inbounds out.data[i, ntuple(_ -> Colon(), ndims(out.data) - 1)...] .= 0
         end
     end
+    return nothing
 end
 
 function new_operand(op::CartesianGradient, operand; kw...)
@@ -1346,12 +1358,13 @@ end
 check_conditions(::CartesianDivergence) = true
 enforce_conditions(::CartesianDivergence) = nothing
 
-function operate(op::CartesianDivergence, out)
+function operate(op::CartesianDivergence, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(out.data) > 0
         out.data .= arg.data
     end
+    return nothing
 end
 
 function new_operand(op::CartesianDivergence, operand; kw...)
@@ -1419,12 +1432,13 @@ end
 check_conditions(::CartesianCurl) = true
 enforce_conditions(::CartesianCurl) = nothing
 
-function operate(op::CartesianCurl, out)
+function operate(op::CartesianCurl, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(out.data) > 0
         out.data .= arg.data
     end
+    return nothing
 end
 
 function new_operand(op::CartesianCurl, operand; kw...)
@@ -1473,12 +1487,13 @@ end
 check_conditions(::CartesianLaplacian) = true
 enforce_conditions(::CartesianLaplacian) = nothing
 
-function operate(op::CartesianLaplacian, out)
+function operate(op::CartesianLaplacian, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(out.data) > 0
         out.data .= arg.data
     end
+    return nothing
 end
 
 function new_operand(op::CartesianLaplacian, operand; kw...)
@@ -1547,17 +1562,19 @@ function enforce_conditions(op::CartesianTrace)
     end
 end
 
-function operate(op::CartesianTrace, out)
+function operate(op::CartesianTrace, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     # Perform trace: sum over diagonal of first two tensor indices
     cs = op.coordsys
     d = cs_dim(cs)
     out.data .= 0
+    # d == size(arg.data, 1) == size(arg.data, 2) because Trace requires tensorsig[1]==tensorsig[2]==coordsys
     for i in 1:d
         spatial_idx = ntuple(_ -> Colon(), ndims(arg.data) - 2)
-        out.data .+= arg.data[i, i, spatial_idx...]
+        @inbounds out.data .+= arg.data[i, i, spatial_idx...]
     end
+    return nothing
 end
 
 function new_operand(op::CartesianTrace, operand; kw...)
@@ -1625,12 +1642,13 @@ end
 check_conditions(::CartesianTransposeComponents) = true
 enforce_conditions(::CartesianTransposeComponents) = nothing
 
-function operate(op::CartesianTransposeComponents, out)
+function operate(op::CartesianTransposeComponents, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(out.data) > 0
         out.data .= permutedims(arg.data, collect(op.new_axis_order))
     end
+    return nothing
 end
 
 function new_operand(op::CartesianTransposeComponents, operand; kw...)
@@ -1681,7 +1699,7 @@ end
 check_conditions(::CartesianComponent) = true
 enforce_conditions(::CartesianComponent) = nothing
 
-function operate(op::CartesianComponent, out)
+function operate(op::CartesianComponent, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(out.data) > 0
@@ -1689,6 +1707,7 @@ function operate(op::CartesianComponent, out)
         idx = ntuple(i -> i == op.index ? op.coord_subaxis : Colon(), ndims(arg.data))
         out.data .= arg.data[idx...]
     end
+    return nothing
 end
 
 function new_operand(op::CartesianComponent, operand; kw...)
@@ -1764,7 +1783,7 @@ function enforce_conditions(op::DirectProductGradient)
     end
 end
 
-function operate(op::DirectProductGradient, out)
+function operate(op::DirectProductGradient, out)::Nothing
     layout = nothing
     for arg in op.args
         if isa(arg, AbstractCurrent)
@@ -1776,16 +1795,18 @@ function operate(op::DirectProductGradient, out)
         layout = op.dist.coeff_layout
     end
     preset_layout!(out, layout)
+    # sum(get_dim(cs)) over sub-coordsystems == get_dim(op.coordsys) == size(out.data, 1) by preset_layout!
     i0 = 1
     for (cs_grad, cs) in zip(op.args, op.coordsys.coordsystems)
         dim = get_dim(cs)
         if isa(cs_grad, AbstractCurrent) && length(cs_grad.data) > 0
-            out.data[i0:i0+dim-1, ntuple(_ -> Colon(), ndims(out.data) - 1)...] .= cs_grad.data
+            @inbounds out.data[i0:i0+dim-1, ntuple(_ -> Colon(), ndims(out.data) - 1)...] .= cs_grad.data
         else
-            out.data[i0:i0+dim-1, ntuple(_ -> Colon(), ndims(out.data) - 1)...] .= 0
+            @inbounds out.data[i0:i0+dim-1, ntuple(_ -> Colon(), ndims(out.data) - 1)...] .= 0
         end
         i0 += dim
     end
+    return nothing
 end
 
 function new_operand(op::DirectProductGradient, operand; kw...)
@@ -1839,12 +1860,13 @@ end
 check_conditions(::DirectProductDivergence) = true
 enforce_conditions(::DirectProductDivergence) = nothing
 
-function operate(op::DirectProductDivergence, out)
+function operate(op::DirectProductDivergence, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(out.data) > 0
         out.data .= arg.data
     end
+    return nothing
 end
 
 function new_operand(op::DirectProductDivergence, operand; kw...)
@@ -1894,12 +1916,13 @@ end
 check_conditions(::DirectProductCurl) = true
 enforce_conditions(::DirectProductCurl) = nothing
 
-function operate(op::DirectProductCurl, out)
+function operate(op::DirectProductCurl, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(out.data) > 0
         out.data .= arg.data
     end
+    return nothing
 end
 
 function new_operand(op::DirectProductCurl, operand; kw...)
@@ -1943,12 +1966,13 @@ end
 check_conditions(::DirectProductLaplacian) = true
 enforce_conditions(::DirectProductLaplacian) = nothing
 
-function operate(op::DirectProductLaplacian, out)
+function operate(op::DirectProductLaplacian, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(out.data) > 0
         out.data .= arg.data
     end
+    return nothing
 end
 
 function new_operand(op::DirectProductLaplacian, operand; kw...)
@@ -1996,7 +2020,7 @@ end
 check_conditions(::DirectProductComponent) = true
 enforce_conditions(::DirectProductComponent) = nothing
 
-function operate(op::DirectProductComponent, out)
+function operate(op::DirectProductComponent, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(out.data) > 0
@@ -2005,6 +2029,7 @@ function operate(op::DirectProductComponent, out)
         idx = ntuple(i -> i == op.index ? comp_slice : Colon(), ndims(arg.data))
         out.data .= arg.data[idx...]
     end
+    return nothing
 end
 
 function new_operand(op::DirectProductComponent, operand; kw...)
@@ -2155,15 +2180,16 @@ end
 # AdvectiveCFL operate method
 # ============================================================================
 
-function operate(op::AdvectiveCFL, out)
+function operate(op::AdvectiveCFL, out)::Nothing
     vel = op.args[1]
     preset_layout!(out, vel.layout)
     # Compute |velocity| / grid_spacing for each component
     # Simplified: just use absolute value of velocity components
     out.data .= 0
-    for i in 1:length(vel.tensorsig)
-        out.data .+= abs.(vel.data[i, fill(:, ndims(vel.data)-1)...])
+    for i in axes(vel.data, 1)
+        @inbounds out.data .+= abs.(vel.data[i, fill(:, ndims(vel.data)-1)...])
     end
+    return nothing
 end
 
 # ============================================================================
@@ -2400,7 +2426,7 @@ Explicit evaluation of an S2 spectral operator.
 For operators without ell-coupling, loops over spin components and applies
 the subspace matrix via `apply_matrix`.
 """
-function operate(op::SpectralOperatorS2, out)
+function operate(op::SpectralOperatorS2, out)::Nothing
     operand = op.args[1]
     input_basis = op.input_basis
     layout = operand.layout
@@ -2417,18 +2443,20 @@ function operate(op::SpectralOperatorS2, out)
         return
     end
     # Apply operator over spin components
+    # size(S_in) matches the leading tensor dimensions of operand.data set by preset_layout!
     S_in = spin_weights(input_basis, operand.tensorsig)
     for si_in in CartesianIndices(size(S_in))
         spintotal_in = S_in[si_in]
-        comp_in = operand.data[Tuple(si_in)...]
+        @inbounds comp_in = operand.data[Tuple(si_in)...]
         reduced_in = reduced_view_3(comp_in, axis)
         for si_out_tuple in spinindex_out(op, Tuple(si_in))
-            comp_out = out.data[si_out_tuple...]
+            @inbounds comp_out = out.data[si_out_tuple...]
             reduced_out = reduced_view_3(comp_out, axis)
             matrix = subspace_matrix(op, layout, Tuple(si_in), si_out_tuple)
             reduced_out .+= apply_matrix(matrix, reduced_in, 1)
         end
     end
+    return nothing
 end
 
 # ============================================================================
@@ -2592,7 +2620,7 @@ Explicit evaluation of a separable sphere operator.
 Multiplies each spin component of the operand data by the corresponding
 symbol array, accumulating into the output.
 """
-function operate(op::SeparableSphereOperator, out)
+function operate(op::SeparableSphereOperator, out)::Nothing
     operand = op.args[1]
     layout = operand.layout
     basis = op.input_basis
@@ -2625,10 +2653,11 @@ function operate(op::SeparableSphereOperator, out)
         data_out = view(out.data, out_idx...)
     end
     # Apply operator over spin components
+    # size(S_in) matches the leading tensor dimensions of operand.data set by preset_layout!
     S_in = spin_weights(basis, operand.tensorsig)
     for si_in in CartesianIndices(size(S_in))
         spintotal_in = S_in[si_in]
-        comp_in = data_in[Tuple(si_in)...]
+        @inbounds comp_in = data_in[Tuple(si_in)...]
         for si_out_tuple in spinindex_out(op, Tuple(si_in))
             # Get symbols
             spintotal_out = spintotal(basis, out.tensorsig, si_out_tuple)
@@ -2638,10 +2667,11 @@ function operate(op::SeparableSphereOperator, out)
                 symbols_val = symbols_val[slices...]
             end
             # Multiply by symbols and accumulate
-            comp_out = data_out[si_out_tuple...]
+            @inbounds comp_out = data_out[si_out_tuple...]
             comp_out .+= symbols_val .* comp_in
         end
     end
+    return nothing
 end
 
 # ============================================================================
@@ -2753,7 +2783,7 @@ Explicit evaluation of a polar m-dependent operator.
 Loops over spin components and m-maps, applying the per-m radial matrix
 to each azimuthal slice of the operand data.
 """
-function operate(op::PolarMOperator, out)
+function operate(op::PolarMOperator, out)::Nothing
     operand = op.args[1]
     if hasfield(typeof(op.output_basis), :m_maps) || hasmethod(m_maps, Tuple{typeof(op.output_basis), Any})
         basis = op.output_basis
@@ -2769,13 +2799,14 @@ function operate(op::PolarMOperator, out)
         return
     end
     # Apply operator
+    # size(S_in) matches the leading tensor dimensions of operand.data set by preset_layout!
     S_in = spin_weights(basis, operand.tensorsig)
     ndim = length(size(operand.data)) - length(operand.tensorsig)
     for si_in in CartesianIndices(size(S_in))
         spintotal_in = S_in[si_in]
         for si_out_tuple in spinindex_out(op, Tuple(si_in))
-            comp_in = operand.data[Tuple(si_in)...]
-            comp_out = out.data[si_out_tuple...]
+            @inbounds comp_in = operand.data[Tuple(si_in)...]
+            @inbounds comp_out = out.data[si_out_tuple...]
             for (m, mg_slice, mc_slice, n_slice_val) in m_maps(basis, op.dist)
                 # Build slice tuple: all colons except axis-1 gets mc_slice,
                 # axis gets n_slice_val (1-based indexing)
@@ -2792,6 +2823,7 @@ function operate(op::PolarMOperator, out)
             end
         end
     end
+    return nothing
 end
 
 """
@@ -2917,16 +2949,18 @@ function enforce_conditions(op::SphericalTrace)
     end
 end
 
-function operate(op::SphericalTrace, out)
+function operate(op::SphericalTrace, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     # Perform trace: einsum 'ii...' equivalent
     d = cs_dim(op.coordsys)
     out.data .= 0
+    # d == size(arg.data, 1) == size(arg.data, 2) by Trace tensorsig invariant
     for i in 1:d
         spatial_idx = ntuple(_ -> Colon(), ndims(arg.data) - 2)
-        out.data .+= arg.data[i, i, spatial_idx...]
+        @inbounds out.data .+= arg.data[i, i, spatial_idx...]
     end
+    return nothing
 end
 
 function new_operand(op::SphericalTrace, operand; kw...)
@@ -3030,15 +3064,17 @@ function enforce_conditions(op::PolarTrace)
     end
 end
 
-function operate(op::PolarTrace, out)
+function operate(op::PolarTrace, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     d = cs_dim(op.coordsys)
     out.data .= 0
+    # d == size(arg.data, 1) == size(arg.data, 2) by Trace tensorsig invariant
     for i in 1:d
         spatial_idx = ntuple(_ -> Colon(), ndims(arg.data) - 2)
-        out.data .+= arg.data[i, i, spatial_idx...]
+        @inbounds out.data .+= arg.data[i, i, spatial_idx...]
     end
+    return nothing
 end
 
 function new_operand(op::PolarTrace, operand; kw...)
@@ -3109,15 +3145,17 @@ function enforce_conditions(op::DirectProductTrace)
     end
 end
 
-function operate(op::DirectProductTrace, out)
+function operate(op::DirectProductTrace, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     d = cs_dim(op.coordsys)
     out.data .= 0
+    # d == size(arg.data, 1) == size(arg.data, 2) by Trace tensorsig invariant
     for i in 1:d
         spatial_idx = ntuple(_ -> Colon(), ndims(arg.data) - 2)
-        out.data .+= arg.data[i, i, spatial_idx...]
+        @inbounds out.data .+= arg.data[i, i, spatial_idx...]
     end
+    return nothing
 end
 
 function new_operand(op::DirectProductTrace, operand; kw...)
@@ -3204,12 +3242,13 @@ function _get_transpose_matrix(op::StandardTransposeComponents)
     return P
 end
 
-function operate(op::StandardTransposeComponents, out)
+function operate(op::StandardTransposeComponents, out)::Nothing
     operand = op.args[1]
     preset_layout!(out, operand.layout)
     if length(out.data) > 0
         out.data .= permutedims(operand.data, collect(op.new_axis_order))
     end
+    return nothing
 end
 
 function new_operand(op::StandardTransposeComponents, operand; kw...)
@@ -3295,7 +3334,7 @@ function _get_transpose_matrix(op::SphericalTransposeComponents)
     return P
 end
 
-function operate(op::SphericalTransposeComponents, out)
+function operate(op::SphericalTransposeComponents, out)::Nothing
     operand = op.args[1]
     radius_axis = op.radius_axis
     layout = operand.layout
@@ -3316,6 +3355,7 @@ function operate(op::SphericalTransposeComponents, out)
             forward_regularity_recombination!(radial_basis, operand.tensorsig, radius_axis, out.data; ell_maps=ell_maps_val)
         end
     end
+    return nothing
 end
 
 function new_operand(op::SphericalTransposeComponents, operand; kw...)
@@ -3404,7 +3444,7 @@ end
 check_conditions(::CartesianSkew) = true
 enforce_conditions(::CartesianSkew) = nothing
 
-function operate(op::CartesianSkew, out)
+function operate(op::CartesianSkew, out)::Nothing
     arg = op.args[1]
     preset_layout!(out, arg.layout)
     if length(arg.data) > 0
@@ -3413,6 +3453,7 @@ function operate(op::CartesianSkew, out)
         out.data[sx...] .= -(arg.data[sy...])
         out.data[sy...] .= arg.data[sx...]
     end
+    return nothing
 end
 
 function new_operand(op::CartesianSkew, operand; kw...)
@@ -3476,7 +3517,7 @@ end
 check_conditions(::SpinSkew) = true
 enforce_conditions(::SpinSkew) = nothing
 
-function operate(op::SpinSkew, out)
+function operate(op::SpinSkew, out)::Nothing
     arg = op.args[1]
     index = op.index
     azimuth_axis = op.azimuth_axis
@@ -3513,6 +3554,7 @@ function operate(op::SpinSkew, out)
             end
         end
     end
+    return nothing
 end
 
 function new_operand(op::SpinSkew, operand; kw...)
@@ -3640,7 +3682,7 @@ end
 check_conditions(::RadialComponent) = true
 enforce_conditions(::RadialComponent) = nothing
 
-function operate(op::RadialComponent, out)
+function operate(op::RadialComponent, out)::Nothing
     operand = op.args[1]
     preset_layout!(out, operand.layout)
     if length(out.data) > 0
@@ -3655,6 +3697,7 @@ function operate(op::RadialComponent, out)
         idx = axindex(op.index, comp_idx)
         out.data .= operand.data[idx...]
     end
+    return nothing
 end
 
 function new_operand(op::RadialComponent, operand; kw...)
@@ -3780,7 +3823,7 @@ end
 check_conditions(::AngularComponent) = true
 enforce_conditions(::AngularComponent) = nothing
 
-function operate(op::AngularComponent, out)
+function operate(op::AngularComponent, out)::Nothing
     operand = op.args[1]
     preset_layout!(out, operand.layout)
     if length(out.data) > 0
@@ -3794,6 +3837,7 @@ function operate(op::AngularComponent, out)
             out.data .= operand.data[idx...]
         end
     end
+    return nothing
 end
 
 function new_operand(op::AngularComponent, operand; kw...)
@@ -3891,7 +3935,7 @@ end
 check_conditions(::AzimuthalComponent) = true
 enforce_conditions(::AzimuthalComponent) = nothing
 
-function operate(op::AzimuthalComponent, out)
+function operate(op::AzimuthalComponent, out)::Nothing
     operand = op.args[1]
     preset_layout!(out, operand.layout)
     if length(out.data) > 0
@@ -3899,6 +3943,7 @@ function operate(op::AzimuthalComponent, out)
         idx = axindex(op.index, 1)
         out.data .= operand.data[idx...]
     end
+    return nothing
 end
 
 function new_operand(op::AzimuthalComponent, operand; kw...)
@@ -4907,7 +4952,7 @@ Explicit evaluation of a 3D spherical operator.
 Loops over regularity components and ell-maps, applying the per-ell radial matrix
 to each (m, ell) slice of the operand data.
 """
-function operate(op::SphericalEllOperator, out)
+function operate(op::SphericalEllOperator, out)::Nothing
     operand = op.args[1]
     if op.input_basis === nothing
         basis = op.output_basis
@@ -4920,13 +4965,14 @@ function operate(op::SphericalEllOperator, out)
     preset_layout!(out, operand.layout)
     out.data .= 0
     # Apply operator
+    # size(R_in) matches the leading tensor dimensions of operand.data set by preset_layout!
     R_in = regularity_classes(radial_basis, operand.tensorsig)
     ndim = length(size(operand.data)) - length(operand.tensorsig)
     for idx_in in CartesianIndices(size(R_in))
         regindex_in = Tuple(idx_in)
         for regindex_out_val in regindex_out(op, regindex_in)
-            comp_in = operand.data[regindex_in...]
-            comp_out = out.data[regindex_out_val...]
+            @inbounds comp_in = operand.data[regindex_in...]
+            @inbounds comp_out = out.data[regindex_out_val...]
             for (ell, m_ind, ell_ind) in ell_maps(basis, op.dist)
                 allowed_in = regularity_allowed(radial_basis, ell, regindex_in)
                 allowed_out = regularity_allowed(radial_basis, ell, regindex_out_val)
@@ -4946,6 +4992,7 @@ function operate(op::SphericalEllOperator, out)
             end
         end
     end
+    return nothing
 end
 
 """
@@ -5508,9 +5555,10 @@ Explicit evaluation of SphericalCurl. For complex data types, uses the
 generic SphericalEllOperator evaluation. For real data types (Float64),
 encodes the imaginary coupling by splitting into cos/sin components.
 """
-function operate(op::SphericalCurl, out)
+function operate(op::SphericalCurl, out)::Nothing
     if op.dtype == ComplexF64
-        return invoke(operate, Tuple{SphericalEllOperator, typeof(out)}, op, out)
+        invoke(operate, Tuple{SphericalEllOperator, typeof(out)}, op, out)
+        return nothing
     end
     # Real dtype (Float64) — special handling
     operand = op.args[1]
@@ -5521,13 +5569,14 @@ function operate(op::SphericalCurl, out)
     preset_layout!(out, operand.layout)
     out.data .= 0
     # Apply operator
+    # size(R_in) matches the leading tensor dimensions of operand.data set by preset_layout!
     R_in = regularity_classes(radial_basis, operand.tensorsig)
     ndim = length(size(operand.data)) - length(operand.tensorsig)
     for idx_in in CartesianIndices(size(R_in))
         regindex_in = Tuple(idx_in)
         for regindex_out_val in regindex_out(op, regindex_in)
-            comp_in = operand.data[regindex_in...]
-            comp_out = out.data[regindex_out_val...]
+            @inbounds comp_in = operand.data[regindex_in...]
+            @inbounds comp_out = out.data[regindex_out_val...]
             for (ell, m_ind, ell_ind) in ell_maps(input_basis, op.dist)
                 allowed_in = regularity_allowed(radial_basis, ell, regindex_in)
                 allowed_out = regularity_allowed(radial_basis, ell, regindex_out_val)
@@ -5554,6 +5603,7 @@ function operate(op::SphericalCurl, out)
             end
         end
     end
+    return nothing
 end
 
 # --------------------------------------------------------------------------

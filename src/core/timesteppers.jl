@@ -123,12 +123,14 @@ Mutable data container for multistep IMEX methods.
 mutable struct MultistepIMEXData{T}
     solver::Any
     RHS::CoeffSystem{T}
+    solve_buffer::CoeffSystem{T}
     dt_history::Vector{Float64}
     MX::Vector{CoeffSystem{T}}
     LX::Vector{CoeffSystem{T}}
     F::Vector{CoeffSystem{T}}
     _iteration::Int
-    _LHS_params::Any
+    _LHS_params::Union{Nothing, Tuple{Float64, Float64}}
+    _nonempty_subproblems::Vector{Any}
 end
 
 """
@@ -140,11 +142,13 @@ function _init_multistep(solver, amax::Int, bmax::Int, cmax::Int, steps::Int;
                          dtype::DataType=Float64)
     subproblems = solver.subproblems
     RHS = CoeffSystem(subproblems; dtype=dtype)
+    solve_buf = CoeffSystem(subproblems; dtype=dtype)
     dt_history = zeros(Float64, steps)
     MX = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:amax]
     LX = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:bmax]
     F_sys = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:cmax]
-    return MultistepIMEXData{dtype}(solver, RHS, dt_history, MX, LX, F_sys, 0, nothing)
+    nonempty = Any[sp for sp in subproblems if subproblem_size(sp) > 0]
+    return MultistepIMEXData{dtype}(solver, RHS, solve_buf, dt_history, MX, LX, F_sys, 0, nothing, nonempty)
 end
 
 """
@@ -160,9 +164,9 @@ This implements the core multistep algorithm:
 5. Form and solve the LHS system
 """
 function _multistep_step!(data::MultistepIMEXData, stepper::MultistepIMEX,
-                          dt::Float64, wall_time::Float64)
+                          dt::Float64, wall_time::Float64)::Nothing
     solver = data.solver
-    subproblems = [sp for sp in solver.subproblems if subproblem_size(sp) > 0]
+    subproblems = data._nonempty_subproblems
     evaluator = solver.evaluator
     state_fields = solver.state
     F_fields = solver.F
@@ -222,7 +226,7 @@ function _multistep_step!(data::MultistepIMEXData, stepper::MultistepIMEX,
     # Build RHS
     if length(RHS.data) > 0
         # RHS = c[2] * F[1]
-        RHS.data .= c[2] .* F_sys[1].data
+        @. RHS.data = c[2] * F_sys[1].data
         for j in 3:length(c)
             # RHS += c[j] * F[j-1]
             axpy!(c[j], F_sys[j-1].data, RHS.data)
@@ -244,14 +248,15 @@ function _multistep_step!(data::MultistepIMEXData, stepper::MultistepIMEX,
     for sp in subproblems
         if update_LHS
             if STORE_EXPANDED
-                sp.LHS.nzval .= a0 .* sp.M_exp.nzval .+ b0 .* sp.L_exp.nzval
+                @. sp.LHS.nzval = a0 * sp.M_exp.nzval + b0 * sp.L_exp.nzval
             else
                 sp.LHS = a0 * sp.M_min + b0 * sp.L_min
             end
             sp.LHS_solver = solver.matsolver(sp.LHS, solver)
         end
         spRHS = get_subdata(RHS, sp)
-        spX = solve(sp.LHS_solver, spRHS)
+        spX = get_subdata(data.solve_buffer, sp)
+        solve!(spX, sp.LHS_solver, spRHS)
         scatter_inputs!(sp, spX, state_fields)
     end
 
@@ -265,7 +270,7 @@ end
 Rotate vector elements to the right by one position (last element wraps to first).
 Equivalent to Python's `deque.rotate()`.
 """
-function _rotate_right!(v::Vector)
+@inline function _rotate_right!(v::Vector)
     n = length(v)
     if n <= 1
         return v
@@ -284,7 +289,7 @@ end
 Apply sparse matrix along the first axis of subdata arrays.
 Handles both 1D and 2D data.
 """
-function _apply_sparse_to_subdata!(A, X, out)
+@inline function _apply_sparse_to_subdata!(A, X, out)::Nothing
     if ndims(X) <= 1 && ndims(out) <= 1
         mul!(out, A, X)
     else
@@ -292,6 +297,7 @@ function _apply_sparse_to_subdata!(A, X, out)
         X_flat = reshape(X, size(A, 2), :)
         mul!(out_flat, A, X_flat)
     end
+    return nothing
 end
 
 # ============================================================================
@@ -826,10 +832,12 @@ Mutable data container for Runge-Kutta IMEX methods.
 mutable struct RungeKuttaIMEXData{T}
     solver::Any
     RHS::CoeffSystem{T}
+    solve_buffer::CoeffSystem{T}
     MX0::CoeffSystem{T}
     LX::Vector{CoeffSystem{T}}
     F::Vector{CoeffSystem{T}}
-    _LHS_params::Any
+    _LHS_params::Union{Nothing, Float64}
+    _nonempty_subproblems::Vector{Any}
 end
 
 """
@@ -840,10 +848,12 @@ Initialize the Runge-Kutta IMEX data structures.
 function _init_rk(solver, num_stages::Int; dtype::DataType=Float64)
     subproblems = solver.subproblems
     RHS = CoeffSystem(subproblems; dtype=dtype)
+    solve_buf = CoeffSystem(subproblems; dtype=dtype)
     MX0 = CoeffSystem(subproblems; dtype=dtype)
     LX = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:num_stages]
     F_sys = [CoeffSystem(subproblems; dtype=dtype) for _ in 1:num_stages]
-    return RungeKuttaIMEXData{dtype}(solver, RHS, MX0, LX, F_sys, nothing)
+    nonempty = Any[sp for sp in subproblems if subproblem_size(sp) > 0]
+    return RungeKuttaIMEXData{dtype}(solver, RHS, solve_buf, MX0, LX, F_sys, nothing, nonempty)
 end
 
 """
@@ -857,9 +867,9 @@ For each stage i = 1, ..., s:
         - k * sum_{j<i} H_{ij} * L . X(n,j)
 """
 function _rk_step!(data::RungeKuttaIMEXData, stepper::RungeKuttaIMEX,
-                   dt::Float64, wall_time::Float64)
+                   dt::Float64, wall_time::Float64)::Nothing
     solver = data.solver
-    subproblems = [sp for sp in solver.subproblems if subproblem_size(sp) > 0]
+    subproblems = data._nonempty_subproblems
     evaluator = solver.evaluator
     state_fields = solver.state
     F_fields = solver.F
@@ -882,8 +892,12 @@ function _rk_step!(data::RungeKuttaIMEXData, stepper::RungeKuttaIMEX,
     update_LHS = (k != data._LHS_params)
     data._LHS_params = k
     if update_LHS
+        required_len = num_stages + 1
         for sp in subproblems
-            sp.LHS_solvers = Any[nothing for _ in 1:num_stages + 1]
+            if length(sp.LHS_solvers) != required_len
+                resize!(sp.LHS_solvers, required_len)
+            end
+            fill!(sp.LHS_solvers, nothing)
         end
     end
 
@@ -937,15 +951,15 @@ function _rk_step!(data::RungeKuttaIMEXData, stepper::RungeKuttaIMEX,
         for sp in subproblems
             if update_LHS
                 if STORE_EXPANDED
-                    copyto!(sp.LHS.nzval, sp.M_exp.nzval)
-                    axpy!(k_Hii, sp.L_exp.nzval, sp.LHS.nzval)
+                    @. sp.LHS.nzval = sp.M_exp.nzval + k_Hii * sp.L_exp.nzval
                 else
                     sp.LHS = sp.M_min + k_Hii * sp.L_min
                 end
                 sp.LHS_solvers[i] = solver.matsolver(sp.LHS, solver)
             end
             spRHS = get_subdata(RHS, sp)
-            spX = solve(sp.LHS_solvers[i], spRHS)
+            spX = get_subdata(data.solve_buffer, sp)
+            solve!(spX, sp.LHS_solvers[i], spRHS)
             scatter_inputs!(sp, spX, state_fields)
         end
         solver.sim_time = sim_time_0 + k * c_tab[i]

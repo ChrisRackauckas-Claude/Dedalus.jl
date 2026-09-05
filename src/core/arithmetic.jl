@@ -429,11 +429,12 @@ end
 
 Perform the addition operation, writing results into `out`.
 """
-function operate(op::AddFields, out)
+function operate(op::AddFields, out)::Nothing
     arg0, arg1 = op.args[1], op.args[2]
     # Set output layout
     preset_layout!(out, arg0.layout)
     @. out.data = arg0.data + arg1.data
+    return nothing
 end
 
 # ============================================================================
@@ -1068,7 +1069,7 @@ end
 
 Perform the dot product operation using einsum-like contraction.
 """
-function operate(op::DotProduct, out)
+function operate(op::DotProduct, out)::Nothing
     arg0, arg1 = op.args[1], op.args[2]
     preset_layout!(out, arg0.layout)
     # Broadcast
@@ -1079,6 +1080,7 @@ function operate(op::DotProduct, out)
         _einsum_contract!(out.data, arg0_data, arg1_data, op.indices,
                           length(arg0.tensorsig), length(arg1.tensorsig))
     end
+    return nothing
 end
 
 """
@@ -1095,7 +1097,8 @@ function _einsum_contract!(out_data, arg0_data, arg1_data, indices, rank0, rank1
     # Zero the output
     out_data .= 0
     # Sum over the contracted index
-    for k in 1:contract_size
+    @assert size(arg1_data, idx1) == contract_size "DotProduct contracted dimension mismatch: size(arg0, $idx0)=$contract_size != size(arg1, $idx1)=$(size(arg1_data, idx1))"
+    @inbounds for k in 1:contract_size
         # Build index tuples for arg0: all colons except idx0 = k
         a0_idx = ntuple(i -> i == idx0 ? k : Colon(), ndims(arg0_data))
         # Build index tuples for arg1: all colons except idx1+rank0-1 adjusted = k
@@ -1261,12 +1264,13 @@ end
 
 Perform the cross product operation.
 """
-function operate(op::CrossProduct, out)
+function operate(op::CrossProduct, out)::Nothing
     arg0, arg1 = op.args[1], op.args[2]
     preset_layout!(out, arg0.layout)
     arg0_data = ghost_cast(op.arg0_ghost_broadcaster, arg0)
     arg1_data = ghost_cast(op.arg1_ghost_broadcaster, arg1)
     op._operate_fn(op, out, arg0_data, arg1_data)
+    return nothing
 end
 
 function new_operands(op::CrossProduct, arg0, arg1; kw...)
@@ -1409,7 +1413,7 @@ is_future_field(::MultiplyFields) = true
 
 Perform field-field multiplication with tensor broadcasting.
 """
-function operate(op::MultiplyFields, out)
+function operate(op::MultiplyFields, out)::Nothing
     arg0, arg1 = op.args[1], op.args[2]
     # Set output layout
     preset_layout!(out, arg0.layout)
@@ -1424,6 +1428,7 @@ function operate(op::MultiplyFields, out)
     arg0_exp_data = reshape(arg0_data, op.arg0_exp_tshape..., spatial_shape0...)
     arg1_exp_data = reshape(arg1_data, op.arg1_exp_tshape..., spatial_shape1...)
     @. out.data = arg0_exp_data * arg1_exp_data
+    return nothing
 end
 
 # ============================================================================
@@ -1571,12 +1576,13 @@ enforce_conditions(op::MultiplyNumberField) = nothing
 
 Perform scalar multiplication.
 """
-function operate(op::MultiplyNumberField, out)
+function operate(op::MultiplyNumberField, out)::Nothing
     arg0, arg1 = op.args[1], op.args[2]
     # Set output layout
     preset_layout!(out, arg1.layout)
     # Multiply argument data
     @. out.data = arg0 * arg1.data
+    return nothing
 end
 
 """

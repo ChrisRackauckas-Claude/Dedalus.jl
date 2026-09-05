@@ -62,16 +62,16 @@ using FFTW
 # ---------------------------------------------------------------------------
 
 """FFTW planning rigor flag, read from `[transforms-fftw] PLANNING_RIGOR`."""
-function _get_fftw_rigor()
+function _get_fftw_rigor()::String
     try
-        return get_config("transforms-fftw", "PLANNING_RIGOR")
+        return string(get_config("transforms-fftw", "PLANNING_RIGOR"))
     catch
         return "measure"
     end
 end
 
 """Whether to dealias before spectral conversion (Jacobi transforms)."""
-function _get_dealias_before_converting()
+function _get_dealias_before_converting()::Bool
     try
         return get_config_bool("transforms", "DEALIAS_BEFORE_CONVERTING")
     catch
@@ -407,14 +407,14 @@ function resize_coeffs_complex!(data_in::AbstractArray, data_out::AbstractArray,
         end
         nout = size(data_out, axis)
         if nout > 1
-            for i in 2:nout
+            @inbounds for i in 2:nout
                 selectdim(data_out, axis, i) .= 0
             end
         end
     else
         nout = size(data_out, axis)
-        # Positive frequencies: indices 1 through Kmax+1
-        for i in 1:Kmax+1
+        # Positive frequencies: indices 1 through Kmax+1 (Kmax = min(KN, KM) <= nout-1)
+        @inbounds for i in 1:Kmax+1
             if rescale === nothing
                 selectdim(data_out, axis, i) .= selectdim(data_in, axis, i)
             else
@@ -424,13 +424,13 @@ function resize_coeffs_complex!(data_in::AbstractArray, data_out::AbstractArray,
         # Zero intermediate (bad) frequencies
         neg_start = nout - Kmax + 1  # first negative freq index in output
         if Kmax + 2 <= neg_start - 1
-            for i in (Kmax+2):(neg_start-1)
+            @inbounds for i in (Kmax+2):(neg_start-1)
                 selectdim(data_out, axis, i) .= 0
             end
         end
         # Negative frequencies: last Kmax indices
         nin = size(data_in, axis)
-        for j in 0:Kmax-1
+        @inbounds for j in 0:Kmax-1
             src_idx = nin - Kmax + 1 + j
             dst_idx = nout - Kmax + 1 + j
             if rescale === nothing
@@ -461,7 +461,7 @@ mutable struct FFTWComplexFFT <: ComplexFourierTransform
     KM::Int
     Kmax::Int
     rigor::UInt32
-    _plan_cache::Dict{Tuple{NTuple, Int}, Any}  # (shape, axis) -> (fwd_plan, bwd_plan)
+    _plan_cache::Dict{Tuple, Any}  # (shape, axis) -> (fwd_plan, bwd_plan, fwd_buf, bwd_buf)
 end
 
 function FFTWComplexFFT(grid_size::Int, coeff_size::Int;
@@ -475,52 +475,52 @@ function FFTWComplexFFT(grid_size::Int, coeff_size::Int;
         rigor = _get_fftw_rigor()
     end
     flag = fftw_flag(rigor)
-    return FFTWComplexFFT(N, M, KN, KM, Kmax, flag, Dict{Tuple{NTuple, Int}, Any}())
+    return FFTWComplexFFT(N, M, KN, KM, Kmax, flag, Dict{Tuple, Any}())
 end
 
 """
-    _get_plans(t::FFTWComplexFFT, gshape, axis) -> (fwd_plan, bwd_plan)
+    _get_plans(t::FFTWComplexFFT, gshape, axis) -> (fwd_plan, bwd_plan, fwd_buf, bwd_buf)
 
-Build or retrieve cached FFTW plans for a complex FFT along `axis` with
-array shape `gshape`.
+Build or retrieve cached FFTW plans and working buffers for a complex FFT
+along `axis` with array shape `gshape`.  Uses in-place plans (`plan_fft!`,
+`plan_bfft!`) to avoid per-call allocations.
 """
 function _get_plans(t::FFTWComplexFFT, gshape::Tuple, axis::Int)
     key = (gshape, axis)
     if haskey(t._plan_cache, key)
         return t._plan_cache[key]
     end
-    # Create a temporary array to build the plan
-    tmp = zeros(ComplexF64, gshape)
-    fwd = plan_fft(tmp, axis; flags=t.rigor)
-    bwd = plan_ifft(tmp, axis; flags=t.rigor)
-    plans = (fwd, bwd)
-    t._plan_cache[key] = plans
-    return plans
+    # Create working buffers and in-place plans
+    fwd_buf = zeros(ComplexF64, gshape)
+    bwd_buf = zeros(ComplexF64, gshape)
+    fwd = plan_fft!(fwd_buf, axis; flags=t.rigor)
+    bwd = plan_bfft!(bwd_buf, axis; flags=t.rigor)
+    entry = (fwd, bwd, fwd_buf, bwd_buf)
+    t._plan_cache[key] = entry
+    return entry
 end
 
 function forward!(t::FFTWComplexFFT, gdata::AbstractArray{ComplexF64},
                   cdata::AbstractArray{ComplexF64}, axis::Int)
-    fwd, _ = _get_plans(t, size(gdata), axis)
-    temp = fwd * gdata  # FFTW forward (unnormalized)
+    fwd, _, fwd_buf, _ = _get_plans(t, size(gdata), axis)
+    # Copy input into the plan buffer and apply in-place FFT
+    copyto!(fwd_buf, gdata)
+    fwd * fwd_buf  # in-place forward FFT (unnormalized)
     # Resize and rescale for unit-amplitude normalization
-    resize_coeffs_complex!(temp, cdata, axis, t.Kmax, 1.0 / t.N)
+    resize_coeffs_complex!(fwd_buf, cdata, axis, t.Kmax, 1.0 / t.N)
     return cdata
 end
 
 function backward!(t::FFTWComplexFFT, cdata::AbstractArray{ComplexF64},
                    gdata::AbstractArray{ComplexF64}, axis::Int)
-    _, bwd = _get_plans(t, size(gdata), axis)
-    # Resize without rescaling into a temporary buffer sized like gdata
-    temp = similar(gdata)
-    resize_coeffs_complex!(cdata, temp, axis, t.Kmax, nothing)
-    # Execute FFTW backward (ifft includes 1/N normalization)
-    # FFTW.jl's plan_ifft already includes the 1/N factor, but we need
-    # unit-amplitude convention: backward should multiply by N then ifft.
-    # Since plan_ifft divides by N, and we want sum(ck * exp(...)), we
-    # need to pre-multiply by N so that ifft(N * temp) = sum.
-    temp .*= t.N
-    result = bwd * temp
-    copyto!(gdata, result)
+    _, bwd, _, bwd_buf = _get_plans(t, size(gdata), axis)
+    # Resize without rescaling into the cached buffer
+    resize_coeffs_complex!(cdata, bwd_buf, axis, t.Kmax, nothing)
+    # Unit-amplitude convention: backward should produce sum(ck * exp(...)).
+    # plan_bfft! computes the unnormalized backward FFT (no 1/N factor),
+    # which is exactly the sum we want -- no pre-multiplication needed.
+    bwd * bwd_buf  # in-place backward FFT (unnormalized)
+    copyto!(gdata, bwd_buf)
     return gdata
 end
 
@@ -670,7 +670,7 @@ function unpack_rescale_real!(temp::AbstractArray, cdata::AbstractArray,
         selectdim(cdata, axis, 2) .= 0
     end
     # 1 <= k <= Kmax: unpack real and imaginary parts
-    for k in 1:Kmax
+    @inbounds for k in 1:Kmax
         cos_idx = 2 * k + 1   # 1-based index for a(k)
         msin_idx = 2 * k + 2  # 1-based index for b(k)
         temp_idx = k + 1      # 1-based index into rfft output
@@ -685,7 +685,7 @@ function unpack_rescale_real!(temp::AbstractArray, cdata::AbstractArray,
     first_zero = 2 * (Kmax + 1) + 1
     ncoeff = size(cdata, axis)
     if first_zero <= ncoeff
-        for i in first_zero:ncoeff
+        @inbounds for i in first_zero:ncoeff
             selectdim(cdata, axis, i) .= 0
         end
     end
@@ -709,9 +709,13 @@ function repack_rescale_real!(cdata::AbstractArray, temp::AbstractArray,
         selectdim(temp, axis, 1) .= selectdim(cdata, axis, 1) .* rescale
     end
     # 1 <= k <= Kmax: repack cos and msin into complex
-    for k in 1:Kmax
+    ncdata = size(cdata, axis)
+    @inbounds for k in 1:Kmax
         cos_idx = 2 * k + 1
         msin_idx = 2 * k + 2
+        if cos_idx > ncdata || msin_idx > ncdata
+            break
+        end
         temp_idx = k + 1
         cos_part = selectdim(cdata, axis, cos_idx)
         msin_part = selectdim(cdata, axis, msin_idx)
@@ -724,7 +728,7 @@ function repack_rescale_real!(cdata::AbstractArray, temp::AbstractArray,
     # Zero k > Kmax in temp
     ntemp = size(temp, axis)
     if Kmax + 2 <= ntemp
-        for i in (Kmax+2):ntemp
+        @inbounds for i in (Kmax+2):ntemp
             selectdim(temp, axis, i) .= 0
         end
     end
@@ -750,7 +754,7 @@ mutable struct FFTWRealFFT <: RealFourierTransform
     KM::Int
     Kmax::Int
     rigor::UInt32
-    _plan_cache::Dict{Tuple, Any}
+    _plan_cache::Dict{Tuple, Any}  # (shape, axis) -> (fwd_plan, bwd_plan, fwd_buf, bwd_cbuf, bwd_rbuf)
 end
 
 function FFTWRealFFT(grid_size::Int, coeff_size::Int;
@@ -768,34 +772,37 @@ function FFTWRealFFT(grid_size::Int, coeff_size::Int;
 end
 
 """
-    _get_plans(t::FFTWRealFFT, gshape, axis) -> (rfft_plan, irfft_plan)
+    _get_plans(t::FFTWRealFFT, gshape, axis) -> (rfft_plan, irfft_plan, fwd_buf, bwd_cbuf, bwd_rbuf)
 
-Build or retrieve cached FFTW plans for a real FFT along `axis` with
-array shape `gshape`.
+Build or retrieve cached FFTW plans and working buffers for a real FFT
+along `axis` with array shape `gshape`.
 """
 function _get_plans(t::FFTWRealFFT, gshape::Tuple, axis::Int)
     key = (gshape, axis)
     if haskey(t._plan_cache, key)
         return t._plan_cache[key]
     end
-    # Create temporary arrays for planning
-    tmp_real = zeros(Float64, gshape)
-    fwd = plan_rfft(tmp_real, axis; flags=t.rigor)
-    # For irfft we need the complex-shaped array
+    # Create working buffers and plans
+    # Forward: real input buffer, complex output allocated by plan
+    fwd_buf = zeros(Float64, gshape)
+    fwd = plan_rfft(fwd_buf, axis; flags=t.rigor)
+    # Backward: complex input buffer, real output buffer
     cshape = collect(gshape)
     cshape[axis] = (gshape[axis] >> 1) + 1  # N/2 + 1
-    tmp_complex = zeros(ComplexF64, Tuple(cshape))
-    bwd = plan_irfft(tmp_complex, gshape[axis], axis; flags=t.rigor)
-    plans = (fwd, bwd)
-    t._plan_cache[key] = plans
-    return plans
+    bwd_cbuf = zeros(ComplexF64, Tuple(cshape))
+    bwd_rbuf = zeros(Float64, gshape)
+    bwd = plan_irfft(bwd_cbuf, gshape[axis], axis; flags=t.rigor)
+    entry = (fwd, bwd, fwd_buf, bwd_cbuf, bwd_rbuf)
+    t._plan_cache[key] = entry
+    return entry
 end
 
 function forward!(t::FFTWRealFFT, gdata::AbstractArray{Float64},
                   cdata::AbstractArray{Float64}, axis::Int)
-    fwd, _ = _get_plans(t, size(gdata), axis)
-    # Execute real FFT (gives complex output of size N/2+1 along axis)
-    temp = fwd * gdata
+    fwd, _, fwd_buf, _, _ = _get_plans(t, size(gdata), axis)
+    # Copy input into the plan buffer and execute real FFT
+    copyto!(fwd_buf, gdata)
+    temp = fwd * fwd_buf  # rfft returns a new complex array (FFTW requirement)
     # Unpack from complex form and rescale
     unpack_rescale_real!(temp, cdata, axis, t.Kmax, 1.0 / t.N)
     return cdata
@@ -803,18 +810,15 @@ end
 
 function backward!(t::FFTWRealFFT, cdata::AbstractArray{Float64},
                    gdata::AbstractArray{Float64}, axis::Int)
-    _, bwd = _get_plans(t, size(gdata), axis)
+    _, bwd, _, bwd_cbuf, bwd_rbuf = _get_plans(t, size(gdata), axis)
     N = t.N
-    # Allocate complex temporary (N/2+1 along axis)
-    cshape = collect(size(gdata))
-    cshape[axis] = (N >> 1) + 1
-    temp = zeros(ComplexF64, Tuple(cshape))
-    # Repack into complex form and rescale
+    # Repack into complex form using the cached buffer and rescale
     # irfft includes the 1/N factor, so we pre-multiply by N
-    repack_rescale_real!(cdata, temp, axis, t.Kmax, Float64(N))
-    # Execute inverse real FFT
-    result = bwd * temp
-    copyto!(gdata, result)
+    bwd_cbuf .= 0
+    repack_rescale_real!(cdata, bwd_cbuf, axis, t.Kmax, Float64(N))
+    # Execute inverse real FFT into preallocated buffer
+    mul!(bwd_rbuf, bwd, bwd_cbuf)
+    copyto!(gdata, bwd_rbuf)
     return gdata
 end
 
