@@ -686,7 +686,7 @@ function build_matrices!(sp::Subproblem, names)
     for var in vars
         push!(
             valid_var_vecs,
-            valid_modes(sp.subsystems[1], var, var.valid_modes)
+            valid_modes(sp.subsystems[1], var, valid_modes(var))
         )
     end
     # Invalidate equations that fail condition test

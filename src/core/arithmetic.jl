@@ -168,7 +168,7 @@ function add_build_bases(args...)
             # Combine any constant bases to avoid adding nothing to nothing
         elseif any(b === nothing for b in ax_bases)
             ax_bases_nonnull = [b for b in ax_bases if b !== nothing]
-            push!(bases, reduce(basis_add, ax_bases_nonnull) + nothing)
+            push!(bases, reduce(basis_add, ax_bases_nonnull))
             # Add all bases
         else
             push!(bases, reduce(basis_add, ax_bases))
@@ -481,11 +481,11 @@ function product_build_bases(arg0, arg1; ncc::Bool = false, ncc_vars = nothing, 
             continue
             # Multiply all bases
         elseif ncc && has_operand(arg0, ncc_vars...)
-            push!(bases, b1 * b0)  # matmul order: b1 @ b0
+            push!(bases, basis_matmul(b1, b0))  # matmul order: b1 @ b0
         elseif ncc && has_operand(arg1, ncc_vars...)
-            push!(bases, b0 * b1)  # matmul order: b0 @ b1
+            push!(bases, basis_matmul(b0, b1))  # matmul order: b0 @ b1
         else
-            push!(bases, b0 * b1)
+            push!(bases, basis_mul(b0, b1))
         end
     end
     return Tuple(bases)
@@ -534,7 +534,7 @@ function split(op::Product, vars...)
     # Filter combos where both elements are nonzero
     filtered = [(a0, a1) for (a0, a1) in combos if (a0 != 0 && a1 != 0)]
     # Take product of each term
-    split_ops = [new_operands(op, a0, a1) for (a0, a1) in filtered]
+    split_ops = Any[new_operands(op, a0, a1) for (a0, a1) in filtered]
     # Append zero if last combo was dropped
     if drop_last
         push!(split_ops, 0)
@@ -1504,7 +1504,7 @@ struct GhostBroadcaster
         # Determine deployment dimensions: broadcast AND constant
         deploy_dims_ext = broadcast_arr .& constant_arr
         # Filter to non-local (distributed) dimensions
-        local_arr = collect(Bool, layout.local)
+        local_arr = collect(Bool, layout.local_flags)
         deploy_dims = deploy_dims_ext[.!local_arr]
         # Build subcomm or skip casting
         if any(deploy_dims)

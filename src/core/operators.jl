@@ -82,6 +82,10 @@ function new_operand(op::AbstractLinearOperator, operand; kw...)
     error("$(typeof(op)) has not implemented new_operand")
 end
 
+function new_operands(op::AbstractLinearOperator, operand; kw...)
+    return new_operand(op, operand; kw...)
+end
+
 """
     matrix_dependence(op::AbstractLinearOperator, vars...)
 
@@ -152,7 +156,7 @@ Reinitialize with reinitialized operand.
 """
 function reinitialize(op::AbstractLinearOperator; kw...)
     operand = reinitialize(operator_operand(op); kw...)
-    return new_operand(op, operand; kw...)
+    return new_operand(op, operand)
 end
 
 """
@@ -167,7 +171,7 @@ function split_op(op::AbstractLinearOperator, vars...)
         end
     end
     operand = operator_operand(op)
-    s = split_operand(operand, vars...)
+    s = split(operand, vars...)
     return (new_operand(op, s[1]), new_operand(op, s[2]))
 end
 
@@ -180,6 +184,46 @@ function sym_diff(op::AbstractLinearOperator, var)
     return new_operand(op, sym_diff(operator_operand(op), var))
 end
 
+"""
+    require_linearity(op::AbstractLinearOperator, vars...; kw...)
+
+Require expression to be linear in specified variables.
+Default delegates to operand.
+"""
+function require_linearity(op::AbstractLinearOperator, vars...; kw...)
+    return require_linearity(operator_operand(op), vars...; kw...)
+end
+
+"""
+    require_first_order(op::AbstractLinearOperator, ops...; kw...)
+
+Require expression to be maximally first order in specified operators.
+If the operator itself is one of `ops`, the operand must not contain `ops`.
+Default delegates to operand.
+"""
+function require_first_order(
+        op::AbstractLinearOperator, ops...;
+        self_name = nothing, ops_name = nothing,
+        error_type = AssertionError
+    )
+    op_types = [o for o in ops if o isa DataType]
+    operand = operator_operand(op)
+    if any(T -> op isa T, op_types)
+        if has_operand(operand, ops...)
+            if self_name === nothing
+                self_name = string(op)
+            end
+            if ops_name === nothing
+                ops_name = [string(o) for o in ops]
+            end
+            throw(error_type("$(self_name) must be first-order in $(ops_name)."))
+        end
+    else
+        require_first_order(operand, ops...; self_name = self_name, ops_name = ops_name, error_type = error_type)
+    end
+    return nothing
+end
+
 # ============================================================================
 # Common interface methods for NonlinearOperator types
 # ============================================================================
@@ -190,6 +234,32 @@ function split_op(op::NonlinearOperator, vars...)
     else
         return (0, op)
     end
+end
+
+function require_linearity(
+        op::NonlinearOperator, vars...;
+        allow_affine::Bool = false, self_name = nothing,
+        vars_name = nothing, error_type = AssertionError
+    )
+    if self_name === nothing
+        self_name = string(op)
+    end
+    if vars_name === nothing
+        vars_name = [string(v) for v in vars]
+    end
+    if has_operand(op, vars...)
+        throw(error_type("$(self_name) is nonlinear in $(vars_name)."))
+    elseif !allow_affine
+        throw(error_type("$(self_name) must be strictly linear in $(vars_name)."))
+    end
+    return nothing
+end
+
+function require_first_order(op::NonlinearOperator, ops...; kw...)
+    for arg in op.args
+        isa(arg, AbstractOperand) && require_first_order(arg, ops...; kw...)
+    end
+    return nothing
 end
 
 function expand_operand(op::NonlinearOperator, vars...)
@@ -878,6 +948,9 @@ function Interpolate(arg, coord, position; out = nothing)
         return arg
     end
     dist = arg.dist
+    if coord isa Symbol || coord isa AbstractString
+        coord = get_coord(arg.domain, String(coord))
+    end
     input_basis = get_basis(arg.domain, coord)
     output_basis = if input_basis !== nothing && hasmethod(interpolate_basis, Tuple{typeof(input_basis), typeof(position)})
         interpolate_basis(input_basis, position)

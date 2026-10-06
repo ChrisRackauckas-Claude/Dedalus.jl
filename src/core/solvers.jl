@@ -738,7 +738,7 @@ function NonlinearBoundaryValueSolver(problem; kw...)
     perts = problem.perturbations
     # Copy valid modes from variables to perturbations
     for (pert, var) in zip(perts, get_variables(problem))
-        pert.valid_modes .= var.valid_modes
+        valid_modes(pert) .= valid_modes(var)
     end
     solver = NonlinearBoundaryValueSolver(sd, collect(Any, perts), 0, Any[])
     _finalize_solver_base!(sd, solver)

@@ -973,8 +973,8 @@ function ball_grad(B::BallWrapper, ell::Int, rank::Int, data_in)
     data_dtype = eltype(data_in)
     data_out = zeros(data_dtype, Tuple(shape))
 
+    i_LU = ell - B.ell_min + 1  # 1-based index; only used when store_lu
     if B.store_lu
-        i_LU = ell - B.ell_min + 1  # 1-based index
         if !B.LU_grad_initialized[i_LU][rank + 1]
             @debug "LU_grad not initialized l=$ell, rank=$rank"
             B.LU_grad[i_LU][rank + 1] = Vector{Any}(nothing, 4 * (3^rank))
@@ -1041,8 +1041,8 @@ Operates on rank-1 fields (vectors).
 function ball_curl(B::BallWrapper, ell::Int, rank::Int, data_in, data_out)
     data_dtype = eltype(data_in)
 
+    i_LU = ell - B.ell_min + 1  # 1-based; only used when store_lu
     if B.store_lu
-        i_LU = ell - B.ell_min + 1  # 1-based
         if !B.LU_curl_initialized[i_LU][rank + 1]
             @debug "LU_curl not initialized l=$ell, rank=$rank"
             B.LU_curl[i_LU][rank + 1] = Vector{Any}(nothing, 3)
@@ -1060,11 +1060,10 @@ function ball_curl(B::BallWrapper, ell::Int, rank::Int, data_in, data_out)
         src = data_in[(N + 2):(2 * (N + 1))]  # Python: data_in[(N+1):2*(N+1)]
         rhs = -1im * xip * Dm * src
         if B.store_lu
-            index = 1
             if !B.LU_curl_initialized[i_LU][rank + 1]
-                B.LU_curl[i_LU][rank + 1][index] = lu(Matrix(Cm))
+                B.LU_curl[i_LU][rank + 1][1] = lu(Matrix(Cm))
             end
-            data_out[1:(N + 1)] .= B.LU_curl[i_LU][rank + 1][index] \ rhs
+            data_out[1:(N + 1)] .= B.LU_curl[i_LU][rank + 1][1] \ rhs
         else
             data_out[1:(N + 1)] .= Matrix(Cm) \ rhs
         end
@@ -1076,11 +1075,8 @@ function ball_curl(B::BallWrapper, ell::Int, rank::Int, data_in, data_out)
     C0 = ball_op(B, "E", N, 0, ell, dtype = data_dtype)
     Dm_1 = ball_op(B, "D-", N, 0, ell + 1, dtype = data_dtype)
 
-    if B.store_lu
-        index = 2
-        if !B.LU_curl_initialized[i_LU][rank + 1]
-            B.LU_curl[i_LU][rank + 1][index] = lu(Matrix(C0))
-        end
+    if B.store_lu && !B.LU_curl_initialized[i_LU][rank + 1]
+        B.LU_curl[i_LU][rank + 1][2] = lu(Matrix(C0))
     end
 
     if ell >= 1
@@ -1089,7 +1085,7 @@ function ball_curl(B::BallWrapper, ell::Int, rank::Int, data_in, data_out)
         src_bot = data_in[(2 * (N + 1) + 1):end]
         rhs = 1im * xim * Dm_1 * src_bot - 1im * xip * Dp_1 * src_top
         if B.store_lu
-            data_out[(N + 2):(2 * (N + 1))] .= B.LU_curl[i_LU][rank + 1][index] \ rhs
+            data_out[(N + 2):(2 * (N + 1))] .= B.LU_curl[i_LU][rank + 1][2] \ rhs
         else
             data_out[(N + 2):(2 * (N + 1))] .= Matrix(C0) \ rhs
         end
@@ -1097,7 +1093,7 @@ function ball_curl(B::BallWrapper, ell::Int, rank::Int, data_in, data_out)
         src_bot = data_in[(2 * (N + 1) + 1):end]
         rhs = 1im * xim * Dm_1 * src_bot
         if B.store_lu
-            data_out[(N + 2):(2 * (N + 1))] .= B.LU_curl[i_LU][rank + 1][index] \ rhs
+            data_out[(N + 2):(2 * (N + 1))] .= B.LU_curl[i_LU][rank + 1][2] \ rhs
         else
             data_out[(N + 2):(2 * (N + 1))] .= Matrix(C0) \ rhs
         end
@@ -1110,11 +1106,10 @@ function ball_curl(B::BallWrapper, ell::Int, rank::Int, data_in, data_out)
     rhs = 1im * xim * Dp_2 * src_mid
 
     if B.store_lu
-        index = 3
         if !B.LU_curl_initialized[i_LU][rank + 1]
-            B.LU_curl[i_LU][rank + 1][index] = lu(Matrix(Cp))
+            B.LU_curl[i_LU][rank + 1][3] = lu(Matrix(Cp))
         end
-        data_out[(2 * (N + 1) + 1):end] .= B.LU_curl[i_LU][rank + 1][index] \ rhs
+        data_out[(2 * (N + 1) + 1):end] .= B.LU_curl[i_LU][rank + 1][3] \ rhs
     else
         data_out[(2 * (N + 1) + 1):end] .= Matrix(Cp) \ rhs
     end
@@ -1332,22 +1327,22 @@ mutable struct BallTensorField2D <: AbstractBallTensorField
         ell_min = B.ell_min
         ell_max = B.ell_max
 
-        mesh = domain.distributor.mesh
+        mesh = domain.dist.mesh
         if length(mesh) == 0  # serial
-            ell_r_layout = domain.distributor.layouts[2]  # 1-based
-            r_ell_layout = domain.distributor.layouts[2]
+            ell_r_layout = domain.dist.layouts[2]  # 1-based
+            r_ell_layout = domain.dist.layouts[2]
         else
-            ell_r_layout = domain.distributor.layouts[3]
-            r_ell_layout = domain.distributor.layouts[2]
+            ell_r_layout = domain.dist.layouts[3]
+            r_ell_layout = domain.dist.layouts[2]
         end
 
         local_grid_shape = ell_r_layout.local_shape(scales = 1)
         local_grid_shape = (
-            Int(domain.dealias[1] * local_grid_shape[1]),
-            Int(domain.dealias[2] * local_grid_shape[2]),
+            Int(domain_dealias(domain)[1] * local_grid_shape[1]),
+            Int(domain_dealias(domain)[2] * local_grid_shape[2]),
         )
-        local_ellr_shape = ell_r_layout.local_shape(scales = domain.dealias)
-        local_rell_shape = r_ell_layout.local_shape(scales = domain.dealias)
+        local_ellr_shape = ell_r_layout.local_shape(scales = domain_dealias(domain))
+        local_rell_shape = r_ell_layout.local_shape(scales = domain_dealias(domain))
 
         grid_data = zeros(ComplexF64, 3^rank, local_grid_shape...)
         ellr_data = zeros(ComplexF64, 3^rank, local_ellr_shape...)
@@ -1355,7 +1350,7 @@ mutable struct BallTensorField2D <: AbstractBallTensorField
 
         fields = domain.new_fields(3^rank)
         for field in fields
-            field.preset_scales(domain.dealias)
+            preset_scales!(field, domain_dealias(domain))
         end
 
         coeff_data = Vector{Vector{ComplexF64}}()
@@ -1480,32 +1475,32 @@ mutable struct BallTensorField3D <: AbstractBallTensorField
         ell_min = B.ell_min
         ell_max = B.ell_max
 
-        mesh = domain.distributor.mesh
+        mesh = domain.dist.mesh
 
         if length(mesh) == 0  # serial
-            phi_layout = domain.distributor.layouts[4]
-            th_m_layout = domain.distributor.layouts[3]
-            ell_r_layout = domain.distributor.layouts[2]
-            r_ell_layout = domain.distributor.layouts[2]
+            phi_layout = domain.dist.layouts[4]
+            th_m_layout = domain.dist.layouts[3]
+            ell_r_layout = domain.dist.layouts[2]
+            r_ell_layout = domain.dist.layouts[2]
         elseif length(mesh) == 1  # 1D domain decomposition
-            phi_layout = domain.distributor.layouts[5]
-            th_m_layout = domain.distributor.layouts[3]
-            ell_r_layout = domain.distributor.layouts[2]
-            r_ell_layout = domain.distributor.layouts[2]
+            phi_layout = domain.dist.layouts[5]
+            th_m_layout = domain.dist.layouts[3]
+            ell_r_layout = domain.dist.layouts[2]
+            r_ell_layout = domain.dist.layouts[2]
         elseif length(mesh) == 2  # 2D domain decomposition
-            phi_layout = domain.distributor.layouts[6]
-            th_m_layout = domain.distributor.layouts[4]
-            ell_r_layout = domain.distributor.layouts[3]
-            r_ell_layout = domain.distributor.layouts[2]
+            phi_layout = domain.dist.layouts[6]
+            th_m_layout = domain.dist.layouts[4]
+            ell_r_layout = domain.dist.layouts[3]
+            r_ell_layout = domain.dist.layouts[2]
         else
             error("Unsupported mesh size: $(length(mesh))")
         end
 
         # Allocating arrays
-        local_grid_shape = phi_layout.local_shape(scales = domain.dealias)
+        local_grid_shape = phi_layout.local_shape(scales = domain_dealias(domain))
         grid_data = zeros(Float64, 3^rank, local_grid_shape...)
 
-        scales = (1, 1, domain.dealias[3])
+        scales = (1, 1, domain_dealias(domain)[3])
         local_ellr_shape = ell_r_layout.local_shape(scales = scales)
         mlr_ell_data = zeros(ComplexF64, 3^rank, local_ellr_shape...)
 
@@ -1513,13 +1508,13 @@ mutable struct BallTensorField3D <: AbstractBallTensorField
         mlr_r_data = zeros(ComplexF64, 3^rank, local_rell_shape...)
         rlm_data = zeros(ComplexF64, 3^rank, reverse(local_rell_shape)...)
 
-        scales = (1, domain.dealias[2], domain.dealias[3])
+        scales = (1, domain_dealias(domain)[2], domain_dealias(domain)[3])
         local_mthr_shape = th_m_layout.local_shape(scales = scales)
         mthr_data = zeros(ComplexF64, 3^rank, local_mthr_shape...)
 
         fields = domain.new_fields(3^rank)
         for field in fields
-            field.preset_scales(domain.dealias)
+            preset_scales!(field, domain_dealias(domain))
         end
 
         m_size = B.m_max - B.m_min + 1
@@ -1584,7 +1579,7 @@ function decrement_layout(tf::BallTensorField3D)
             for (i, field) in enumerate(tf.fields)
                 field.layout = tf.ell_r_layout
                 copyto!(field.data, tf.mlr_ell_data[i, ntuple(_ -> Colon(), ndims(tf.mlr_ell_data) - 1)...])
-                tf.domain.distributor.paths[2].decrement([field])
+                tf.domain.dist.paths[2].decrement([field])
                 tf.rlm_data[i, ntuple(_ -> Colon(), ndims(tf.rlm_data) - 1)...] .= permutedims(field.data)
             end
         else
@@ -1656,7 +1651,7 @@ function increment_layout(tf::BallTensorField3D)
             for (i, field) in enumerate(tf.fields)
                 field.layout = tf.r_ell_layout
                 copyto!(field.data, tf.mlr_r_data[i, ntuple(_ -> Colon(), ndims(tf.mlr_r_data) - 1)...])
-                tf.domain.distributor.paths[2].increment([field])
+                tf.domain.dist.paths[2].increment([field])
                 copyto!(tf.mlr_ell_data[i, ntuple(_ -> Colon(), ndims(tf.mlr_ell_data) - 1)...], field.data)
             end
         else

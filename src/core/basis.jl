@@ -280,6 +280,9 @@ Reverse multiplication: `b * a`.  Delegates to `basis_mul(a, b)`.
 """
 basis_rmul(a::Basis, b) = basis_mul(a, b)
 
+basis_mul(::Nothing, b::Basis) = b
+basis_mul(::Nothing, ::Nothing) = nothing
+
 """
     basis_matmul(ncc::Basis, operand)
 
@@ -294,6 +297,9 @@ function basis_matmul(ncc::Basis, operand)
         return basis_rmatmul(operand, ncc)
     end
 end
+
+basis_matmul(::Nothing, operand::Basis) = operand
+basis_matmul(::Nothing, ::Nothing) = nothing
 
 """
     basis_rmatmul(operand::Basis, ncc)
@@ -1163,7 +1169,10 @@ function elements_to_groups(b::FourierBase, grid_space, elements)
         return elements
     else
         nw = native_wavenumbers(b)
-        return nw[elements .+ 1]  # Convert 0-based elements to 1-based indexing
+        # elements are 0-based indices; wavenumbers are indexed 1-based
+        groups = copy(elements)
+        groups[1] = nw[elements[1] .+ 1]
+        return groups
     end
 end
 
@@ -1440,7 +1449,7 @@ function valid_elements(b::RealFourierBasis, tensorsig, grid_space, elements)
             allcomps = ntuple(_ -> Colon(), length(tensorsig))
             # groups[1] are the wavenumber values; elements are 0-based indices
             elems0 = elements[1]
-            grp = groups isa Tuple ? groups[1] : groups
+            grp = groups[1]
             # Drop: k=0 AND odd element index (the -sin(0*x) mode)
             selection = (grp .== 0) .& (elems0 .% 2 .== 1)
             valid[allcomps..., selection] .= false
@@ -1673,6 +1682,16 @@ function differentiate_jacobi_matrix(input_basis::JacobiBasis, output_basis::Jac
     a, b = input_basis.a, input_basis.b
     return differentiation_matrix(N, a, b) ./ input_basis.COV.stretch
 end
+
+"""
+    interpolate_basis(input_basis, position)
+
+Output basis for pointwise `Interpolate` along a basis subaxis at `position`.
+Evaluating at a single position eliminates that subaxis, so the default is
+`nothing`; compound bases that keep a degenerate size-1 subbasis may
+specialise this.
+"""
+interpolate_basis(input_basis, position) = nothing
 
 """
     interpolate_jacobi_matrix(input_basis::JacobiBasis, position)
@@ -3247,19 +3266,14 @@ function AnnulusBasis(
     az_bounds = (0.0, 2 * pi)
     if dtype === ComplexF64
         az_basis = ComplexFourier(coord0, Nphi, az_bounds; dealias = dealias[1], library = azimuth_library)
-    elseif dtype === Float64
-        az_basis = RealFourier(coord0, Nphi, az_bounds; dealias = dealias[1], library = azimuth_library)
-    else
-        throw(ArgumentError("Unsupported dtype: $dtype"))
-    end
-
-    # m permutations
-    if dtype === ComplexF64
         fwd_perm = compute_forward_m_perm_complex(Nphi)
         group_shp = (1, 1)
     elseif dtype === Float64
+        az_basis = RealFourier(coord0, Nphi, az_bounds; dealias = dealias[1], library = azimuth_library)
         fwd_perm = compute_forward_m_perm_real(Nphi)
         group_shp = (2, 1)
+    else
+        throw(ArgumentError("Unsupported dtype: $dtype"))
     end
     bwd_perm = compute_backward_m_perm(fwd_perm)
 
@@ -3501,12 +3515,12 @@ function backward_transform_radius(b::AnnulusBasis, field, axis, cdata, gdata)
     data_axis = length(field.tensorsig) + axis
     grid_size = size(gdata, data_axis)
     # Handle mmax=0 float expansion
+    gdata_orig = gdata
     if b.mmax == 0 && b.dtype === Float64
         m_axis = length(field.tensorsig) + axis - 1
         shp = collect(size(gdata))
         shp[m_axis] = 2
         temp = zeros(eltype(gdata), Tuple(shp))
-        gdata_orig = gdata
         gdata = zeros(eltype(gdata), Tuple(shp))
     else
         temp = zeros(eltype(gdata), size(gdata))
@@ -3823,19 +3837,14 @@ function DiskBasis(
     az_bounds = (0.0, 2 * pi)
     if dtype === ComplexF64
         az_basis = ComplexFourier(coord0, Nphi, az_bounds; dealias = dealias[1], library = azimuth_library)
-    elseif dtype === Float64
-        az_basis = RealFourier(coord0, Nphi, az_bounds; dealias = dealias[1], library = azimuth_library)
-    else
-        throw(ArgumentError("Unsupported dtype: $dtype"))
-    end
-
-    # m permutations
-    if dtype === ComplexF64
         fwd_perm = compute_forward_m_perm_complex(Nphi)
         group_shp = (1, 1)
     elseif dtype === Float64
+        az_basis = RealFourier(coord0, Nphi, az_bounds; dealias = dealias[1], library = azimuth_library)
         fwd_perm = compute_forward_m_perm_real(Nphi)
         group_shp = (2, 1)
+    else
+        throw(ArgumentError("Unsupported dtype: $dtype"))
     end
     bwd_perm = compute_backward_m_perm(fwd_perm)
 
@@ -4039,12 +4048,12 @@ Backward radial transform for disk basis.
 """
 function backward_transform_radius_disk(b::DiskBasis, field, axis, cdata, gdata)
     # Handle mmax=0 float expansion
+    gdata_orig = gdata
     if b.mmax == 0 && b.dtype === Float64
         m_axis = length(field.tensorsig) + axis - 1
         shp = collect(size(gdata))
         shp[m_axis] = 2
         temp = zeros(eltype(gdata), Tuple(shp))
-        gdata_orig = gdata
         gdata = zeros(eltype(gdata), Tuple(shp))
     else
         temp = zeros(eltype(gdata), size(gdata))
@@ -4355,14 +4364,9 @@ function SphereBasis(
     end
     Nphi = shape[1]
     az_bounds = (0.0, 2 * pi)
+    # Build azimuth basis and m permutations (triangular truncation repacking)
     if dtype === ComplexF64
         az_basis = ComplexFourier(coord0, Nphi, az_bounds; dealias = dealias[1], library = azimuth_library)
-    elseif dtype === Float64
-        az_basis = RealFourier(coord0, Nphi, az_bounds; dealias = dealias[1], library = azimuth_library)
-    end
-
-    # m permutations (triangular truncation repacking)
-    if dtype === ComplexF64
         az_index = collect(0:(Nphi - 1))
         az_div = az_index .÷ 2
         az_mod = az_index .% 2
@@ -4374,6 +4378,7 @@ function SphereBasis(
         end
         group_shp = (1, 1)
     elseif dtype === Float64
+        az_basis = RealFourier(coord0, Nphi, az_bounds; dealias = dealias[1], library = azimuth_library)
         if Nphi == 1
             az_index = collect(0:1)
         else
@@ -4389,6 +4394,8 @@ function SphereBasis(
             bwd_perm[p] = i
         end
         group_shp = (2, 1)
+    else
+        throw(ArgumentError("Unsupported dtype: $dtype"))
     end
 
     # Apply permutations to azimuth basis
@@ -4598,6 +4605,8 @@ function elements_to_groups(b::SphereBasis, grid_space, elements)
             m_max = (i_el .< 2) .& (j_el .> Lmax)
             m[m_max] .= Nphi ÷ 2 - 1
             ell[m_max] .= j_el[m_max] .- shift
+        else
+            throw(ArgumentError("Unsupported dtype: $(b.dtype)"))
         end
         return [m, ell]
     end
@@ -4828,12 +4837,12 @@ Backward colatitude transform: SWSH transform + backward spin recombination.
 """
 function backward_transform_colatitude(b::SphereBasis, field, axis, cdata, gdata)
     # Handle mmax=0 float expansion
+    gdata_orig = gdata
     if b.mmax == 0 && b.dtype === Float64
         m_axis = length(field.tensorsig) + axis - 1
         shp = collect(size(gdata))
         shp[m_axis] = 2
         temp = zeros(eltype(gdata), Tuple(shp))
-        gdata_orig = gdata
         gdata = zeros(eltype(gdata), Tuple(shp))
     else
         temp = zeros(eltype(gdata), size(gdata))
@@ -6762,12 +6771,16 @@ function _last_axis_component_ncc_matrix(
         elseif ncc_basis.dtype === ComplexF64
             coeffs_filter = vec(coeffs)[1:N0]
             matrix = (prefactor * matrix_clenshaw(coeffs_filter, A, B, f0, cutoff))[1:N, 1:N]
+        else
+            throw(ArgumentError("Unsupported dtype: $(ncc_basis.dtype)"))
         end
     else
         if ncc_basis.dtype === Float64
             matrix = spzeros(Float64, 2 * N, 2 * N)
         elseif ncc_basis.dtype === ComplexF64
             matrix = spzeros(ComplexF64, N, N)
+        else
+            throw(ArgumentError("Unsupported dtype: $(ncc_basis.dtype)"))
         end
     end
     return matrix

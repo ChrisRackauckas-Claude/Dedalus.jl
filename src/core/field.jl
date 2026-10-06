@@ -981,7 +981,7 @@ function allgather_data(f::Field; layout = nothing)
     recv_buff = similar(send_buff)
     send_buff[local_slices...] .= f.data
     # MPI Allreduce -- not communication-optimal but simple
-    f.dist.comm.Allreduce(send_buff, recv_buff, MPI.SUM)
+    f.dist.comm.Allreduce(send_buff, recv_buff, _mpi_module[].SUM)
     return recv_buff
 end
 
@@ -1043,11 +1043,11 @@ function allreduce_data_norm(f::Field; layout = nothing, order = 2)
     # Reduce
     if order == Inf
         if f.dist.comm.size > 1
-            norm_val = f.dist.comm.allreduce(norm_val, MPI.MAX)
+            norm_val = f.dist.comm.allreduce(norm_val, _mpi_module[].MAX)
         end
     else
         if f.dist.comm.size > 1
-            norm_val = f.dist.comm.allreduce(norm_val, MPI.SUM)
+            norm_val = f.dist.comm.allreduce(norm_val, _mpi_module[].SUM)
         end
         norm_val = norm_val^(1 / order)
     end

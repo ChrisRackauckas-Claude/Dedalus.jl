@@ -249,7 +249,7 @@ function add_equation!(problem::ProblemBase, equation; condition::String = "True
         "condition" => condition,
         "tensorsig" => expr.tensorsig,
         "dtype" => expr.dtype,
-        "valid_modes" => copy(expr.valid_modes),
+        "valid_modes" => copy(valid_modes(expr)),
     )
     _check_equation_conditions(problem, eqn)
     _build_matrix_expressions(problem, eqn)
@@ -274,8 +274,8 @@ Verify that the domain of `subexpr` is contained within the domain of `supexpr`.
 Throws `UnsupportedEquationError` if the sub-expression has a larger domain.
 """
 function _check_domain_containment(subexpr, supexpr, subname, supname)
-    sub_nc = subexpr.domain.nonconstant
-    sup_const = supexpr.domain.constant
+    sub_nc = domain_nonconstant(subexpr.domain)
+    sup_const = domain_constant(supexpr.domain)
     return if any(sub_nc .& sup_const)
         throw(
             UnsupportedEquationError(
@@ -354,7 +354,7 @@ function _build_matrix_expressions(p::LinearBoundaryValueProblem, eqn)
     F = eqn["RHS"]
     # Reinitialize and prep NCCs
     L = reinitialize(L; ncc = true, ncc_vars = vars)
-    prep_nccs(L; vars = vars)
+    prep_nccs(L, vars)
     # Convert to same domain
     domain = (L - F).domain
     L = convert_operand(L, domain.bases)
@@ -406,8 +406,8 @@ function NonlinearBoundaryValueProblem(variables; namespace = nothing)
     # Build perturbation variables
     perturbations = Any[]
     for var in variables
-        pert = copy(var)
-        preset_scales(pert, 1)
+        pert = copy_field(var)
+        preset_scales!(pert, 1)
         pert["c"] = 0
         name = _get_name(var)
         if name !== nothing && name != ""
@@ -435,13 +435,13 @@ function _build_matrix_expressions(p::NonlinearBoundaryValueProblem, eqn)
     F = eqn["LHS"] - eqn["RHS"]
     dF = frechet_differential(F, vars, perts)
     # Remove field locks
-    dF = replace_op(dF, Lock, x -> x)
+    dF = replace_operand(replace_operand(dF, GridOperator, x -> x), CoeffOperator, x -> x)
     for field in atoms(dF, LockedField)
-        dF = replace_op(dF, field, unlock(field))
+        dF = replace_operand(dF, field, unlock(field))
     end
     # Reinitialize and prep NCCs
     dF = reinitialize(dF; ncc = true, ncc_vars = perts)
-    prep_nccs(dF; vars = perts)
+    prep_nccs(dF, perts)
     # Convert to same domain
     domain = (dF + F).domain
     F = convert_operand(F, domain.bases)
@@ -487,7 +487,7 @@ function InitialValueProblem(variables; time = "t", namespace = nothing)
     if time isa AbstractString
         time_field = _make_scalar_field(dist; name = time, dtype = Float64)
     elseif _is_field(time)
-        if any(time.domain.nonconstant)
+        if any(domain_nonconstant(time.domain))
             throw(ArgumentError("Time field cannot have any bases."))
         end
         time_field = time
@@ -550,16 +550,16 @@ function _build_matrix_expressions(p::InitialValueProblem, eqn)
     F = eqn["RHS"]
     # Drop time derivatives from M
     if M !== nothing && M != 0
-        M = replace_op(M, TimeDerivative, x -> x)
+        M = replace_operand(M, TimeDerivative, x -> x)
     end
     # Reinitialize and prep NCCs
     if M !== nothing && M != 0
         M = reinitialize(M; ncc = true, ncc_vars = vars)
-        prep_nccs(M; vars = vars)
+        prep_nccs(M, vars)
     end
     if L !== nothing && L != 0
         L = reinitialize(L; ncc = true, ncc_vars = vars)
-        prep_nccs(L; vars = vars)
+        prep_nccs(L, vars)
     end
     # Convert to same domain
     domain = _combined_domain(M, L, F)
@@ -617,7 +617,7 @@ function build_EVP(
         eigenvalue = _make_scalar_field(dist; name = "λ")  # lambda
     end
     if perturbations === nothing
-        perturbations = [copy(var) for var in variables]
+        perturbations = [copy_field(var) for var in variables]
         for (pert, var) in zip(perturbations, variables)
             name = _get_name(var)
             if name !== nothing && name != ""
@@ -626,7 +626,7 @@ function build_EVP(
         end
     end
     for (pert, var) in zip(perturbations, variables)
-        pert.valid_modes .= var.valid_modes
+        valid_modes(pert) .= valid_modes(var)
     end
     evp = EigenvalueProblem(perturbations, eigenvalue; kw...)
     # Convert equations from IVP
@@ -635,20 +635,20 @@ function build_EVP(
         F = eqn["RHS"]
         # Convert M@dt(X) to lambda*M@Y
         if M !== nothing && M != 0
-            M = replace_op(M, TimeDerivative, x -> eigenvalue * x)
+            M = replace_operand(M, TimeDerivative, x -> eigenvalue * x)
             for (var, pert) in zip(variables, perturbations)
-                M = replace_op(M, var, pert)
+                M = replace_operand(M, var, pert)
             end
         end
         # Convert L@X to L@Y
         if L !== nothing && L != 0
             for (var, pert) in zip(variables, perturbations)
-                L = replace_op(L, var, pert)
+                L = replace_operand(L, var, pert)
             end
         end
         # Take Frechet differential of F(X)
         if F != 0
-            if has(F, ivp.time)
+            if has_operand(F, ivp.time)
                 throw(
                     UnsupportedEquationError(
                         "Cannot convert time-dependent IVP to EVP."
@@ -656,9 +656,7 @@ function build_EVP(
                 )
             end
             dF = frechet_differential(
-                F;
-                variables = variables,
-                perturbations = perturbations,
+                F, variables, perturbations;
                 backgrounds = backgrounds
             )
         else
@@ -705,7 +703,7 @@ end
 
 function EigenvalueProblem(variables::AbstractVector, eigenvalue; namespace = nothing)
     data = _make_problem_data(variables; namespace = namespace)
-    if any(eigenvalue.domain.nonconstant)
+    if any(domain_nonconstant(eigenvalue.domain))
         throw(ArgumentError("Eigenvalue field cannot have any bases."))
     end
     return EigenvalueProblem(data, eigenvalue)
@@ -748,16 +746,16 @@ function _build_matrix_expressions(p::EigenvalueProblem, eqn)
     M, L = split(eqn["LHS"], p.eigenvalue)
     # Drop eigenvalue from M
     if M !== nothing && M != 0
-        M = replace_op(M, p.eigenvalue, 1)
+        M = replace_operand(M, p.eigenvalue, 1)
     end
     # Reinitialize and prep NCCs
     if M !== nothing && M != 0
         M = reinitialize(M; ncc = true, ncc_vars = vars)
-        prep_nccs(M; vars = vars)
+        prep_nccs(M, vars)
     end
     if L !== nothing && L != 0
         L = reinitialize(L; ncc = true, ncc_vars = vars)
-        prep_nccs(L; vars = vars)
+        prep_nccs(L, vars)
     end
     # Convert to same domain
     domain = _safe_add(M, L).domain
@@ -836,7 +834,7 @@ Create a scalar field with no spatial bases.
 Forward reference to field construction infrastructure.
 """
 function _make_scalar_field(dist; name = "", dtype = Float64)
-    return Field(; dist = dist, name = name, dtype = dtype)
+    return Field(dist; name = name, dtype = dtype)
 end
 
 """

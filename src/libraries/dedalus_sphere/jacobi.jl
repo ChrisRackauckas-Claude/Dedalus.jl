@@ -664,11 +664,11 @@ function jacobi_quadrature(n::Int, a, b; days::Int = 3, probability::Bool = fals
         return dtype.(z), dtype.(w_scale / n .+ 0 .* z)
     end
 
-    local P
     if a == b == 0.5
         P = jacobi_polynomials(n + 1, a, b, z; dtype = Float64)[1:n, :]
     else
-        for _ in 1:days
+        z, P = jacobi_polynomials(n + 1, a, b, z; Newton = true)
+        for _ in 2:days
             z, P = jacobi_polynomials(n + 1, a, b, z; Newton = true)
         end
     end

@@ -222,9 +222,8 @@ function apply_dense(
     if axis != 1
         array = move_single_axis(array, axis, 1)
     end
-    local array_shape
+    array_shape = size(array)
     if dim > 2
-        array_shape = size(array)
         array = reshape(array, size(array, 1), :)
     end
     temp = matrix * array
