@@ -81,12 +81,9 @@ function rng_element(index::Int, seed, chunk_size::Int, distribution::AbstractSt
     cs = min(1 + index, chunk_size)
     rng = chunked_rng(seed, cs, distribution)
     d, m = divrem(index, cs)
-    local data
-    for (chunk, chunk_data) in rng
-        if chunk == d
-            data = chunk_data
-            break
-        end
+    chunk, data = take!(rng)
+    while chunk < d
+        chunk, data = take!(rng)
     end
     close(rng)
     return data[m + 1]  # 1-based array indexing
