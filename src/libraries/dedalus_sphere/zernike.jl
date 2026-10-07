@@ -119,7 +119,7 @@ const zernike_alpha = 0
 
 Compute the Zernike mass for given dimension and regularity parameter k.
 """
-function zernike_mass(dimension; k::Int = zernike_alpha)
+function zernike_mass(dimension; k::Real = zernike_alpha)
     return jacobi_mass(k, dimension / 2 - 1) / 2^(k + dimension / 2 + 1)
 end
 
@@ -132,7 +132,7 @@ end
 
 Weights associated with dV = (1-r*r)^k * r^(dimension-1) dr, where 0 <= r <= 1.
 """
-function zernike_quadrature(dimension, n; k::Int = zernike_alpha)
+function zernike_quadrature(dimension, n; k::Real = zernike_alpha)
     z, w = jacobi_quadrature(n, k, dimension / 2 - 1)
     w ./= 2^(k + dimension / 2 + 1)
     return z, w
