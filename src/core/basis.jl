@@ -214,6 +214,11 @@ function basis_domain(b::Basis, dist)
     return make_domain(dist, (b,))
 end
 
+# `local_elements` is 0-based; shift to 1-based indices into the global native arrays.
+function _local_indices(layout, b::Basis, dist, scale, axis)
+    return local_elements(layout, basis_domain(b, dist), scale)[axis] .+ 1
+end
+
 # -- Default implementations of AbstractBasis interface used by Domain --
 
 get_dim(b::Basis) = basis_dim(b)
@@ -485,7 +490,9 @@ function local_grid(b::CardinalBasis, dist, scale)
     if scale != 1
         throw(ErrorException("Cardinal basis only supports scale=1."))
     end
-    return collect(Float64, 0:(b._size - 1))
+    axis = get_basis_axis(dist, b)
+    grid = collect(Float64, 0:(b._size - 1))[_local_indices(grid_layout(dist), b, dist, scale, axis)]
+    return reshape_vector(grid, get_dim(dist), axis)
 end
 
 function global_shape(b::CardinalBasis, grid_space, scales)
@@ -584,10 +591,10 @@ function local_grids(b::IntervalBasis, dist, scales)
 end
 
 function local_grid(b::IntervalBasis, dist, scale)
-    # For serial usage, local = global (no distribution)
-    ng = _native_grid(b, scale)
+    axis = get_basis_axis(dist, b)
+    ng = _native_grid(b, scale)[_local_indices(grid_layout(dist), b, dist, scale, axis)]
     pg = problem_coord(b.COV, ng)
-    return reshape_vector(pg, get_dim(dist), get_basis_axis(dist, b))
+    return reshape_vector(pg, get_dim(dist), axis)
 end
 
 function global_grid_spacing(b::IntervalBasis, dist, scale)
@@ -616,9 +623,9 @@ function global_grid_spacing(b::IntervalBasis, dist, scale)
 end
 
 function local_modes(b::IntervalBasis, dist)
-    # For serial usage
-    elems = collect(0:(b._size - 1))
-    return reshape_vector(elems, get_dim(dist), get_basis_axis(dist, b))
+    axis = get_basis_axis(dist, b)
+    elems = local_elements(coeff_layout(dist), basis_domain(b, dist), 1)[axis]
+    return reshape_vector(elems, get_dim(dist), axis)
 end
 
 function global_shape(b::IntervalBasis, grid_space, scales)
@@ -3373,8 +3380,9 @@ end
 Return the local radial grid for the annulus.
 """
 function local_grid_radius(b::AnnulusBasis, dist, scale)
-    r = _radius_grid(b, scale)
-    return reshape_vector(r, get_dim(dist), get_basis_axis(dist, b) + 1)
+    axis = get_basis_axis(dist, b) + 1
+    r = _radius_grid(b, scale)[_local_indices(grid_layout(dist), b, dist, scale, axis)]
+    return reshape_vector(r, get_dim(dist), axis)
 end
 
 """
@@ -3956,8 +3964,10 @@ end
 Return the local radial grid for the disk.
 """
 function local_grid_radius(b::DiskBasis, dist, scale)
-    r = problem_coord(b.radial_COV, _native_radius_grid(b, scale))
-    return reshape_vector(r, get_dim(dist), get_basis_axis(dist, b) + 1)
+    axis = get_basis_axis(dist, b) + 1
+    r_native = _native_radius_grid(b, scale)[_local_indices(grid_layout(dist), b, dist, scale, axis)]
+    r = problem_coord(b.radial_COV, r_native)
+    return reshape_vector(r, get_dim(dist), axis)
 end
 
 """
@@ -4686,8 +4696,9 @@ end
 Return the local colatitude grid.
 """
 function local_grid_colatitude(b::SphereBasis, dist, scale)
-    theta = _native_colatitude_grid(b, scale)
-    return reshape_vector(theta, get_dim(dist), get_basis_axis(dist, b) + 1)
+    axis = get_basis_axis(dist, b) + 1
+    theta = _native_colatitude_grid(b, scale)[_local_indices(grid_layout(dist), b, dist, scale, axis)]
+    return reshape_vector(theta, get_dim(dist), axis)
 end
 
 """
@@ -4731,9 +4742,11 @@ function local_colatitude_weights(b::SphereBasis, dist; scale = nothing)
     if scale === nothing
         scale = 1
     end
+    axis = get_basis_axis(dist, b) + 1
     N = Int(ceil(scale * b.shape[2]))
     cos_theta, weights = sphere_quadrature(N - 1)
-    return reshape_vector(Float64.(weights), get_dim(dist), get_basis_axis(dist, b) + 1)
+    local_weights = Float64.(weights)[_local_indices(grid_layout(dist), b, dist, scale, axis)]
+    return reshape_vector(local_weights, get_dim(dist), axis)
 end
 
 # -- Transform methods --
@@ -5402,7 +5415,7 @@ Return the local radial grid (subset of global grid for this process).
 """
 function local_grid(b::AbstractRegularityBasis, dist, scale)
     radial_axis = get_basis_axis(dist, b) + 2
-    local_elems = local_elements(grid_layout(dist), basis_domain(b, dist), scale)[radial_axis]
+    local_elems = _local_indices(grid_layout(dist), b, dist, scale, radial_axis)
     problem_grid = _radius_grid(b, scale)[local_elems]
     return reshape_vector(problem_grid, get_dim(dist), radial_axis)
 end
@@ -5425,7 +5438,7 @@ Return the local quadrature weights.
 """
 function local_weights(b::AbstractRegularityBasis, dist; scale = 1)
     radial_axis = get_basis_axis(dist, b) + 2
-    local_elems = local_elements(grid_layout(dist), basis_domain(b, dist), scale)[radial_axis]
+    local_elems = _local_indices(grid_layout(dist), b, dist, scale, radial_axis)
     weights = Float64.(_radius_weights(b, scale))
     return reshape_vector(weights[local_elems], get_dim(dist), radial_axis)
 end
