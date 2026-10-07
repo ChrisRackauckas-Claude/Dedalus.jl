@@ -1169,12 +1169,15 @@ function elements_to_groups(b::FourierBase, grid_space, elements)
         return elements
     else
         nw = native_wavenumbers(b)
-        # elements are 0-based indices; wavenumbers are indexed 1-based
-        groups = copy(elements)
-        groups[1] = nw[elements[1] .+ 1]
-        return groups
+        # 0-based element indices index 1-based wavenumbers. Two calling
+        # conventions: a dense index array for a single axis, or a container
+        # holding one index array per basis axis.
+        return _elements_to_wavenumbers(nw, elements)
     end
 end
+
+_elements_to_wavenumbers(nw, elements::AbstractArray{<:Integer}) = nw[elements .+ 1]
+_elements_to_wavenumbers(nw, elements) = map(e -> nw[e .+ 1], elements)
 
 # -- Transform with permutation --
 
