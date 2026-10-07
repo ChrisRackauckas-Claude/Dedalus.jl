@@ -39,4 +39,28 @@ using Dedalus
         f["c"] = 0
         @test all(==(0), f["c"])
     end
+
+    @testset "field layout transforms (serial)" begin
+        c = CartesianCoordinates("x")
+        d = Distributor(c, Float64)
+        b = RealFourier(c.coords[1], 8, (0, 2pi))
+        x = local_grids(d, b; scales = 1)[1]
+
+        f = Dedalus.Field(d; name = "f", bases = (b,))
+        @test size(f["g"]) == (8,)
+        f["g"] = sin.(x)
+        fc = f["c"]
+        @test size(fc) == (8,)
+        @test count(v -> abs(v) > 1.0e-12, fc) == 1
+        @test f["g"] ≈ sin.(x)
+
+        lf = Dedalus.LockedField(d; name = "lf", bases = (b,))
+        Dedalus.lock_to_layouts!(lf, d.coeff_layout)
+        @test_throws ArgumentError Dedalus.towards_grid_space!(lf)
+        Dedalus.lock_to_layouts!(lf, d.coeff_layout, d.grid_layout)
+        Dedalus.towards_grid_space!(lf)
+        @test lf.layout === d.grid_layout
+        Dedalus.towards_coeff_space!(lf)
+        @test lf.layout === d.coeff_layout
+    end
 end

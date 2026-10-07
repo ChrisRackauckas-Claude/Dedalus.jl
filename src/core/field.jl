@@ -882,8 +882,9 @@ end
 Change to the next layout towards grid space.
 """
 function towards_grid_space!(f::Field)::Nothing
+    # Layout indices are 0-based; `dist.paths[i]` connects layouts `i - 1` and `i`.
     index = _get_layout(f).index
-    increment(f.dist.paths[index], [f])
+    increment(f.dist.paths[index + 1], [f])
     return nothing
 end
 
@@ -894,7 +895,7 @@ Change to the next layout towards coefficient space.
 """
 function towards_coeff_space!(f::Field)::Nothing
     index = _get_layout(f).index
-    decrement(f.dist.paths[index - 1], [f])
+    decrement(f.dist.paths[index], [f])
     return nothing
 end
 
@@ -1389,10 +1390,9 @@ Override: only allowed if the target layout is in `allowed_layouts`.
 """
 function towards_grid_space!(f::LockedField)::Nothing
     index = _get_layout(f).index
-    new_layout = f.dist.layouts[index + 1]
+    new_layout = f.dist.layouts[index + 2]
     if new_layout in f.allowed_layouts
-        # Delegate to the standard Field logic via the dist paths
-        increment(f.dist.paths[index], [f])
+        increment(f.dist.paths[index + 1], [f])
     else
         throw(ArgumentError("Cannot change locked layout."))
     end
@@ -1406,9 +1406,9 @@ Override: only allowed if the target layout is in `allowed_layouts`.
 """
 function towards_coeff_space!(f::LockedField)::Nothing
     index = _get_layout(f).index
-    new_layout = f.dist.layouts[index - 1]
+    new_layout = f.dist.layouts[index]
     if new_layout in f.allowed_layouts
-        decrement(f.dist.paths[index - 1], [f])
+        decrement(f.dist.paths[index], [f])
     else
         throw(ArgumentError("Cannot change locked layout."))
     end
