@@ -124,6 +124,15 @@ A[axslice(1, 2, 5)...]  # rows 2:5, all columns
     end
 end
 
+"""
+    component_view(A::AbstractArray, i::CartesianIndex) -> SubArray
+
+View of the tensor component `i` of `A`: the leading `length(i)` dimensions
+are indexed by `i` and all remaining (spatial) dimensions are kept.
+"""
+component_view(A::AbstractArray, i::CartesianIndex) =
+    view(A, Tuple(i)..., ntuple(_ -> Colon(), ndims(A) - length(i))...)
+
 # ---------------------------------------------------------------------------
 # zeros_with_pattern
 # ---------------------------------------------------------------------------
@@ -512,7 +521,7 @@ function permute_axis(
         array::AbstractArray, axis::Int, permutation;
         out::Union{AbstractArray, Nothing} = nothing
     )
-    idx = [Colon() for _ in 1:ndims(array)]
+    idx = Any[Colon() for _ in 1:ndims(array)]
     idx[axis] = permutation
     perm = array[idx...]
     if out === nothing

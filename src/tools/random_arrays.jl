@@ -51,8 +51,8 @@ idx, data = take!(ch)   # (0, [...])
 ```
 """
 function chunked_rng(seed, chunk_size::Int, distribution::AbstractString)
-    return Channel{Tuple{Int, Vector{Float64}}}(; csize = 1) do ch
-        rng = Xoshiro(seed)
+    return Channel{Tuple{Int, Vector{Float64}}}(1) do ch
+        rng = seed === nothing ? Xoshiro() : Xoshiro(seed)
         chunk_index = 0
         while true
             chunk_data = _generate_chunk(rng, distribution, chunk_size)
@@ -297,7 +297,8 @@ Base.size(cra::ChunkedRandomArray) = cra.index_array.shape
 
 function Base.getindex(cra::ChunkedRandomArray{N}, key::Vararg{Union{Int, UnitRange{Int}, Colon}, M}) where {N, M}
     indices = getindex(cra.index_array, key...)
-    return rng_elements(vec(indices), cra.seed, cra.chunk_size, cra.distribution)
+    values = rng_elements(vec(indices), cra.seed, cra.chunk_size, cra.distribution)
+    return indices isa AbstractArray ? reshape(values, size(indices)) : only(values)
 end
 
 # ---------------------------------------------------------------------------

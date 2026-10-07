@@ -1127,8 +1127,8 @@ function forward!(
         t::NonSeparableTransform, gdata::AbstractArray,
         cdata::AbstractArray, axis::Int
     )
-    gdata4 = reduced_view_4(gdata, axis)
-    cdata4 = reduced_view_4(cdata, axis)
+    gdata4 = reduced_view_4(gdata, axis - 1)
+    cdata4 = reduced_view_4(cdata, axis - 1)
     forward_reduced!(t, gdata4, cdata4)
     return cdata
 end
@@ -1144,8 +1144,8 @@ function backward!(
         t::NonSeparableTransform, cdata::AbstractArray,
         gdata::AbstractArray, axis::Int
     )
-    cdata4 = reduced_view_4(cdata, axis)
-    gdata4 = reduced_view_4(gdata, axis)
+    cdata4 = reduced_view_4(cdata, axis - 1)
+    gdata4 = reduced_view_4(gdata, axis - 1)
     backward_reduced!(t, cdata4, gdata4)
     return gdata
 end
@@ -1307,7 +1307,7 @@ function forward_reduced!(
         if abs(m) <= Lmax
             grm = @view gdata[:, mg_slice, :, :]
             crm = @view cdata[:, mc_slice, ell_slice, :]
-            apply_matrix(m_matrices[m], grm, 2; out = crm)
+            apply_matrix(m_matrices[m], grm, 3; out = crm)
         end
     end
     return nothing
@@ -1331,7 +1331,7 @@ function backward_reduced!(
         else
             grm = @view gdata[:, mg_slice, :, :]
             crm = @view cdata[:, mc_slice, ell_slice, :]
-            apply_matrix(m_matrices[m], crm, 2; out = grm)
+            apply_matrix(m_matrices[m], crm, 3; out = grm)
         end
     end
     return nothing
@@ -1532,7 +1532,7 @@ function forward_reduced!(
         if abs(m) <= 2 * Nmax
             grm = @view gdata[:, mg_slice, :, :]
             crm = @view cdata[:, mc_slice, n_slice, :]
-            apply_matrix(m_matrices[m], grm, 2; out = crm)
+            apply_matrix(m_matrices[m], grm, 3; out = crm)
         end
     end
     return nothing
@@ -1556,7 +1556,7 @@ function backward_reduced!(
         else
             grm = @view gdata[:, mg_slice, :, :]
             crm = @view cdata[:, mc_slice, n_slice, :]
-            apply_matrix(m_matrices[m], crm, 2; out = grm)
+            apply_matrix(m_matrices[m], crm, 3; out = grm)
         end
     end
     return nothing

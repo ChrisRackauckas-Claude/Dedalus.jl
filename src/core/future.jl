@@ -419,9 +419,9 @@ function operate end
     future_type(f::AbstractFuture) -> DataType
 
 Return the output field type for this future (Field or LockedField).
-Must be implemented by concrete subtypes.
+Futures produce a `Field` unless they subtype `FutureLockedField`.
 """
-function future_type end
+future_type(::AbstractFuture) = Field
 
 # ============================================================================
 # FutureField

@@ -117,10 +117,9 @@ end
 """
     cs_dim(cs)
 
-Return the dimension of a coordinate system. Dispatches to the `dim` field
-or property of the coordinate system object.
+Return the dimension of a coordinate system (see `get_dim`).
 """
-cs_dim(cs) = hasproperty(cs, :_dim) ? cs._dim : (hasproperty(cs, :dim) ? cs.dim : 1)
+cs_dim(cs) = get_dim(cs)
 
 # ============================================================================
 # Add — Abstract addition operator
@@ -1504,7 +1503,7 @@ struct GhostBroadcaster
         # Determine deployment dimensions: broadcast AND constant
         deploy_dims_ext = broadcast_arr .& constant_arr
         # Filter to non-local (distributed) dimensions
-        local_arr = collect(Bool, layout.local)
+        local_arr = collect(Bool, layout.local_flags)
         deploy_dims = deploy_dims_ext[.!local_arr]
         # Build subcomm or skip casting
         if any(deploy_dims)

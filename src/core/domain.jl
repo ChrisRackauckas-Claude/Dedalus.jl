@@ -315,11 +315,10 @@ function bases_by_coord(dom::Domain)
                     result[cs] = nothing
                 end
             end
-            # Fill in with bases — keyed by the basis's `coords` attribute,
-            # which is the coordinate or coordinate system the basis spans
-            # (matches Python: `bases_by_coord[basis.coords] = basis`).
+            # Fill in with bases, keyed by the coordinate or coordinate
+            # system each basis spans.
             for basis in dom.bases
-                result[basis.coords] = basis
+                result[basis_coordsys(basis)] = basis
             end
             result
         end

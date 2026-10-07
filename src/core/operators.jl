@@ -684,7 +684,7 @@ function check_conditions(op::Convert)
     arg = op.args[1]
     last_axis = op.last_axis
     last_is_coeff = !arg.layout.grid_space[last_axis]
-    last_is_local = arg.layout.local[last_axis]
+    last_is_local = arg.layout.local_flags[last_axis]
     if last_is_coeff && op.subaxis_coupling[end]
         return last_is_local
     end
@@ -711,6 +711,9 @@ function operate(op::Convert, out)::Nothing
         end
     else
         # Coefficient space: apply conversion matrix
+        if op.input_basis isa PolarBasis && op.output_basis isa PolarBasis
+            return _operate_polar_m!(op, out)
+        end
         preset_layout!(out, layout)
         if length(arg.data) > 0 && length(out.data) > 0
             data_axis = op.last_axis + length(arg.tensorsig)
@@ -720,6 +723,16 @@ function operate(op::Convert, out)::Nothing
         end
     end
     return nothing
+end
+
+spinindex_out(op::Convert, spinindex_in) = (spinindex_in,)
+
+function radial_matrix(op::Convert, spinindex_in, spinindex_out_val, m)
+    spinindex_in == spinindex_out_val || error("Convert does not couple spin components")
+    radial_basis = op.input_basis
+    spintotal_in = spintotal(radial_basis, op.operand.tensorsig, spinindex_in)
+    dk = op.output_basis.k - radial_basis.k
+    return conversion_matrix(radial_basis, m, spintotal_in, dk)
 end
 
 function new_operand(op::Convert, operand; kw...)
@@ -2886,7 +2899,17 @@ Explicit evaluation of a polar m-dependent operator.
 Loops over spin components and m-maps, applying the per-m radial matrix
 to each azimuthal slice of the operand data.
 """
-function operate(op::PolarMOperator, out)::Nothing
+operate(op::PolarMOperator, out)::Nothing = _operate_polar_m!(op, out)
+
+"""
+    _operate_polar_m!(op, out)
+
+Apply an operator that acts on each azimuthal wavenumber `m` of a polar basis
+through `radial_matrix(op, spinindex_in, spinindex_out, m)`, for every output
+spin component listed by `spinindex_out(op, spinindex_in)`.  The operand must
+be in coefficient space along the radial axis `op.last_axis`.
+"""
+function _operate_polar_m!(op, out)::Nothing
     operand = op.args[1]
     if hasfield(typeof(op.output_basis), :m_maps) || hasmethod(m_maps, Tuple{typeof(op.output_basis), Any})
         basis = op.output_basis
@@ -2908,8 +2931,8 @@ function operate(op::PolarMOperator, out)::Nothing
     for si_in in CartesianIndices(size(S_in))
         spintotal_in = S_in[si_in]
         for si_out_tuple in spinindex_out(op, Tuple(si_in))
-            @inbounds comp_in = operand.data[Tuple(si_in)...]
-            @inbounds comp_out = out.data[si_out_tuple...]
+            comp_in = component_view(operand.data, si_in)
+            comp_out = component_view(out.data, CartesianIndex(Tuple(si_out_tuple)))
             for (m, mg_slice, mc_slice, n_slice_val) in m_maps(basis, op.dist)
                 # Build slice tuple: all colons except axis-1 gets mc_slice,
                 # axis gets n_slice_val (1-based indexing)
@@ -3649,18 +3672,14 @@ function operate(op::SpinSkew, out)::Nothing
     if length(arg.data) > 0
         if arg.layout.grid_space[azimuth_axis + 1]
             # Grid space: left-handed rotation
-            sx = axslice(index, 1, 1)
-            sy = axslice(index, 2, 2)
-            out.data[sx...] .= arg.data[sy...]
-            out.data[sy...] .= -(arg.data[sx...])
+            selectdim(out.data, index, 1) .= selectdim(arg.data, index, 2)
+            selectdim(out.data, index, 2) .= .-selectdim(arg.data, index, 1)
         else
             # Coefficient space: spinorder -, +
-            minus = axslice(index, 1, 1)
-            plus = axslice(index, 2, 2)
-            arg_plus = arg.data[plus...]
-            arg_minus = arg.data[minus...]
-            out_plus = view(out.data, plus...)
-            out_minus = view(out.data, minus...)
+            arg_minus = selectdim(arg.data, index, 1)
+            arg_plus = selectdim(arg.data, index, 2)
+            out_minus = selectdim(out.data, index, 1)
+            out_plus = selectdim(out.data, index, 2)
             if is_complex_dtype(op.dtype)
                 # out = 1j * s * arg; s=-1 for minus, s=+1 for plus
                 out_plus .= 1im .* arg_plus
@@ -3668,12 +3687,14 @@ function operate(op::SpinSkew, out)::Nothing
             else
                 # Real: (1j * s) * (arg_cos + 1j * arg_msin)
                 # = -s * arg_msin + 1j * s * arg_cos
-                cos_sl = axslice(rank + azimuth_axis, 1, nothing, 2)
-                msin_sl = axslice(rank + azimuth_axis, 2, nothing, 2)
-                out_plus[cos_sl...] .= -(arg_plus[msin_sl...])
-                out_plus[msin_sl...] .= arg_plus[cos_sl...]
-                out_minus[cos_sl...] .= arg_minus[msin_sl...]
-                out_minus[msin_sl...] .= -(arg_minus[cos_sl...])
+                # (selectdim on the tensor index drops one leading dimension)
+                az = rank - 1 + azimuth_axis
+                naz = size(arg_plus, az)
+                cos_sl, msin_sl = 1:2:naz, 2:2:naz
+                selectdim(out_plus, az, cos_sl) .= .-selectdim(arg_plus, az, msin_sl)
+                selectdim(out_plus, az, msin_sl) .= selectdim(arg_plus, az, cos_sl)
+                selectdim(out_minus, az, cos_sl) .= selectdim(arg_minus, az, msin_sl)
+                selectdim(out_minus, az, msin_sl) .= .-selectdim(arg_minus, az, cos_sl)
             end
         end
     end
@@ -4214,7 +4235,7 @@ function check_conditions(op::MulCosine)
     if !isa(arg, AbstractCurrent)
         return false
     end
-    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local_flags[op.radius_axis]
 end
 
 function enforce_conditions(op::MulCosine)
@@ -4317,7 +4338,7 @@ function check_conditions(op::PolarGradient)
     if !isa(arg, AbstractCurrent)
         return false
     end
-    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local_flags[op.radius_axis]
 end
 
 function enforce_conditions(op::PolarGradient)
@@ -4437,7 +4458,7 @@ function check_conditions(op::PolarDivergence)
     if !isa(arg, AbstractCurrent)
         return false
     end
-    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local_flags[op.radius_axis]
 end
 
 function enforce_conditions(op::PolarDivergence)
@@ -4554,7 +4575,7 @@ function check_conditions(op::PolarLaplacian)
     if !isa(arg, AbstractCurrent)
         return false
     end
-    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local_flags[op.radius_axis]
 end
 
 function enforce_conditions(op::PolarLaplacian)
@@ -5386,7 +5407,7 @@ function check_conditions(op::SphericalGradient)
     if !isa(arg, AbstractCurrent)
         return false
     end
-    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local_flags[op.radius_axis]
 end
 
 function enforce_conditions(op::SphericalGradient)
@@ -5513,7 +5534,7 @@ function check_conditions(op::SphericalDivergence)
     if !isa(arg, AbstractCurrent)
         return false
     end
-    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local_flags[op.radius_axis]
 end
 
 function enforce_conditions(op::SphericalDivergence)
@@ -5660,7 +5681,7 @@ function check_conditions(op::SphericalCurl)
     if !isa(arg, AbstractCurrent)
         return false
     end
-    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local_flags[op.radius_axis]
 end
 
 function enforce_conditions(op::SphericalCurl)
@@ -5884,7 +5905,7 @@ function check_conditions(op::SphericalLaplacian)
     if !isa(arg, AbstractCurrent)
         return false
     end
-    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local_flags[op.radius_axis]
 end
 
 function enforce_conditions(op::SphericalLaplacian)
@@ -5988,7 +6009,7 @@ function check_conditions(op::SphericalEllProduct)
     if !isa(arg, AbstractCurrent)
         return false
     end
-    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local[op.radius_axis]
+    return !arg.layout.grid_space[op.radius_axis] && arg.layout.local_flags[op.radius_axis]
 end
 
 function enforce_conditions(op::SphericalEllProduct)
@@ -6053,6 +6074,9 @@ end
 
 # Stub for derivative_basis with order argument
 function derivative_basis(basis, order)
+    if hasmethod(derivative_basis, Tuple{typeof(basis)}, (:order,))
+        return derivative_basis(basis; order = order)
+    end
     if order == 1 && hasmethod(derivative_basis, Tuple{typeof(basis)})
         return derivative_basis(basis)
     end
