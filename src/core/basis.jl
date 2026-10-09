@@ -3421,7 +3421,7 @@ function _radius_weights(b::AnnulusBasis, scale)
     Q0 = jacobi_polynomials(N, b.alpha[1], b.alpha[2], z0)
     Q_proj = jacobi_polynomials(N, b.alpha[1], b.alpha[2], z_proj)
     normalization = b.dR / 2
-    result = normalization * transpose(Q0 * Diagonal(weights0)) * (Diagonal(weights_proj) * Q_proj)
+    result = normalization .* vec(transpose(Q0 * weights0) * (Q_proj * Diagonal(weights_proj)))
     b._cache[cache_key] = result
     return result
 end
@@ -5975,7 +5975,7 @@ function _radius_weights(b::ShellRadialBasis, scale)
     Q0 = jacobi_polynomials(N, b.alpha[1], b.alpha[2], z0)
     Q_proj = jacobi_polynomials(N, b.alpha[1], b.alpha[2], z_proj)
     normalization = b.dR / 2
-    result = normalization * transpose(Q0 * Diagonal(weights0)) * (Diagonal(weights_proj) * Q_proj)
+    result = normalization .* vec(transpose(Q0 * weights0) * (Q_proj * Diagonal(weights_proj)))
     b._cache[cache_key] = result
     return result
 end
