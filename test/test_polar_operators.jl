@@ -4,6 +4,7 @@ radial/azimuthal component."""
 
 using Test
 using Dedalus
+using LinearAlgebra: I
 
 @testset "Polar Operators" begin
 
@@ -105,6 +106,52 @@ using Dedalus
         change_layout!(v, layout)
         w = evaluate(u + v)
         @test isapprox(w["g"], u["g"] .+ v["g"], atol = 1.0e-10)
+    end
+
+    @testset "convert scalar k=$k_in => $k_out $bname T=$T" for
+        (bname, basis_fn) in [("disk", build_disk), ("annulus", build_annulus)],
+            (k_in, k_out) in [(0, 0), (0, 1), (0, 2), (1, 2), (1, 0), (2, 1)],
+            T in dtype_range
+        c, d, b, phi, r, x, y = basis_fn(16, 8, k_in, 1, T)
+        b_out = basis_fn(16, 8, k_out, 1, T)[3]
+        f = Field(d, bases = (b,), dtype = T)
+        f["g"] = @. r^4 + 2 * r^2 * cos(2 * phi)
+        fg = copy(f["g"])
+        change_layout!(f, "c")
+        if k_out < k_in
+            @test_throws ArgumentError evaluate(Convert(f, b_out))
+        else
+            g = evaluate(Convert(f, b_out))
+            @test g.domain.bases[1].k == k_out
+            @test isapprox(g["g"], fg, atol = 1.0e-10)
+        end
+    end
+
+    @testset "polar conversion matrix powers $bname" for
+        (bname, basis_fn) in [("disk", build_disk), ("annulus", build_annulus)]
+        b = basis_fn(16, 8, 0, 1, Float64)[3]
+        m, s = 2, 1
+        @test Matrix(Dedalus.conversion_matrix(b, m, s, 0)) == I
+        # Squared truncations compose exactly on coefficients that leave the top modes empty.
+        C2 = Dedalus.conversion_matrix(b, m, s, 2)
+        coeffs = [collect(range(1.0, 2.0; length = size(C2, 2) - 2)); 0; 0]
+        @test C2 * coeffs ≈ Dedalus.conversion_matrix(Dedalus.clone_with(b; k = 1), m, s, 1) *
+            (Dedalus.conversion_matrix(b, m, s, 1) * coeffs)
+        @test_throws ArgumentError Dedalus.conversion_matrix(b, m, s, -1)
+    end
+
+    @testset "annulus jacobi conversion powers" begin
+        b = build_annulus(16, 8, 0, 1, Float64)[3]
+        A0 = Dedalus.jacobi_conversion(b, 0, 0)
+        @test Matrix(A0) == I
+        coeffs = collect(range(1.0, 2.0; length = size(A0, 2)))
+        @test A0 * coeffs == coeffs
+        A1 = Dedalus.jacobi_conversion(b, 0, 1)
+        @test !isapprox(A1 * coeffs, coeffs)
+        low = [coeffs[1:(end - 2)]; 0; 0]
+        @test Dedalus.jacobi_conversion(b, 0, 2) * low ≈
+            Dedalus.jacobi_conversion(Dedalus.clone_with(b; k = 1), 0, 1) * (A1 * low)
+        @test_throws ArgumentError Dedalus.jacobi_conversion(b, 0, -1)
     end
 
     # ---- Skew tests ----

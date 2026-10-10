@@ -276,4 +276,27 @@ using Dedalus
         @test isapprox(v["g"], vg, atol = 1.0e-9)
     end
 
+    # Real m = 0 vector data uses both the cos and msin azimuthal slots once
+    # spin-recombined, so each component is checked separately.
+    @testset "axisymmetric vector component $comp $bname Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T" for
+        (bname, basis_fn) in [("disk", build_disk), ("annulus", build_annulus)],
+            comp in 1:2,
+            Nphi in [1, 2],
+            Nr in Nr_range,
+            dealias in dealias_range,
+            T in [Float64, ComplexF64]
+        c, d, b, phi, r, x, y = basis_fn(Nphi, Nr, dealias, T)
+        u = VectorField(d, c, bases = (b,), dtype = T)
+        preset_scales!(u, dealias)
+        u["g"][comp, :, :] .= r .^ 3
+        ug = copy(u["g"])
+        change_layout!(u, "c")
+        @test isapprox(u["g"], ug, atol = 1.0e-12)
+        # Vector Laplacian of f(r) e_comp is (f'' + f'/r - f/r^2) e_comp = 8r e_comp.
+        v = evaluate(laplacian(u, c))
+        vg = zeros(T, size(ug))
+        vg[comp, :, :] .= 8 .* r
+        @test isapprox(v["g"], vg, atol = 1.0e-9)
+    end
+
 end

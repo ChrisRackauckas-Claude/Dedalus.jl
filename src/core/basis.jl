@@ -2843,6 +2843,7 @@ Forward azimuth transform when mmax == 0 (copy the single m=0 slice).
 """
 function forward_transform_azimuth_Mmax0(b::PolarBasis, field, axis, gdata, cdata)
     slice_axis = axis + length(field.tensorsig)
+    fill!(cdata, zero(eltype(cdata)))
     copyto!(selectdim(cdata, slice_axis, 1:1), gdata)
     return nothing
 end
@@ -2932,6 +2933,8 @@ local m values.  Used for radial transforms and local element iteration.
 `mg_slice` and `mc_slice` are the 1-based ranges of azimuthal coefficient
 positions holding wavenumber `m` (identical in serial, where the azimuthal
 axis is fully local), and `n_slice` is the range of valid radial modes.
+The ranges span the full coefficient-space azimuthal extent, so for real
+bases the `m = 0` entry covers both the cos and msin slots.
 """
 function m_maps(b::PolarBasis, dist)
     cache_key = (:m_maps, dist)
@@ -2941,14 +2944,16 @@ function m_maps(b::PolarBasis, dist)
     end
     any(>(1), dist.mesh) &&
         error("m_maps for $(typeof(b)) is only implemented for serial distributors")
-    Nphi = b.shape[1]
-    groups = elements_to_groups(b.azimuth_basis, [false], collect(0:(Nphi - 1)))
+    # Real m = 0 occupies both the cos and msin slots, even when Nphi == 1;
+    # spin recombination moves u_phi into the msin slot.
+    Nc = global_shape(b, (false, false), (1, 1))[1]
+    groups = elements_to_groups(b.azimuth_basis, [false], collect(0:(Nc - 1)))
     maps = Tuple{Int, UnitRange{Int}, UnitRange{Int}, UnitRange{Int}}[]
     i = 1
-    while i <= Nphi
+    while i <= Nc
         m = groups[i]
         j = i
-        while j < Nphi && groups[j + 1] == m
+        while j < Nc && groups[j + 1] == m
             j += 1
         end
         push!(maps, (m, i:j, i:j, n_slice(b, abs(m))))
@@ -3469,6 +3474,18 @@ function transform_plan(b::AnnulusBasis, dist, grid_size, k)
 end
 
 """
+    _expands_real_m0(b::PolarBasis, field, axis, gdata)
+
+Whether the coefficient-grid data of a real `mmax == 0` polar basis has a
+single azimuthal slot and must be padded with the msin slot of `m = 0`
+for spin recombination.  For `Nphi == 2` that slot is already stored.
+"""
+function _expands_real_m0(b::PolarBasis, field, axis, gdata)
+    b.mmax == 0 && b.dtype === Float64 || return false
+    return size(gdata, length(field.tensorsig) + axis - 1) == 1
+end
+
+"""
     forward_transform_radius(b::AnnulusBasis, field, axis, gdata, cdata)
 
 Forward radial transform for annulus basis. Applies spin recombination
@@ -3483,7 +3500,7 @@ function forward_transform_radius(b::AnnulusBasis, field, axis, gdata, cdata)
         gdata = gdata .* rfactor
     end
     # Expand gdata if mmax=0 and dtype=float for spin recombination
-    if b.mmax == 0 && b.dtype === Float64
+    if _expands_real_m0(b, field, axis, gdata)
         m_axis = length(field.tensorsig) + axis - 1
         gdata = cat(gdata, zeros(eltype(gdata), size(gdata)); dims = m_axis)
     end
@@ -3509,7 +3526,8 @@ function backward_transform_radius(b::AnnulusBasis, field, axis, cdata, gdata)
     data_axis = length(field.tensorsig) + axis
     grid_size = size(gdata, data_axis)
     # Handle mmax=0 float expansion
-    if b.mmax == 0 && b.dtype === Float64
+    expanded = _expands_real_m0(b, field, axis, gdata)
+    if expanded
         m_axis = length(field.tensorsig) + axis - 1
         shp = collect(size(gdata))
         shp[m_axis] = 2
@@ -3534,7 +3552,7 @@ function backward_transform_radius(b::AnnulusBasis, field, axis, cdata, gdata)
         gdata .*= rfactor
     end
     # Collapse expanded gdata back
-    if b.mmax == 0 && b.dtype === Float64
+    if expanded
         m_axis = length(field.tensorsig) + axis - 1
         copyto!(gdata_orig, selectdim(gdata, m_axis, 1:1))
     end
@@ -3601,6 +3619,22 @@ function operator_matrix(b::AnnulusBasis, op, m, spintotal; size = nothing)
 end
 
 """
+    _check_conversion_power(dk)
+
+Polar conversions raise `k` by applying a conversion operator `dk` times.
+Lowering `k` is not a conversion, so negative powers are rejected.
+"""
+function _check_conversion_power(dk)
+    dk < 0 && throw(
+        ArgumentError(
+            "conversion power must be non-negative (got dk = $dk); " *
+                "polar conversions only raise k"
+        )
+    )
+    return nothing
+end
+
+"""
     conversion_matrix(b::AnnulusBasis, m, spintotal, dk)
 
 Build the Jacobi conversion matrix for the annulus.
@@ -3611,18 +3645,14 @@ function conversion_matrix(b::AnnulusBasis, m, spintotal, dk)
     if cached !== nothing
         return cached
     end
+    _check_conversion_power(dk)
     if dk == 0
         result = sparse(1.0I, n_size(b, m), n_size(b, m))
         b._cache[cache_key] = result
         return result
     end
     E = shell_operator(2, b.radii, "E"; alpha = b.alpha)
-    # Apply dk-fold conversion
-    op = E
-    for _ in 2:dk
-        op = compose(op, E)
-    end
-    result = Float64.(square(op(n_size(b, m), b.k)))
+    result = Float64.(square((E^dk)(n_size(b, m), b.k)))
     b._cache[cache_key] = result
     return result
 end
@@ -3638,15 +3668,16 @@ function jacobi_conversion(b::AnnulusBasis, m, dk; size = nothing)
     if cached !== nothing
         return cached
     end
-    AB = shell_operator(2, b.radii, "AB"; alpha = b.alpha)
-    op = AB
-    for _ in 2:dk
-        op = compose(op, AB)
-    end
+    _check_conversion_power(dk)
     if size === nothing
         size = n_size(b, m)
     end
-    result = Float64.(square(op(size, b.k)))
+    if dk == 0
+        result = sparse(1.0I, size, size)
+    else
+        AB = shell_operator(2, b.radii, "AB"; alpha = b.alpha)
+        result = Float64.(square((AB^dk)(size, b.k)))
+    end
     b._cache[cache_key] = result
     return result
 end
@@ -4025,7 +4056,7 @@ Forward radial transform for disk basis.
 """
 function forward_transform_radius_disk(b::DiskBasis, field, axis, gdata, cdata)
     # Expand gdata if mmax=0 and dtype=float for spin recombination
-    if b.mmax == 0 && b.dtype === Float64
+    if _expands_real_m0(b, field, axis, gdata)
         m_axis = length(field.tensorsig) + axis - 1
         gdata = cat(gdata, zeros(eltype(gdata), size(gdata)); dims = m_axis)
     end
@@ -4051,7 +4082,8 @@ Backward radial transform for disk basis.
 """
 function backward_transform_radius_disk(b::DiskBasis, field, axis, cdata, gdata)
     # Handle mmax=0 float expansion
-    if b.mmax == 0 && b.dtype === Float64
+    expanded = _expands_real_m0(b, field, axis, gdata)
+    if expanded
         m_axis = length(field.tensorsig) + axis - 1
         shp = collect(size(gdata))
         shp[m_axis] = 2
@@ -4073,7 +4105,7 @@ function backward_transform_radius_disk(b::DiskBasis, field, axis, cdata, gdata)
     fill!(gdata, zero(eltype(gdata)))
     backward_spin_recombination!(b, field.tensorsig, axis, temp, gdata)
     # Collapse expanded gdata
-    if b.mmax == 0 && b.dtype === Float64
+    if expanded
         m_axis = length(field.tensorsig) + axis - 1
         copyto!(gdata_orig, selectdim(gdata, m_axis, 1:1))
     end
@@ -4132,17 +4164,14 @@ function conversion_matrix(b::DiskBasis, m, spintotal, dk)
     if cached !== nothing
         return cached
     end
+    _check_conversion_power(dk)
     if dk == 0
         result = sparse(1.0I, n_size(b, m), n_size(b, m))
         b._cache[cache_key] = result
         return result
     end
     E = zernike_operator(2, "E"; radius = b.radius)
-    op = E(+1)
-    for _ in 2:dk
-        op = compose(op, E(+1))
-    end
-    result = Float64.(square(op(n_size(b, m), b.alpha + b.k, abs(m + spintotal))))
+    result = Float64.(square((E(+1)^dk)(n_size(b, m), b.alpha + b.k, abs(m + spintotal))))
     b._cache[cache_key] = result
     return result
 end
