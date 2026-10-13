@@ -1423,7 +1423,7 @@ function _quadrature(t::DiskRadialTransform)
     if cached !== nothing
         return cached
     end
-    result = zernike_quadrature(2, t.N2g; k = Int(t.alpha))
+    result = zernike_quadrature(2, t.N2g; k = t.alpha)
     t._cache[:quadrature] = result
     return result
 end
@@ -1754,7 +1754,7 @@ function _quadrature(t::BallRadialTransform)
     if cached !== nothing
         return cached
     end
-    result = zernike_quadrature(3, t.N3g; k = Int(t.alpha))
+    result = zernike_quadrature(3, t.N3g; k = t.alpha)
     t._cache[:quadrature] = result
     return result
 end
