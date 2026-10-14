@@ -68,9 +68,12 @@ end
 """
     operator_operand(op)
 
-Return the primary operand of a linear operator. By convention this is args[1].
+Return the operand a linear operator was constructed from. For composite
+operators, `args` holds the expanded computation tree used for evaluation,
+while structural operations (replace, split, reinitialize, sym_diff, expand,
+matrix construction) act on this operand.
 """
-operator_operand(op::AbstractLinearOperator) = op.args[1]
+operator_operand(op::AbstractLinearOperator) = op.operand
 
 """
     new_operand(op::AbstractLinearOperator, operand; kw...)
@@ -82,8 +85,30 @@ function new_operand(op::AbstractLinearOperator, operand; kw...)
     error("$(typeof(op)) has not implemented new_operand")
 end
 
-function new_operands(op::AbstractLinearOperator, operand; kw...)
-    return new_operand(op, operand; kw...)
+"""
+    replace_operand(op::AbstractLinearOperator, old, new_val)
+
+Replace `old` within the operator's operand and rebuild via `new_operand`,
+keeping `args` consistent with the original operand.
+"""
+function replace_operand(op::AbstractLinearOperator, old, new_val)
+    op == old && return new_val
+    operand = replace_operand(operator_operand(op), old, new_val)
+    isa(old, DataType) && isa(op, old) && return new_val(operand)
+    return new_operand(op, operand)
+end
+
+"""
+    replace_dict(op::AbstractLinearOperator, subs::AbstractDict)
+
+Replace operands within the operator's operand according to `subs` and
+rebuild via `new_operand`.
+"""
+function replace_dict(op::AbstractLinearOperator, subs::AbstractDict)
+    op in keys(subs) && return subs[op]
+    operand = replace_dict(operator_operand(op), subs)
+    typeof(op) in keys(subs) && return subs[typeof(op)](operand)
+    return new_operand(op, operand)
 end
 
 """
@@ -1637,14 +1662,6 @@ function subproblem_matrix(op::CartesianLaplacian, subproblem)
     return expression_matrices(op.args[1], subproblem, [op.operand])[op.operand]
 end
 
-function matrix_dependence(op::CartesianLaplacian, vars...)
-    return matrix_dependence(op.args[1], vars...)
-end
-
-function matrix_coupling(op::CartesianLaplacian, vars...)
-    return matrix_coupling(op.args[1], vars...)
-end
-
 # --------------------------------------------------------------------------
 # CartesianTrace
 # --------------------------------------------------------------------------
@@ -2131,6 +2148,26 @@ end
 
 function subproblem_matrix(op::DirectProductLaplacian, subproblem)
     return expression_matrices(op.args[1], subproblem, [op.operand])[op.operand]
+end
+
+"""
+    ExpandedLinearOperator
+
+Union of linear operators whose `args` hold an expanded computation tree of
+`operand` rather than the operand itself.
+"""
+const ExpandedLinearOperator = Union{
+    CartesianGradient, CartesianDivergence, CartesianCurl, CartesianLaplacian,
+    DirectProductGradient, DirectProductDivergence, DirectProductCurl,
+    DirectProductLaplacian,
+}
+
+function matrix_dependence(op::ExpandedLinearOperator, vars...)
+    return mapreduce(a -> matrix_dependence(a, vars...), .|, op.args)
+end
+
+function matrix_coupling(op::ExpandedLinearOperator, vars...)
+    return mapreduce(a -> matrix_coupling(a, vars...), .|, op.args)
 end
 
 """

@@ -423,23 +423,13 @@ end
 """
     get_coord(dom::Domain, name::AbstractString)
 
-Retrieve a `Coordinate` from the domain by name.  Searches all bases.
+Retrieve a `Coordinate` from the domain by name.  Searches the distributor's
+coordinates, so names resolve even on basis-free (constant) fields.
 """
 function get_coord(dom::Domain, name::AbstractString)
-    for basis in dom.bases
-        bc = basis_coordsys(basis)
-        # If the basis coords is a single Coordinate
-        if bc isa CoordinateOrAzimuthal
-            if bc.name == name
-                return bc
-            end
-        else
-            # It's a coordinate system — iterate its coords
-            for basis_coord in get_coords(bc)
-                if basis_coord.name == name
-                    return basis_coord
-                end
-            end
+    for coord in get_coords(dom.dist)
+        if coord.name == name
+            return coord
         end
     end
     throw(ArgumentError("Coordinate name '$name' not in domain."))

@@ -818,11 +818,9 @@ end
     _make_zero_field(dist, bases, tensorsig, dtype) -> Any
 
 Create a zero-valued field with the given specifications.
-Forward reference to field construction infrastructure.
 """
 function _make_zero_field(dist, bases, tensorsig, dtype)
-    # Stub: creates a zero field. Actual implementation depends on Field infrastructure.
-    f = Field(; dist = dist, bases = bases, tensorsig = tensorsig, dtype = dtype)
+    f = Field(dist; bases = bases, tensorsig = tensorsig, dtype = dtype)
     f["c"] = 0
     return f
 end
@@ -831,7 +829,6 @@ end
     _make_scalar_field(dist; name="", dtype=Float64) -> Any
 
 Create a scalar field with no spatial bases.
-Forward reference to field construction infrastructure.
 """
 function _make_scalar_field(dist; name = "", dtype = Float64)
     return Field(dist; name = name, dtype = dtype)
