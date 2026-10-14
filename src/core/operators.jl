@@ -175,13 +175,14 @@ function subproblem_matrix(op::AbstractLinearOperator, subproblem)
 end
 
 """
-    reinitialize(op::AbstractLinearOperator; kw...)
+    reinitialize(op::AbstractLinearOperator; out = nothing, kw...)
 
-Reinitialize with reinitialized operand.
+Reinitialize with reinitialized operand. `out` sets the output buffer on the
+rebuilt operator node only; all other keywords are forwarded to the operand.
 """
-function reinitialize(op::AbstractLinearOperator; kw...)
+function reinitialize(op::AbstractLinearOperator; out = nothing, kw...)
     operand = reinitialize(operator_operand(op); kw...)
-    return new_operand(op, operand)
+    return new_operand(op, operand; out = out)
 end
 
 """

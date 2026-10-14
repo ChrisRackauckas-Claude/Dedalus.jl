@@ -203,3 +203,37 @@ end
     @test h isa Dedalus.Interpolate
     @test h.coord === c
 end
+
+@testset "reinitialize keywords" begin
+    cs = CartesianCoordinates("x")
+    c = cs.coords[1]
+    dist = Distributor(cs, Float64)
+    basis = RealFourier(c, 8, (0, 2pi))
+    x = vec(local_grids(dist, basis; scales = 1)[1])
+    u = Field(dist; bases = basis)
+    u["g"] = sin.(x)
+    out = Field(dist; bases = basis)
+
+    op = reinitialize(differentiate(u, c); out = out)
+    @test op isa Dedalus.Differentiate
+    @test op.out === out
+    result = evaluate(op)
+    @test result === out
+    @test result["g"] ≈ cos.(x) atol = 1.0e-12
+
+    out2 = Field(dist; bases = basis)
+    op2 = reinitialize(differentiate(differentiate(u, c), c); out = out2)
+    @test op2.out === out2
+    @test Dedalus.operator_operand(op2).out !== out2
+
+    lap = laplacian(u, cs)
+    out3 = Field(dist; bases = basis)
+    op3 = reinitialize(lap; out = out3)
+    @test op3 isa Dedalus.CartesianLaplacian
+    @test op3.out === out3
+    @test Dedalus.operator_operand(op3) === u
+
+    op4 = reinitialize(differentiate(u, c); ncc = true, ncc_vars = [u])
+    @test op4 isa Dedalus.Differentiate
+    @test Dedalus.operator_operand(op4) === u
+end
