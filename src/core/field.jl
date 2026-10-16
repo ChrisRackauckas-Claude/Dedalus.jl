@@ -749,22 +749,22 @@ end
 # ============================================================================
 
 """
-    _dealias_buffer_size(f::Field) -> Int
+    _dealias_buffer_size(f) -> Int
 
 Compute and cache the buffer size needed for dealias-scale data.
 """
-function _dealias_buffer_size(f::Field)
+function _dealias_buffer_size(f::AbstractCurrent)
     return get!(f._cache, :dealias_buffer_size) do
         buffer_size(f.dist, f.domain, domain_dealias(f.domain), f.dtype)
     end
 end
 
 """
-    _dealias_buffer(f::Field) -> Vector{Float64}
+    _dealias_buffer(f) -> Vector{Float64}
 
 Build and cache a buffer large enough for dealias-scale data.
 """
-function _dealias_buffer(f::Field)
+function _dealias_buffer(f::AbstractCurrent)
     return get!(f._cache, :dealias_buffer) do
         bs = _dealias_buffer_size(f)
         ncomp = prod(get_dim(vs) for vs in f.tensorsig; init = 1)

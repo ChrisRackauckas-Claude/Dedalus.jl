@@ -311,8 +311,9 @@ using LinearAlgebra: I
         preset_scales!(f, dealias)
         f["g"] = @. r^2 + x
         hg = @. r^2
-        # Polar integrate/average are not implemented: https://github.com/SciML/Dedalus.jl/issues/26
-        @test_broken isapprox(evaluate(average(f, c.coords[1]))["g"], hg, atol = 1.0e-10)
+        # rtol: the annulus k = 5 transform alone round-trips these fields with
+        # ~1e-11 relative error, from the (dR / r)^k factor near the inner radius.
+        @test isapprox(evaluate(average(f, c.coords[1]))["g"], hg, atol = 1.0e-10, rtol = 1.0e-10)
     end
 
     # ---- Integrate tests ----
@@ -334,8 +335,8 @@ using LinearAlgebra: I
             r_inner, r_outer = radii_annulus
         end
         hg = 2 * pi * (r_outer^(2 + 2 * n) - r_inner^(2 + 2 * n)) / (2 + 2 * n)
-        # Polar integrate/average are not implemented: https://github.com/SciML/Dedalus.jl/issues/26
-        @test_broken all(isapprox.(evaluate(integrate(f, c))["g"], hg, atol = 1.0e-10))
+        @test isapprox(only(evaluate(integrate(f, c))["g"]), hg, atol = 1.0e-10, rtol = 1.0e-10)
+        @test isapprox(only(evaluate(average(f, c))["g"]), hg / (pi * (r_outer^2 - r_inner^2)), atol = 1.0e-10, rtol = 1.0e-10)
     end
 
     # ---- Interpolate azimuth tests (scalar) ----
@@ -352,8 +353,7 @@ using LinearAlgebra: I
         f["g"] = @. x^4 + 2 * y^4
         x_i, y_i = cartesian(PolarCoordinates, fill(phi_i, 1, 1), r)
         hg = @. x_i^4 + 2 * y_i^4
-        # Polar interpolation is not implemented: https://github.com/SciML/Dedalus.jl/issues/25
-        @test_broken isapprox(evaluate(interpolate(f; phi = phi_i))["g"], hg, atol = 1.0e-10)
+        @test isapprox(evaluate(interpolate(f; phi = phi_i))["g"], hg, atol = 1.0e-10)
     end
 
     # ---- Interpolate radius tests (scalar) ----
@@ -370,8 +370,7 @@ using LinearAlgebra: I
         f["g"] = @. x^4 + 2 * y^4
         x_i, y_i = cartesian(PolarCoordinates, phi, fill(r_i, 1, 1))
         hg = @. x_i^4 + 2 * y_i^4
-        # Polar interpolation is not implemented: https://github.com/SciML/Dedalus.jl/issues/25
-        @test_broken isapprox(evaluate(interpolate(f; r = r_i))["g"], hg, atol = 1.0e-10)
+        @test isapprox(evaluate(interpolate(f; r = r_i))["g"], hg, atol = 1.0e-10)
     end
 
     # ---- Interpolate azimuth tests (vector) ----
@@ -392,8 +391,7 @@ using LinearAlgebra: I
         x_i, y_i = cartesian(PolarCoordinates, phi_arr, r)
         ex, ey = unit_vectors(phi_arr, r)
         vg = padlead(4 .* x_i .^ 3, 1) .* ex .+ padlead(8 .* y_i .^ 3, 1) .* ey
-        # Polar interpolation is not implemented: https://github.com/SciML/Dedalus.jl/issues/25
-        @test_broken isapprox(evaluate(interpolate(u; phi = phi_i))["g"], vg, atol = 1.0e-10)
+        @test isapprox(evaluate(interpolate(u; phi = phi_i))["g"], vg, atol = 1.0e-10)
     end
 
     # ---- Interpolate radius tests (vector) ----
@@ -414,8 +412,7 @@ using LinearAlgebra: I
         x_i, y_i = cartesian(PolarCoordinates, phi, r_arr)
         ex, ey = unit_vectors(phi, r_arr)
         vg = padlead(4 .* x_i .^ 3, 1) .* ex .+ padlead(8 .* y_i .^ 3, 1) .* ey
-        # Polar interpolation is not implemented: https://github.com/SciML/Dedalus.jl/issues/25
-        @test_broken isapprox(evaluate(interpolate(u; r = r_i))["g"], vg, atol = 1.0e-10)
+        @test isapprox(evaluate(interpolate(u; r = r_i))["g"], vg, atol = 1.0e-10)
     end
 
     # ---- Interpolate azimuth tests (tensor) ----
@@ -436,8 +433,8 @@ using LinearAlgebra: I
         x_i, y_i = cartesian(PolarCoordinates, phi_arr, r)
         ex, ey = unit_vectors(phi_arr, r)
         vg = padlead(12 .* x_i .^ 2, 2) .* outer2(ex, ex) .+ padlead(24 .* y_i .^ 2, 2) .* outer2(ey, ey)
-        # Polar interpolation is not implemented: https://github.com/SciML/Dedalus.jl/issues/25
-        @test_broken isapprox(evaluate(interpolate(T_field; phi = phi_i))["g"], vg, atol = 1.0e-10)
+        # rtol: the annulus Hessian field itself carries ~1e-12 relative grid error.
+        @test isapprox(evaluate(interpolate(T_field; phi = phi_i))["g"], vg, atol = 1.0e-10, rtol = 1.0e-10)
     end
 
     # ---- Interpolate radius tests (tensor) ----
@@ -458,8 +455,8 @@ using LinearAlgebra: I
         x_i, y_i = cartesian(PolarCoordinates, phi, r_arr)
         ex, ey = unit_vectors(phi, r_arr)
         vg = padlead(12 .* x_i .^ 2, 2) .* outer2(ex, ex) .+ padlead(24 .* y_i .^ 2, 2) .* outer2(ey, ey)
-        # Polar interpolation is not implemented: https://github.com/SciML/Dedalus.jl/issues/25
-        @test_broken isapprox(evaluate(interpolate(T_field; r = r_i))["g"], vg, atol = 1.0e-10)
+        # rtol: the annulus Hessian field itself carries ~1e-12 relative grid error.
+        @test isapprox(evaluate(interpolate(T_field; r = r_i))["g"], vg, atol = 1.0e-10, rtol = 1.0e-10)
     end
 
     # ---- Radial component tests (vector) ----
@@ -480,8 +477,7 @@ using LinearAlgebra: I
             padlead(@.(x^2 * y + 7 * x^3 * y^2), 1) .* ey
         vg = @. (radius^3 * cp^2 * sp - 2 * radius^6 * cp * sp^5) * cp +
             (radius^3 * cp^2 * sp + 7 * radius^5 * cp^3 * sp^2) * sp
-        # Polar interpolation is not implemented: https://github.com/SciML/Dedalus.jl/issues/25
-        @test_broken isapprox(evaluate(radial_component(interpolate(u; r = radius)))["g"], vg, atol = 1.0e-10)
+        @test isapprox(evaluate(radial_component(interpolate(u; r = radius)))["g"], vg, atol = 1.0e-10)
     end
 
     # ---- Radial component tests (tensor) ----
@@ -508,8 +504,7 @@ using LinearAlgebra: I
             padlead(@.(radius^3 * sp^3 * cp), 1) .* ey .+
             padlead(@.(radius^4 * cp^2 * sp^2 * sp), 1) .* ex .+
             padlead(@.((radius^5 * sp^5 - 2 * radius^2 * cp * sp) * sp), 1) .* ey
-        # Polar interpolation is not implemented: https://github.com/SciML/Dedalus.jl/issues/25
-        @test_broken isapprox(evaluate(radial_component(interpolate(T_field; r = radius)))["g"], Ag, atol = 1.0e-10)
+        @test isapprox(evaluate(radial_component(interpolate(T_field; r = radius)))["g"], Ag, atol = 1.0e-10)
     end
 
     # ---- Azimuthal component tests (vector) ----
@@ -530,8 +525,7 @@ using LinearAlgebra: I
             padlead(@.(x^2 * y + 7 * x^3 * y^2), 1) .* ey
         vg = @. (radius^3 * cp^2 * sp - 2 * radius^6 * cp * sp^5) * (-sp) +
             (radius^3 * cp^2 * sp + 7 * radius^5 * cp^3 * sp^2) * cp
-        # Polar interpolation is not implemented: https://github.com/SciML/Dedalus.jl/issues/25
-        @test_broken isapprox(evaluate(azimuthal_component(interpolate(u; r = radius)))["g"], vg, atol = 1.0e-10)
+        @test isapprox(evaluate(azimuthal_component(interpolate(u; r = radius)))["g"], vg, atol = 1.0e-10)
     end
 
     # ---- Azimuthal component tests (tensor) ----
@@ -558,8 +552,7 @@ using LinearAlgebra: I
             padlead(@.(radius^3 * sp^3 * (-sp)), 1) .* ey .+
             padlead(@.(radius^4 * cp^2 * sp^2 * cp), 1) .* ex .+
             padlead(@.((radius^5 * sp^5 - 2 * radius^2 * cp * sp) * cp), 1) .* ey
-        # Polar interpolation is not implemented: https://github.com/SciML/Dedalus.jl/issues/25
-        @test_broken isapprox(evaluate(azimuthal_component(interpolate(T_field; r = radius)))["g"], Ag, atol = 1.0e-10)
+        @test isapprox(evaluate(azimuthal_component(interpolate(T_field; r = radius)))["g"], Ag, atol = 1.0e-10)
     end
 
 end

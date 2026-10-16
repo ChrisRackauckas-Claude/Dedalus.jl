@@ -63,4 +63,26 @@ using Dedalus
         Dedalus.towards_coeff_space!(lf)
         @test lf.layout === d.coeff_layout
     end
+
+    @testset "constant axes keep data across layouts" begin
+        c = CartesianCoordinates("x", "z")
+        d = Distributor(c, Float64)
+        b = RealFourier(c.coords[1], 8, (0, 2pi))
+        x = local_grids(d, b; scales = 1)[1]
+
+        f = Dedalus.Field(d; bases = (b,))
+        f["g"] = sin.(x)
+        @test count(v -> abs(v) > 1.0e-12, f["c"]) == 1
+        @test f["g"] ≈ sin.(x)
+
+        g = Dedalus.Field(d)
+        g["c"] = fill(3.0, 1, 1)
+        @test g["g"] == fill(3.0, 1, 1)
+        g["g"] = fill(-2.0, 1, 1)
+        @test g["c"] == fill(-2.0, 1, 1)
+
+        lf = Dedalus.LockedField(d; bases = (b,))
+        preset_scales!(lf, 1.5)
+        @test lf.scales == (1.5, 1.5)
+    end
 end

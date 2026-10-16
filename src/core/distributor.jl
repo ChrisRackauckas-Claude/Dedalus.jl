@@ -1905,8 +1905,10 @@ function increment_single(transform::DistTransform, field)
     preset_layout!(field, transform.layout1)
     gdata = field.data
 
-    # Transform non-constant bases with data
-    return if basis !== nothing && prod(size(cdata)) > 0
+    # `field.data` is a fresh array per layout, so constant axes copy their data
+    return if basis === nothing
+        copyto!(gdata, cdata)
+    elseif prod(size(cdata)) > 0
         backward_transform(basis, field, ax, cdata, gdata)
     end
 end
@@ -1927,8 +1929,10 @@ function decrement_single(transform::DistTransform, field)
     preset_layout!(field, transform.layout0)
     cdata = field.data
 
-    # Transform non-constant bases with data
-    return if basis !== nothing && prod(size(gdata)) > 0
+    # `field.data` is a fresh array per layout, so constant axes copy their data
+    return if basis === nothing
+        copyto!(cdata, gdata)
+    elseif prod(size(gdata)) > 0
         forward_transform(basis, field, ax, gdata, cdata)
     end
 end

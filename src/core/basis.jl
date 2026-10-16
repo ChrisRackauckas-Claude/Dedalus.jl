@@ -3753,6 +3753,29 @@ function _interpolation(b::AnnulusBasis, position)
     return result
 end
 
+"""
+    polar_integration_vector(b::AnnulusBasis)
+
+Row vector mapping the `m = 0` radial coefficients of a scalar to its integral
+over the annulus.
+"""
+function polar_integration_vector(b::AnnulusBasis)
+    cached = get(b._cache, :polar_integration_vector, nothing)
+    if cached !== nothing
+        return cached
+    end
+    # Extra quadrature points keep the (r / dR)^(-k) weight accurate for large k.
+    z0, w0 = jacobi_quadrature(2 * b.shape[2], 0.0, 0.0)
+    r0 = (b.dR / 2) .* (z0 .+ b.rho)
+    Qk = jacobi_polynomials(n_size(b, 0), b.alpha[1] + b.k, b.alpha[2] + b.k, z0)
+    w_geom = r0 .* w0 .* (r0 ./ b.dR) .^ (-b.k)
+    result = (reshape(w_geom, 1, :) * transpose(Qk)) .* (b.dR / 2 * 2 * pi)
+    b._cache[:polar_integration_vector] = result
+    return result
+end
+
+polar_area(b::AnnulusBasis) = pi * (b.radii[2]^2 - b.radii[1]^2)
+
 function Base.show(io::IO, b::AnnulusBasis)
     return print(io, "AnnulusBasis($(b.coordsys), shape=$(b.shape), radii=$(b.radii), k=$(b.k), alpha=$(b.alpha))")
 end
@@ -4193,6 +4216,26 @@ function interpolation(b::DiskBasis, m, spintotal, position)
     b._cache[cache_key] = result
     return result
 end
+
+"""
+    polar_integration_vector(b::DiskBasis)
+
+Row vector mapping the `m = 0` radial coefficients of a scalar to its integral
+over the disk.
+"""
+function polar_integration_vector(b::DiskBasis)
+    cached = get(b._cache, :polar_integration_vector, nothing)
+    if cached !== nothing
+        return cached
+    end
+    z0, w0 = zernike_quadrature(2, b.shape[2]; k = 0)
+    Qk = zernike_polynomials(2, n_size(b, 0), b.alpha + b.k, 0, z0)
+    result = (reshape(w0, 1, :) * transpose(Qk)) .* (b.radius^2 * 2 * pi)
+    b._cache[:polar_integration_vector] = result
+    return result
+end
+
+polar_area(b::DiskBasis) = pi * b.radius^2
 
 """
     radius_multiplication_matrix(b::DiskBasis, m, spintotal, order, d)
