@@ -68,12 +68,13 @@ end
 """
     operator_operand(op)
 
-Return the operand a linear operator was constructed from. For composite
-operators, `args` holds the expanded computation tree used for evaluation,
-while structural operations (replace, split, reinitialize, sym_diff, expand,
-matrix construction) act on this operand.
+Return the operand a linear operator was constructed from. Structural
+operations (replace, split, reinitialize, sym_diff, expand, matrix
+construction) act on this operand. By convention this is `args[1]`; operators
+whose `args` hold an expanded computation tree rather than the operand itself
+specialize this method.
 """
-operator_operand(op::AbstractLinearOperator) = op.operand
+operator_operand(op::AbstractLinearOperator) = op.args[1]
 
 """
     new_operand(op::AbstractLinearOperator, operand; kw...)
@@ -2162,6 +2163,8 @@ const ExpandedLinearOperator = Union{
     DirectProductGradient, DirectProductDivergence, DirectProductCurl,
     DirectProductLaplacian,
 }
+
+operator_operand(op::ExpandedLinearOperator) = op.operand
 
 function matrix_dependence(op::ExpandedLinearOperator, vars...)
     return mapreduce(a -> matrix_dependence(a, vars...), .|, op.args)

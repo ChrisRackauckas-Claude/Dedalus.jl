@@ -74,6 +74,24 @@ end
     end
 end
 
+struct ArgsOnlyLinearOperator <: AbstractLinearOperator
+    args::Vector{Any}
+end
+Dedalus.new_operand(::ArgsOnlyLinearOperator, operand; kw...) = ArgsOnlyLinearOperator(Any[operand])
+
+@testset "default operator_operand is args[1]" begin
+    @test operator_operand(ArgsOnlyLinearOperator(Any[42])) === 42
+
+    c = Coordinate("x")
+    dist = Distributor(c, Float64)
+    basis = Fourier(c, 8, (0.0, 2pi); dtype = Float64)
+    u = Field(dist; bases = basis, name = "u")
+    v = Field(dist; bases = basis, name = "v")
+    op = ArgsOnlyLinearOperator(Any[u])
+    @test operator_operand(replace_operand(op, u, v)) === v
+    @test operator_operand(replace_dict(op, Dict{Any, Any}(u => v))) === v
+end
+
 @testset "composite operator reconstruction" begin
     cs = CartesianCoordinates("x")
     c = cs.coords[1]
