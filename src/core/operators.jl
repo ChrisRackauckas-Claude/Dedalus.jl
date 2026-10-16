@@ -83,6 +83,15 @@ function new_operand(op::AbstractLinearOperator, operand; kw...)
 end
 
 """
+    require_linearity(op::AbstractLinearOperator, vars...; kw...)
+
+Require the operand to be linear in `vars`.
+"""
+function require_linearity(op::AbstractLinearOperator, vars...; kw...)
+    return require_linearity(operator_operand(op), vars...; kw...)
+end
+
+"""
     matrix_dependence(op::AbstractLinearOperator, vars...)
 
 Determine dimension-by-dimension matrix dependence.
@@ -152,7 +161,7 @@ Reinitialize with reinitialized operand.
 """
 function reinitialize(op::AbstractLinearOperator; kw...)
     operand = reinitialize(operator_operand(op); kw...)
-    return new_operand(op, operand; kw...)
+    return new_operand(op, operand)
 end
 
 """
@@ -2561,10 +2570,6 @@ differentiate(arg, coord) = Differentiate(arg, coord)
 
 function local_groupset_slices(layout, group, domain; scales = 1)
     return (Colon(),)
-end
-
-function basis_matrix_dependence(basis, axis)
-    return false
 end
 
 # ============================================================================

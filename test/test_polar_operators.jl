@@ -186,8 +186,8 @@ using LinearAlgebra: I
         fill_random!(f, layout = "g")
         low_pass_filter!(f, scales = 0.75)
         u = VectorField(d, c, bases = b)
-        # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-        @test_broken begin
+        # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+        @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" begin
             problem = LBVP([u], namespace = Dict("u" => u, "f" => f, "skew" => skew))
             add_equation!(problem, "skew(u) = skew(f)")
             solver = build_solver(problem)
@@ -238,8 +238,8 @@ using LinearAlgebra: I
         I_tensor = TensorField(d, (c, c), bases = rb)
         I_tensor["g"][1, 1, :, :] .= 1
         I_tensor["g"][2, 2, :, :] .= 1
-        # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-        @test_broken begin
+        # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+        @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" begin
             problem = LBVP([f])
             add_equation!(problem, (trace_op(I_tensor * f), 2 * g))
             solver = LinearBoundaryValueSolver(problem, matrix_coupling = [false, true])
@@ -282,8 +282,8 @@ using LinearAlgebra: I
         fill_random!(f, layout = "g")
         low_pass_filter!(f, scales = 0.75)
         u = TensorField(d, (c, c), bases = b)
-        # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-        @test_broken begin
+        # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+        @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" begin
             problem = LBVP(
                 [u], namespace = Dict(
                     "u" => u, "f" => f,
@@ -297,6 +297,24 @@ using LinearAlgebra: I
             change_scales!(f, dealias)
             isapprox(u["g"], f["g"], atol = 1.0e-10)
         end
+    end
+
+    # ---- Product tests ----
+
+    @testset "scalar product $bname dealias=$dealias T=$T" for
+        (bname, basis_fn) in [("disk", build_disk), ("annulus", build_annulus)],
+            dealias in dealias_range,
+            T in dtype_range
+        c, d, b, phi, r, x, y = basis_fn(16, 10, 0, dealias, T)
+        f = Field(d, bases = (b,), dtype = T)
+        g = Field(d, bases = (b,), dtype = T)
+        preset_scales!(f, dealias)
+        preset_scales!(g, dealias)
+        f["g"] = @. x^2 + y
+        g["g"] = @. 2 * x - y^2
+        hg = @. (x^2 + y) * (2 * x - y^2)
+        @test isapprox(evaluate(f * g)["g"], hg, atol = 1.0e-10)
+        @test isapprox(evaluate(g * f)["g"], hg, atol = 1.0e-10)
     end
 
     # ---- Azimuthal average tests ----

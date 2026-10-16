@@ -287,8 +287,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_disk(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_scalar_prod_scalar(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_scalar_prod_scalar(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "scalar_prod_vector Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -298,8 +298,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_disk(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_scalar_prod_vector(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_scalar_prod_vector(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "scalar_prod_tensor Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -309,8 +309,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_disk(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_scalar_prod_tensor(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_scalar_prod_tensor(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "vector_prod_scalar Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -320,8 +320,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_disk(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_vector_prod_scalar(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_vector_prod_scalar(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "vector_prod_vector Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -331,8 +331,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_disk(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_vector_prod_vector(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_vector_prod_vector(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "vector_dot_vector Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -342,8 +342,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_disk(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_vector_dot_vector(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_vector_dot_vector(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "vector_dot_tensor Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -353,8 +353,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_disk(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_vector_dot_tensor(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_vector_dot_tensor(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "tensor_prod_scalar Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -364,8 +364,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_disk(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_tensor_prod_scalar(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_tensor_prod_scalar(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "tensor_dot_vector Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -375,8 +375,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_disk(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_tensor_dot_vector(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_tensor_dot_vector(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "tensor_dot_tensor Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -386,8 +386,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_disk(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_tensor_dot_tensor(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_tensor_dot_tensor(c, d, b, phi, r, x, y, ncc_first)
         end
 
     end  # Disk
@@ -404,8 +404,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_annulus(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_scalar_prod_scalar(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_scalar_prod_scalar(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "scalar_prod_vector Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -415,8 +415,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_annulus(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_scalar_prod_vector(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_scalar_prod_vector(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "scalar_prod_tensor Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -426,8 +426,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_annulus(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_scalar_prod_tensor(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_scalar_prod_tensor(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "vector_prod_scalar Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -437,8 +437,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_annulus(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_vector_prod_scalar(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_vector_prod_scalar(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "vector_prod_vector Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -448,8 +448,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_annulus(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_vector_prod_vector(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_vector_prod_vector(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "vector_dot_vector Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -459,8 +459,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_annulus(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_vector_dot_vector(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_vector_dot_vector(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "vector_dot_tensor Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -470,8 +470,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_annulus(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_vector_dot_tensor(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_vector_dot_tensor(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "tensor_prod_scalar Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -481,8 +481,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_annulus(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_tensor_prod_scalar(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_tensor_prod_scalar(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "tensor_dot_vector Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -492,8 +492,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_annulus(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_tensor_dot_vector(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_tensor_dot_vector(c, d, b, phi, r, x, y, ncc_first)
         end
 
         @testset "tensor_dot_tensor Nphi=$Nphi Nr=$Nr dealias=$dealias T=$T ncc_first=$ncc_first" for
@@ -503,8 +503,8 @@ end
                 T in [Float64, ComplexF64],
                 ncc_first in [true, false]
             c, d, b, phi, r, x, y = build_annulus(Nphi, Nr, dealias, T)
-            # LBVP solves on polar domains are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
-            @test_broken test_tensor_dot_tensor(c, d, b, phi, r, x, y, ncc_first)
+            # Polar LBVP solvers are not implemented: https://github.com/SciML/Dedalus.jl/issues/27
+            @test_throws "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented" test_tensor_dot_tensor(c, d, b, phi, r, x, y, ncc_first)
         end
 
     end  # Annulus

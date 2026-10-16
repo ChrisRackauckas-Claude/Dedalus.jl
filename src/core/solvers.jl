@@ -149,7 +149,7 @@ function _init_solver_base(
     end
     # Check that coupled dimensions are local
     cl = dist.coeff_layout
-    coupled_nonlocal = mc .& .~BitVector(cl.local)
+    coupled_nonlocal = mc .& .~BitVector(cl.local_flags)
     if any(coupled_nonlocal)
         nonlocal_axes = findall(coupled_nonlocal)
         throw(
@@ -165,7 +165,7 @@ function _init_solver_base(
             first_axis = get_basis_axis(dist, basis)
             d = get_dim(basis)
             sl = first_axis:(first_axis + d - 1)
-            mat_dep[sl] .= mat_dep[sl] .| BitVector(basis_matrix_dependence(basis, mc[sl]))
+            mat_dep[sl] .= mat_dep[sl] .| BitVector(matrix_dependence(basis, mc[sl]))
         end
     end
     # Process config options
@@ -241,12 +241,6 @@ end
 # Interface to be implemented by concrete solvers
 function _solver_data end
 function solver_matrices end
-
-# ============================================================================
-# Stub types for forward references
-# ============================================================================
-
-# basis_matrix_dependence is defined in operators.jl
 
 # ============================================================================
 # EigenvalueSolver

@@ -249,7 +249,7 @@ function add_equation!(problem::ProblemBase, equation; condition::String = "True
         "condition" => condition,
         "tensorsig" => expr.tensorsig,
         "dtype" => expr.dtype,
-        "valid_modes" => copy(expr.valid_modes),
+        "valid_modes" => valid_modes(expr),
     )
     _check_equation_conditions(problem, eqn)
     _build_matrix_expressions(problem, eqn)
@@ -274,8 +274,8 @@ Verify that the domain of `subexpr` is contained within the domain of `supexpr`.
 Throws `UnsupportedEquationError` if the sub-expression has a larger domain.
 """
 function _check_domain_containment(subexpr, supexpr, subname, supname)
-    sub_nc = subexpr.domain.nonconstant
-    sup_const = supexpr.domain.constant
+    sub_nc = domain_nonconstant(subexpr.domain)
+    sup_const = domain_constant(supexpr.domain)
     return if any(sub_nc .& sup_const)
         throw(
             UnsupportedEquationError(
@@ -354,7 +354,7 @@ function _build_matrix_expressions(p::LinearBoundaryValueProblem, eqn)
     F = eqn["RHS"]
     # Reinitialize and prep NCCs
     L = reinitialize(L; ncc = true, ncc_vars = vars)
-    prep_nccs(L; vars = vars)
+    prep_nccs(L, vars)
     # Convert to same domain
     domain = (L - F).domain
     L = convert_operand(L, domain.bases)
@@ -823,8 +823,7 @@ Create a zero-valued field with the given specifications.
 Forward reference to field construction infrastructure.
 """
 function _make_zero_field(dist, bases, tensorsig, dtype)
-    # Stub: creates a zero field. Actual implementation depends on Field infrastructure.
-    f = Field(; dist = dist, bases = bases, tensorsig = tensorsig, dtype = dtype)
+    f = Field(dist; bases = bases, tensorsig = tensorsig, dtype = dtype)
     f["c"] = 0
     return f
 end

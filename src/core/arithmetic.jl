@@ -474,21 +474,24 @@ function product_build_bases(arg0, arg1; ncc::Bool = false, ncc_vars = nothing, 
     arg1_bases = bases_by_coord(arg1.domain)
     for coord in keys(arg0_bases)
         b0 = arg0_bases[coord]
-        b1 = arg1_bases[coord]
+        b1 = get(arg1_bases, coord, nothing)
         # All constant bases yields constant basis
         if b0 === nothing && b1 === nothing
             continue
-            # Multiply all bases
         elseif ncc && has_operand(arg0, ncc_vars...)
-            push!(bases, b1 * b0)  # matmul order: b1 @ b0
+            push!(bases, _product_basis_matmul(b1, b0))
         elseif ncc && has_operand(arg1, ncc_vars...)
-            push!(bases, b0 * b1)  # matmul order: b0 @ b1
+            push!(bases, _product_basis_matmul(b0, b1))
         else
-            push!(bases, b0 * b1)
+            push!(bases, _product_basis_mul(b0, b1))
         end
     end
     return Tuple(bases)
 end
+
+# Output bases of `b0 * b1` and `b0 @ b1`, where either side may be constant (`nothing`).
+_product_basis_mul(b0, b1) = b0 === nothing ? basis_rmul(b1, nothing) : basis_mul(b0, b1)
+_product_basis_matmul(b0, b1) = b0 === nothing ? basis_rmatmul(b1, nothing) : basis_matmul(b0, b1)
 
 """
     reinitialize(op::Product; kw...)

@@ -2779,13 +2779,8 @@ Convert element indices to group indices (m, n pairs).
 In coeff-coeff space, elements below `_nmin(m)` are masked.
 """
 function elements_to_groups(b::PolarBasis, grid_space, elements)
-    s1_groups = elements_to_groups(b.azimuth_basis, grid_space, elements[1:1])
-    radial_groups = elements[2]
-    if isa(s1_groups, Tuple)
-        groups = [s1_groups..., radial_groups]
-    else
-        groups = [s1_groups, radial_groups]
-    end
+    s1_groups = elements_to_groups(b.azimuth_basis, grid_space, elements[1])
+    groups = [s1_groups, elements[2]]
     if !grid_space[2]
         # coeff-coeff space: mask invalid elements
         m = groups[1]

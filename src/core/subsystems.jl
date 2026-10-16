@@ -35,6 +35,14 @@ are nested (compatible distributions), then creates a `Subsystem` for each
 unique groupset.
 """
 function build_subsystems(solver)
+    if any(b isa PolarBasis for var in get_variables(solver.problem) for b in var.domain.bases)
+        throw(
+            ArgumentError(
+                "solver subsystems for DiskBasis/AnnulusBasis variables are not implemented " *
+                    "(https://github.com/SciML/Dedalus.jl/issues/27)"
+            )
+        )
+    end
     matrix_coupling = Tuple(solver.matrix_coupling)
     coeff_layout = solver.dist.coeff_layout
     all_local_groupsets = Vector{Any}()
