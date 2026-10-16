@@ -909,17 +909,19 @@ function Interpolate(arg, coord, position; out = nothing)
         output_basis = if coord == azimuth
             radial_basis(input_basis)
         else
+            _is_azimuth_locked(arg) && throw(
+                ArgumentError(
+                    "cannot interpolate along the radius after the azimuth: values at a fixed " *
+                        "azimuth have no polar coefficients; interpolate along the radius first"
+                )
+            )
             S1_basis(input_basis; radius = position)
         end
         first_axis = get_basis_axis(dist, input_basis)
         last_axis = first_axis + 1
         subaxis_dep, subaxis_coup = [true, true], [false, true]
     else
-        output_basis = if input_basis !== nothing && hasmethod(interpolate_basis, Tuple{typeof(input_basis), typeof(position)})
-            interpolate_basis(input_basis, position)
-        else
-            nothing
-        end
+        output_basis = nothing
         first_axis = get_axis(dist, coord)
         last_axis = first_axis
         subaxis_dep, subaxis_coup = [true], [true]
@@ -940,6 +942,8 @@ function _coordinate_by_name(dist, name)
     return dist.coords[idx]
 end
 
+_is_azimuth_locked(arg) = arg isa LockedField || (arg isa AbstractFuture && future_type(arg) === LockedField)
+
 _interpolates_polar_azimuth(op::Interpolate) =
     op.input_basis isa PolarBasis && op.coord == get_coords(op.input_basis.coordsys)[1]
 
@@ -957,7 +961,7 @@ end
 
 function enforce_conditions(op::Interpolate)
     arg = op.args[1]
-    isa(arg, Field) || return nothing
+    isa(arg, AbstractCurrent) || return nothing
     if _interpolates_polar_azimuth(op)
         require_grid_space!(arg, op.first_axis)
     else
@@ -1055,13 +1059,26 @@ end
 """
     interpolate(arg; positions...)
 
-Apply Interpolate iteratively for each coord=position pair.
+Apply Interpolate iteratively for each coord=position pair. Polar azimuths are
+interpolated last, since radial interpolation needs the polar coefficients
+that a fixed-azimuth result no longer has.
 """
 function interpolate(arg; positions...)
-    for (coord, position) in positions
+    entries = collect(positions)
+    is_az = [_is_polar_azimuth(arg, coord) for (coord, position) in entries]
+    for (coord, position) in vcat(entries[.!is_az], entries[is_az])
         arg = Interpolate(arg, coord, position)
     end
     return arg
+end
+
+function _is_polar_azimuth(arg, coord)
+    arg isa Number && return false
+    if coord isa Union{Symbol, AbstractString}
+        coord = _coordinate_by_name(arg.dist, coord)
+    end
+    basis = get_basis(arg.domain, coord)
+    return basis isa PolarBasis && coord == get_coords(basis.coordsys)[1]
 end
 
 function interpolate(arg, coord, position)

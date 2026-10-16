@@ -357,6 +357,38 @@ using LinearAlgebra: I
         @test isapprox(only(evaluate(average(f, c))["g"]), hg / (pi * (r_outer^2 - r_inner^2)), atol = 1.0e-10, rtol = 1.0e-10)
     end
 
+    # Exact integral of the m = 0 radial mode n of an annulus basis, and the
+    # integral of a bound on its magnitude. The mode is Q_n(z(r)) (dR / r)^k,
+    # with Q_n refit as a polynomial in r in BigFloat.
+    function annulus_mode_integral(b, n)
+        r0, r1 = big.(b.radii)
+        rs = [b.radii[1] + (b.radii[2] - b.radii[1]) * (j + 0.5) / (n + 1) for j in 0:n]
+        Q(z) = Dedalus.jacobi_polynomials(n + 1, b.alpha[1] + b.k, b.alpha[2] + b.k, z)[n + 1, :]
+        a = [big(r)^j for r in rs, j in 0:n] \ big.(Q(2 .* rs ./ b.dR .- b.rho))
+        moment(p) = p == -1 ? log(r1 / r0) : (r1^(p + 1) - r0^(p + 1)) / (p + 1)
+        weight = 2 * big(pi) * big(b.dR)^b.k
+        value = weight * sum(a[j + 1] * moment(j + 1 - b.k) for j in 0:n)
+        scale = weight * moment(1 - b.k) * maximum(abs, Q(collect(range(-1, 1, length = 101))))
+        return Float64(value), Float64(scale)
+    end
+
+    @testset "integrate annulus mode radii=($r_inner, 1.0) k=$k n=$n T=$T" for
+        r_inner in [0.01, 0.1, 0.5],
+            k in 0:5,
+            n in 0:2,
+            T in dtype_range
+        c = PolarCoordinates("phi", "r")
+        d = Distributor(c, T)
+        b = AnnulusBasis(c, (8, 10), T; radii = (r_inner, 1.0), k = k)
+        f = Field(d, bases = (b,), dtype = T)
+        f["c"] = zeros(T, 8, 10)
+        f["c"][1, n + 1] = 1
+        hg, scale = annulus_mode_integral(b, n)
+        area = pi * (1 - r_inner^2)
+        @test isapprox(only(evaluate(integrate(f, c))["g"]), hg, atol = 1.0e-12 * scale)
+        @test isapprox(only(evaluate(average(f, c))["g"]), hg / area, atol = 1.0e-12 * scale / area)
+    end
+
     # ---- Interpolate azimuth tests (scalar) ----
 
     @testset "interpolate azimuth scalar $bname Nphi=16 Nr=8 k=$k dealias=$dealias T=$T phi_i=$phi_i" for
@@ -475,6 +507,27 @@ using LinearAlgebra: I
         vg = padlead(12 .* x_i .^ 2, 2) .* outer2(ex, ex) .+ padlead(24 .* y_i .^ 2, 2) .* outer2(ey, ey)
         # rtol: the annulus Hessian field itself carries ~1e-12 relative grid error.
         @test isapprox(evaluate(interpolate(T_field; r = r_i))["g"], vg, atol = 1.0e-10, rtol = 1.0e-10)
+    end
+
+    # ---- Interpolate at a point (both coordinates) ----
+
+    @testset "interpolate point $bname T=$T phi_i=$phi_i r_i=$r_i" for
+        (bname, basis_fn) in [("disk", build_disk), ("annulus", build_annulus)],
+            T in dtype_range,
+            (phi_i, r_i) in [(0.5, 1.0), (2.0, 0.75)]
+        c, d, b, phi, r, x, y = basis_fn(16, 8, 0, 1, T)
+        f = Field(d, bases = (b,), dtype = T)
+        f["g"] = @. x^4 + 2 * y^4
+        u = gradient(f, c)
+        x_i, y_i = r_i * cos(phi_i), r_i * sin(phi_i)
+        hg = x_i^4 + 2 * y_i^4
+        ex, ey = unit_vectors(fill(phi_i, 1, 1), fill(r_i, 1, 1))
+        vg = 4 * x_i^3 .* ex .+ 8 * y_i^3 .* ey
+        @test isapprox(only(evaluate(interpolate(f; phi = phi_i, r = r_i))["g"]), hg, atol = 1.0e-10)
+        @test isapprox(only(evaluate(interpolate(f; r = r_i, phi = phi_i))["g"]), hg, atol = 1.0e-10)
+        @test isapprox(evaluate(interpolate(u; phi = phi_i, r = r_i))["g"], vg, atol = 1.0e-10)
+        @test isapprox(evaluate(interpolate(u; r = r_i, phi = phi_i))["g"], vg, atol = 1.0e-10)
+        @test_throws ArgumentError Interpolate(Interpolate(f, c.coords[1], phi_i), c.coords[2], r_i)
     end
 
     # ---- Radial component tests (vector) ----

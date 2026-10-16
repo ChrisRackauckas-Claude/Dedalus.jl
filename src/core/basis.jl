@@ -3753,18 +3753,37 @@ end
 
 Row vector mapping the `m = 0` radial coefficients of a scalar to its integral
 over the annulus.
+
+The radial factor `(r / dR)^(-k)` makes the integrand rational in `r`, with a
+pole at `r = 0` that approaches the interval as the inner radius shrinks.  In
+`s = log(r)` the integrand `r^2 (r / dR)^(-k) Q_n` is entire, so Gauss-Legendre
+in `s` is doubled until successive rules agree to rounding.
 """
 function polar_integration_vector(b::AnnulusBasis)
     cached = get(b._cache, :polar_integration_vector, nothing)
     if cached !== nothing
         return cached
     end
-    # Extra quadrature points keep the (r / dR)^(-k) weight accurate for large k.
-    z0, w0 = jacobi_quadrature(2 * b.shape[2], 0.0, 0.0)
-    r0 = (b.dR / 2) .* (z0 .+ b.rho)
-    Qk = jacobi_polynomials(n_size(b, 0), b.alpha[1] + b.k, b.alpha[2] + b.k, z0)
-    w_geom = r0 .* w0 .* (r0 ./ b.dR) .^ (-b.k)
-    result = (reshape(w_geom, 1, :) * transpose(Qk)) .* (b.dR / 2 * 2 * pi)
+    n = n_size(b, 0)
+    s0, s1 = log.(b.radii)
+    function rule(N)
+        t, w = jacobi_quadrature(N, 0.0, 0.0)
+        r = exp.((s0 + s1) / 2 .+ ((s1 - s0) / 2) .* t)
+        z = (2 / b.dR) .* r .- b.rho
+        Qk = jacobi_polynomials(n, b.alpha[1] + b.k, b.alpha[2] + b.k, z)
+        w_geom = ((s1 - s0) / 2) .* w .* r .^ 2 .* (r ./ b.dR) .^ (-b.k)
+        return (reshape(w_geom, 1, :) * transpose(Qk)) .* (2 * pi)
+    end
+    N = 2 * b.shape[2]
+    result = rule(N)
+    while true
+        N *= 2
+        N > 2^16 && error("annulus integration rule did not converge for $b")
+        refined = rule(N)
+        converged = maximum(abs, refined .- result) <= 1.0e-14 * maximum(abs, refined)
+        result = refined
+        converged && break
+    end
     b._cache[:polar_integration_vector] = result
     return result
 end
