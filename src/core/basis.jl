@@ -5650,11 +5650,10 @@ Copies real part of m=0 over; zeros out remaining modes.
 function forward_transform_azimuth_regularity(b::AbstractRegularityBasis, field, axis, gdata, cdata)
     # Copy over real part of m = 0
     data_axis = length(field.tensorsig) + axis
-    # axslice(data_axis, 1, 1) selects first element along data_axis (1-based)
-    copyto!(view(cdata, axslice(data_axis, 1, 1)...), gdata)
+    copyto!(selectdim(cdata, data_axis, 1:1), gdata)
     # Zero out remaining modes
     return if size(cdata, data_axis) > 1
-        view(cdata, axslice(data_axis, 2, size(cdata, data_axis))...) .= 0
+        selectdim(cdata, data_axis, 2:size(cdata, data_axis)) .= 0
     end
 end
 
@@ -5692,7 +5691,7 @@ Copies real part of m=0 back.
 function backward_transform_azimuth_regularity(b::AbstractRegularityBasis, field, axis, cdata, gdata)
     # Copy over real part of m = 0
     data_axis = length(field.tensorsig) + axis
-    return copyto!(gdata, view(cdata, axslice(data_axis, 1, 1)...))
+    return copyto!(gdata, selectdim(cdata, data_axis, 1:1))
 end
 
 # -- n_size and n_slice for regularity bases --
