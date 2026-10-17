@@ -1607,6 +1607,8 @@ end
 
 is_future_field(::MultiplyNumberField) = true
 
+future_type(::Union{AddFields, DotProduct, CrossProduct, MultiplyFields, MultiplyNumberField}) = Field
+
 """
     check_conditions(op::MultiplyNumberField)
 
