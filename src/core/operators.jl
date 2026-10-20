@@ -1013,7 +1013,7 @@ function _polar_azimuth_interpolation_vector(basis, dist, scale, position)
     cache_key = (:azimuth_interpolation_vector, dist, scale, position)
     cached = get(basis._cache, cache_key, nothing)
     cached !== nothing && return cached
-    phi = vec(global_grid(basis.azimuth_basis, dist, scale))
+    phi = basis.mmax == 0 ? [0.0] : vec(global_grid(basis.azimuth_basis, dist, scale))
     N = length(phi)
     result = reshape(
         [(1 + 2 * sum(cos(m * (position - p)) for m in 1:(basis.mmax); init = 0.0)) / N for p in phi],
